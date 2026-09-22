@@ -19,7 +19,14 @@ export interface RateSnapshot {
   silverBrandedSellRate: number;
   silverBrandedCostRate: number;
   silverRetailRate: number;
+  /** Gold rate per gram (AED). 0 = not set. Only used by tenants whose rate
+   *  metal is "gold" or "both" (see getRateMetal) — silver-only tenants never
+   *  see or use it, so their math is unchanged. */
+  goldRate: number;
 }
+
+/** Which metal(s) this customer's Daily/Sticky rate is for. Per tenant. */
+export type RateMetal = 'silver' | 'gold' | 'both';
 
 export const DEFAULT_RATES: RateSnapshot = {
   phpRate: 17.50,
@@ -28,7 +35,33 @@ export const DEFAULT_RATES: RateSnapshot = {
   silverBrandedSellRate: 35,
   silverBrandedCostRate: 27,
   silverRetailRate: 35,
+  goldRate: 0,
 };
+
+// ── Rate metal mode (per tenant) ──────────────────────────────────────────────
+// Not prefixed "rates_" on purpose: serializeRatesConfig treats every "rates_*"
+// key as a date. Cleared on workspace switch via tenantStorage SCOPED_KEYS.
+const METAL_KEY = 'rate_metal_mode';
+
+export function getRateMetal(): RateMetal {
+  try {
+    const v = localStorage.getItem(METAL_KEY);
+    if (v === 'gold' || v === 'both' || v === 'silver') return v;
+  } catch { /* ignore */ }
+  return 'silver'; // default = original behaviour
+}
+
+export function setRateMetal(m: RateMetal): void {
+  try { localStorage.setItem(METAL_KEY, m); } catch { /* ignore */ }
+}
+
+export function usesGold(): boolean { return getRateMetal() !== 'silver'; }
+export function usesSilver(): boolean { return getRateMetal() !== 'gold'; }
+
+function num(v: unknown, fallback: number): number {
+  const x = typeof v === 'number' ? v : parseFloat(String(v ?? ''));
+  return Number.isFinite(x) ? x : fallback;
+}
 
 // Key for the persistent sticky/default rate (not date-specific)
 const STICKY_RATES_KEY = 'rates_current_default';
@@ -46,6 +79,7 @@ export function getStickyRates(): RateSnapshot {
         silverBrandedSellRate: parsed.silverRetailRate ?? parsed.silverBrandedSellRate ?? DEFAULT_RATES.silverRetailRate,
         silverBrandedCostRate: parsed.silverBrandedCostRate ?? DEFAULT_RATES.silverBrandedCostRate,
         silverRetailRate: parsed.silverRetailRate ?? DEFAULT_RATES.silverRetailRate,
+        goldRate: num(parsed.goldRate, DEFAULT_RATES.goldRate),
       };
     }
   } catch { /* fall through */ }
@@ -151,6 +185,7 @@ export function getRatesForDate(date: string): RateSnapshot {
           silverBrandedSellRate: retail,
           silverBrandedCostRate: parsed.silverBrandedCostRate ?? DEFAULT_RATES.silverBrandedCostRate,
           silverRetailRate: retail,
+          goldRate: num(parsed.goldRate, getStickyRates().goldRate),
         };
       }
     } catch (e) {
@@ -203,6 +238,7 @@ export function getSilverSellRate(date: string): number { return getRatesForDate
 export function getSilverBrandedSellRate(date: string): number { return getRatesForDate(date).silverBrandedSellRate; }
 export function getSilverCostRate(date: string): number { return getRatesForDate(date).silverCostRate; }
 export function getSilverBrandedCostRate(date: string): number { return getRatesForDate(date).silverBrandedCostRate; }
+export function getGoldRate(date: string): number { return getRatesForDate(date).goldRate; }
 
 function patchDate(date: string, patch: Partial<RateSnapshot>) {
   saveRatesForDate(date, { ...getRatesForDate(date), ...patch });
@@ -224,13 +260,15 @@ export function setSilverBrandedCostRate(date: string, rate: number) { patchDate
 // ── Backend Config Sync ───────────────────────────────────────────────────────
 
 export interface RatesConfig {
+  /** Which metal the Daily/Sticky rate is for (per tenant). Missing = silver. */
+  metal?: RateMetal;
   sticky?: Partial<RateSnapshot>;
   dates?: Record<string, { rates: Partial<RateSnapshot>; locked: boolean }>;
 }
 
 /** Serialize current localStorage rates state into a config blob for backend storage. */
 export function serializeRatesConfig(): string {
-  const config: RatesConfig = { sticky: getStickyRates(), dates: {} };
+  const config: RatesConfig = { metal: getRateMetal(), sticky: getStickyRates(), dates: {} };
   for (let i = 0; i < localStorage.length; i++) {
     const k = localStorage.key(i);
     if (!k) continue;
@@ -251,6 +289,7 @@ export function applyRatesConfig(configJson: string): void {
   if (!configJson) return;
   try {
     const config = JSON.parse(configJson) as RatesConfig;
+    setRateMetal(config.metal === 'gold' || config.metal === 'both' ? config.metal : 'silver');
     if (config.sticky) {
       const retail = (config.sticky as any).silverRetailRate ?? config.sticky.silverSellRate ?? DEFAULT_RATES.silverRetailRate;
       setStickyRates({
@@ -260,6 +299,7 @@ export function applyRatesConfig(configJson: string): void {
         silverBrandedSellRate: retail,
         silverBrandedCostRate: config.sticky.silverBrandedCostRate ?? DEFAULT_RATES.silverBrandedCostRate,
         silverRetailRate: retail,
+        goldRate: num((config.sticky as any).goldRate, DEFAULT_RATES.goldRate),
       });
     }
     if (config.dates) {
@@ -273,6 +313,7 @@ export function applyRatesConfig(configJson: string): void {
           silverBrandedSellRate: retail,
           silverBrandedCostRate: entry.rates.silverBrandedCostRate ?? existing.silverBrandedCostRate,
           silverRetailRate: retail,
+          goldRate: num((entry.rates as any).goldRate, existing.goldRate),
         });
         if (entry.locked) {
           lockRatesForDate(dateKey);

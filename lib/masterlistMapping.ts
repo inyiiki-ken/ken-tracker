@@ -27,7 +27,17 @@ export type MasterlistFieldKey =
   | "amount"
   | "remarks"
   | "clientAddress"
-  | "clientNumber";
+  | "clientNumber"
+  | "mc"
+  | "goldRate";
+
+/**
+ * How the row's selling rate is formed.
+ *  - "rate":         the Rate column IS the selling rate per gram (AR/MYK layout).
+ *  - "rate_plus_mc": the Rate column is the gold/board rate and the selling rate
+ *                    per gram is Rate + MC (e.g. Crown: AMOUNT = WT × (RATE + MC)).
+ */
+export type PriceMode = "rate" | "rate_plus_mc";
 
 export interface MasterlistMapping {
   /** 1-based row where item rows START (the row after the header row). */
@@ -42,6 +52,16 @@ export interface MasterlistMapping {
   liverNameLabel: string;
   /** Text label to find the gold/silver rate beside. */
   rateLabel: string;
+  /** A1 cell holding the sheet-wide gold/silver rate (e.g. "F5"). Empty = use rateLabel search. */
+  rateCell: string;
+  /** How the selling rate is built from the row (see PriceMode). */
+  priceMode: PriceMode;
+  /** Category to use when the file has no Category column (e.g. "Gold Normal"). */
+  defaultCategory: string;
+  /** When the file has no Category column: MC value -> category
+   *  (e.g. Crown: {"21":"Gold Normal","28":"Special Price","55":"Special Price EF"}).
+   *  An MC not listed falls back to defaultCategory. */
+  mcCategories: Record<string, string>;
 }
 
 /** Defaults reproduce the original hard-coded AR/MYK layout exactly. */
@@ -62,11 +82,18 @@ export const DEFAULT_MASTERLIST_MAPPING: MasterlistMapping = {
     remarks: "N",
     clientAddress: "O",
     clientNumber: "P",
+    mc: "",
+    goldRate: "",
   },
   liveDateCell: "C4",
   pageCell: "A2",
   liverNameLabel: "LIVER NAME",
   rateLabel: "GOLD RATE",
+  // New options — blank/"rate" reproduce the original behaviour exactly.
+  rateCell: "",
+  priceMode: "rate",
+  defaultCategory: "",
+  mcCategories: {},
 };
 
 /** Human labels for the settings editor. */
@@ -85,6 +112,8 @@ export const MASTERLIST_FIELD_LABELS: { key: MasterlistFieldKey; label: string }
   { key: "remarks", label: "Remarks" },
   { key: "clientAddress", label: "Address" },
   { key: "clientNumber", label: "Number / Contact" },
+  { key: "mc", label: "Making charge (MC)" },
+  { key: "goldRate", label: "Gold rate (per row)" },
 ];
 
 /** Column letter -> 0-based index. "A"->0, "B"->1, "AA"->26. Blank/invalid -> -1. */
@@ -116,6 +145,10 @@ export interface ResolvedMasterlistMapping {
   page: { row: number; col: number } | null;
   liverNameLabel: string;
   rateLabel: string;
+  rateCell: { row: number; col: number } | null;
+  priceMode: PriceMode;
+  defaultCategory: string;
+  mcCategories: Record<string, string>;
 }
 
 export function resolveMasterlistMapping(m: MasterlistMapping): ResolvedMasterlistMapping {
@@ -131,6 +164,10 @@ export function resolveMasterlistMapping(m: MasterlistMapping): ResolvedMasterli
     page: cellToRC(m.pageCell),
     liverNameLabel: (m.liverNameLabel || "LIVER NAME").toUpperCase(),
     rateLabel: (m.rateLabel || "GOLD RATE").toUpperCase(),
+    rateCell: cellToRC(m.rateCell),
+    priceMode: m.priceMode === "rate_plus_mc" ? "rate_plus_mc" : "rate",
+    defaultCategory: (m.defaultCategory || "").trim(),
+    mcCategories: m.mcCategories || {},
   };
 }
 
@@ -153,7 +190,42 @@ function normalize(p: Partial<MasterlistMapping> | null | undefined): Masterlist
     pageCell: (p?.pageCell ?? DEFAULT_MASTERLIST_MAPPING.pageCell).toString().trim().toUpperCase(),
     liverNameLabel: (p?.liverNameLabel ?? DEFAULT_MASTERLIST_MAPPING.liverNameLabel).toString(),
     rateLabel: (p?.rateLabel ?? DEFAULT_MASTERLIST_MAPPING.rateLabel).toString(),
+    rateCell: (p?.rateCell ?? "").toString().trim().toUpperCase(),
+    priceMode: p?.priceMode === "rate_plus_mc" ? "rate_plus_mc" : "rate",
+    defaultCategory: (p?.defaultCategory ?? "").toString().trim(),
+    mcCategories: normalizeMcCategories(p?.mcCategories),
   };
+}
+
+/** Keys are MC numbers as plain strings ("21", "28.5"); blank entries dropped. */
+function normalizeMcCategories(raw: unknown): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!raw || typeof raw !== "object") return out;
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    const n = parseFloat(String(k).replace(/[,\s]/g, ""));
+    const cat = String(v ?? "").trim();
+    if (Number.isFinite(n) && cat) out[String(n)] = cat;
+  }
+  return out;
+}
+
+/** Category for an MC value from the map ("" if not mapped). */
+export function categoryForMc(map: Record<string, string>, mc: number): string {
+  if (!mc || !map) return "";
+  return map[String(mc)] || "";
+}
+
+/**
+ * Suggest an MC -> category map from the MC values actually found in a file:
+ * lowest = Gold Normal, next = Special Price, next = Special Price EF (anything
+ * higher also EF). Just a starting point — editable before saving.
+ */
+export function suggestMcCategories(mcs: number[]): Record<string, string> {
+  const tiers = ["Gold Normal", "Special Price", "Special Price EF"];
+  const uniq = [...new Set(mcs.filter((x) => Number.isFinite(x) && x > 0))].sort((a, b) => a - b);
+  const out: Record<string, string> = {};
+  uniq.forEach((mc, i) => { out[String(mc)] = tiers[Math.min(i, tiers.length - 1)]; });
+  return out;
 }
 
 function loadFromCache(): MasterlistMapping {
@@ -214,8 +286,11 @@ const HEADER_ALIASES: { key: MasterlistFieldKey; aliases: string[] }[] = [
   { key: "source", aliases: ["source", "location"] },
   { key: "qty", aliases: ["qty", "quantity", "pcs", "pieces"] },
   { key: "tog", aliases: ["tog", "t o g", "gold type", "karat", "carat"] },
-  { key: "grams", aliases: ["client grams", "grams", "gram", "weight"] },
+  { key: "grams", aliases: ["client grams", "grams", "gram", "weight", "wt"] },
+  // Claimed BEFORE clientRate so a "Gold Rate" column isn't taken as the selling rate.
+  { key: "goldRate", aliases: ["gold rate", "board rate", "supplier rate", "cost rate"] },
   { key: "clientRate", aliases: ["rate", "unit price", "price per", "selling"] },
+  { key: "mc", aliases: ["mc", "making charge", "making", "labor", "labour"] },
   { key: "amount", aliases: ["amount", "total", "subtotal", "price"] },
   { key: "remarks", aliases: ["remarks", "remark", "notes", "note", "comment"] },
   { key: "clientAddress", aliases: ["address", "delivery"] },
@@ -267,9 +342,11 @@ export function detectMapping(grid: unknown[][]): DetectResult | null {
     for (const exact of [true, false]) {
       for (let c = 0; c < header.length; c++) {
         if (takenCols.has(c) || !header[c]) continue;
+        // Very short aliases ("mc", "wt") only match a whole word, never inside
+        // another header, so e.g. "MC" can't grab an unrelated column.
         const hit = exact
           ? aliases.some((a) => header[c] === a)
-          : aliases.some((a) => header[c].includes(a));
+          : aliases.some((a) => (a.length <= 2 ? header[c].split(" ").includes(a) : header[c].includes(a)));
         if (hit) { foundCol = c; break; }
       }
       if (foundCol >= 0) break;
@@ -282,11 +359,108 @@ export function detectMapping(grid: unknown[][]): DetectResult | null {
     }
   }
 
+  // Rate + MC layout (e.g. Crown): "RATE" is the gold rate and there is an MC
+  // column but no separate selling-rate column -> sell = rate + MC per gram.
+  let priceMode: PriceMode = "rate";
+  if (columns.mc && columns.clientRate && !columns.goldRate) {
+    priceMode = "rate_plus_mc";
+    columns.goldRate = columns.clientRate;
+    assigned.goldRate = columns.clientRate;
+  }
+
+  const meta = detectMeta(grid, bestRow);
+
   const mapping: MasterlistMapping = normalize({
     ...DEFAULT_MASTERLIST_MAPPING,
     dataStartRow: bestRow + 2, // 1-based row right after the header
     columns,
+    liveDateCell: meta.liveDateCell,
+    pageCell: meta.pageCell,
+    rateCell: meta.rateCell,
+    priceMode,
+    // Only needed when the file has no Category column.
+    defaultCategory: columns.category ? "" : meta.defaultCategory,
   });
 
   return { mapping, headerRowIndex: bestRow, headerRow: rawHeader, assigned };
+}
+
+// ── Header-area metadata (date / page / rate / metal) ─────────────────────────
+
+const MONTHS = "jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec";
+const DATE_RE = new RegExp(
+  `^(?:[a-z]+day,?\\s*)?(?:(?:${MONTHS})[a-z]*\\.?\\s+\\d{1,2},?\\s+\\d{2,4}|\\d{1,2}\\s+(?:${MONTHS})[a-z]*\\.?,?\\s+\\d{2,4}|\\d{1,4}[/.-]\\d{1,2}[/.-]\\d{1,4})$`,
+  "i"
+);
+
+function looksLikeDate(v: unknown): boolean {
+  return DATE_RE.test(String(v ?? "").trim());
+}
+
+function toNumber(v: unknown): number {
+  const x = parseFloat(String(v ?? "").replace(/[,\s]/g, ""));
+  return Number.isFinite(x) ? x : NaN;
+}
+
+/** Title text with the words "masterlist"/"form" removed ("AMBIE MASTERLIST" -> "AMBIE"). */
+export function cleanTitle(v: unknown): string {
+  return String(v ?? "").replace(/\bmaster\s*list\b|\bform\b/gi, " ").replace(/\s+/g, " ").trim();
+}
+
+/**
+ * Look at the rows ABOVE the header and find where this customer keeps the
+ * live date, the page/store title, the sheet-wide rate, and whether it's a
+ * GOLD or SILVER list. Anything not found keeps the original default.
+ */
+function detectMeta(grid: unknown[][], headerRow: number): {
+  liveDateCell: string;
+  pageCell: string;
+  rateCell: string;
+  defaultCategory: string;
+} {
+  let liveDateCell = "";
+  let pageCell = "";
+  let rateCell = "";
+  let defaultCategory = "";
+
+  for (let r = 0; r < headerRow; r++) {
+    const row = grid[r] || [];
+    for (let c = 0; c < row.length; c++) {
+      const raw = String(row[c] ?? "").trim();
+      if (!raw) continue;
+      const up = raw.toUpperCase();
+
+      if (!liveDateCell && looksLikeDate(raw)) liveDateCell = indexToCol(c) + (r + 1);
+
+      if (!rateCell && /^(GOLD |SILVER )?RATE\s*:?$/.test(up)) {
+        for (let k = 1; k <= 4; k++) {
+          if (Number.isFinite(toNumber(row[c + k])) && toNumber(row[c + k]) > 0) {
+            rateCell = indexToCol(c + k) + (r + 1);
+            break;
+          }
+        }
+      }
+
+      if (!defaultCategory && (up === "GOLD" || up === "SILVER")) {
+        defaultCategory = up === "GOLD" ? "Gold Normal" : "Silver Normal";
+      }
+    }
+  }
+
+  // Page/store title: first text in column A of the top rows that isn't just a
+  // generic "Masterlist Form" heading or a "Label:".
+  for (let r = 0; r < Math.min(3, headerRow); r++) {
+    const v = String((grid[r] || [])[0] ?? "").trim();
+    if (!v || v.endsWith(":") || looksLikeDate(v)) continue;
+    if (!cleanTitle(v)) continue;
+    pageCell = "A" + (r + 1);
+    break;
+  }
+
+  return {
+    liveDateCell: liveDateCell || DEFAULT_MASTERLIST_MAPPING.liveDateCell,
+    pageCell: pageCell || DEFAULT_MASTERLIST_MAPPING.pageCell,
+    rateCell,
+    defaultCategory,
+  };
 }

@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/button';
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from '@/components/ui/sheet';
 import { Label } from '@/components/ui/label';
 import { toast } from 'sonner';
-import { createUpload, importRows, recordLastImport, getLastImport, undoLastImport, type LastImportInfo } from '@/lib/api';
+import { createUpload, importRows, recordLastImport, getLastImport, undoLastImport, checkDatabaseColumns, fixDatabaseColumns, type LastImportInfo } from '@/lib/api';
 import { parseMasterlistFile, type ParsedMasterlistRow, type ParsedSheetSummary } from '@/lib/masterlistImport';
 import { useDataOptions } from '@/lib/dataOptions';
 
@@ -37,6 +37,30 @@ export default function UploadMasterlistFAB({ onRefresh }: Props) {
   const [parsed, setParsed] = useState<Parsed | null>(null);
   const [lastImport, setLastImport] = useState<LastImportInfo | null>(null);
   const [undoing, setUndoing] = useState(false);
+  // Columns the app writes that this customer's Google Sheet doesn't have yet.
+  const [missingCols, setMissingCols] = useState<string[]>([]);
+  const [fixingCols, setFixingCols] = useState(false);
+
+  // Whenever a preview is shown, check the customer's sheet has every column
+  // the import writes (otherwise those values would be silently dropped).
+  useEffect(() => {
+    if (!parsed) { setMissingCols([]); return; }
+    checkDatabaseColumns().then((r) => setMissingCols(r.missing || [])).catch(() => setMissingCols([]));
+  }, [parsed]);
+
+  const doFixColumns = async () => {
+    setFixingCols(true);
+    try {
+      const r = await fixDatabaseColumns();
+      if (!r.success) { toast.error(r.error || 'Could not update the sheet'); return; }
+      toast.success(r.added.length ? `Added ${r.added.length} column(s) to the sheet: ${r.added.join(', ')}` : 'Sheet already has every column');
+      setMissingCols([]);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Could not update the sheet');
+    } finally {
+      setFixingCols(false);
+    }
+  };
   const fileRef = useRef<HTMLInputElement>(null);
   const dataOpts = useDataOptions();
 
@@ -231,6 +255,18 @@ export default function UploadMasterlistFAB({ onRefresh }: Props) {
               </div>
             )}
 
+            {/* Sheet format check */}
+            {missingCols.length > 0 && (
+              <div className="rounded-lg border border-warning/40 bg-warning/5 p-3 space-y-2">
+                <p className="text-xs font-medium text-warning flex items-center gap-1.5"><AlertTriangle className="h-3.5 w-3.5" /> This customer&apos;s Google Sheet is missing {missingCols.length} column(s)</p>
+                <p className="text-[11px] text-muted-foreground">{missingCols.join(', ')}</p>
+                <p className="text-[11px] text-muted-foreground">Values for these would be lost. Fix adds them at the end of the Database tab — existing columns and data aren&apos;t touched.</p>
+                <Button size="sm" variant="outline" onClick={doFixColumns} disabled={fixingCols} className="h-7 text-xs">
+                  {fixingCols ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : null} Fix sheet format
+                </Button>
+              </div>
+            )}
+
             {/* Sample rows */}
             <div className="rounded-lg border border-border overflow-x-auto">
               <table className="w-full text-[11px]">
@@ -241,7 +277,10 @@ export default function UploadMasterlistFAB({ onRefresh }: Props) {
                     <th className="text-left px-2 py-1.5">Cat</th>
                     <th className="text-right px-2 py-1.5">Qty</th>
                     <th className="text-right px-2 py-1.5">Grams</th>
+                    <th className="text-right px-2 py-1.5">Gold rate</th>
+                    <th className="text-right px-2 py-1.5">MC</th>
                     <th className="text-right px-2 py-1.5">Rate</th>
+                    <th className="text-right px-2 py-1.5">Amount</th>
                     <th className="text-left px-2 py-1.5">Cur</th>
                   </tr>
                 </thead>
@@ -253,8 +292,11 @@ export default function UploadMasterlistFAB({ onRefresh }: Props) {
                       <td className="px-2 py-1.5 truncate max-w-[90px]">{r.category}</td>
                       <td className="px-2 py-1.5 text-right">{r.qty}</td>
                       <td className="px-2 py-1.5 text-right">{r.grams}</td>
+                      <td className="px-2 py-1.5 text-right">{parseFloat(r.goldRate) > 0 ? r.goldRate : '—'}</td>
+                      <td className="px-2 py-1.5 text-right">{r.mc || '—'}</td>
                       <td className="px-2 py-1.5 text-right">{r.clientRate}</td>
-                      <td className="px-2 py-1.5">{r.currency}</td>
+                      <td className="px-2 py-1.5 text-right">{Math.round((parseFloat(r.grams) || 0) * (parseFloat(r.clientRate) || 0)).toLocaleString()}</td>
+                      <td className="px-2 py-1.5">{r.currency || 'AED'}</td>
                     </tr>
                   ))}
                 </tbody>

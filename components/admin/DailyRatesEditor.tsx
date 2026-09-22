@@ -18,6 +18,9 @@ import {
   unlockRatesForDate,
   hasRatesSnapshotForDate,
   serializeRatesConfig,
+  getRateMetal,
+  setRateMetal,
+  type RateMetal,
 } from '@/lib/ratesStore';
 import { SUPER_ADMIN_EMAILS } from '@/config/roles';
 import { saveRatesConfig } from '@/lib/api';
@@ -51,6 +54,12 @@ export default function DailyRatesEditor({ date }: Props) {
   const [stickyRetail, setStickyRetail] = useState('');
   const [stickyCost, setStickyCost] = useState('');
   const [stickyBrandedCost, setStickyBrandedCost] = useState('');
+  // Per-tenant: is the daily/sticky rate for silver, gold, or both?
+  const [metal, setMetal] = useState<RateMetal>(getRateMetal());
+  const showSilver = metal !== 'gold';
+  const showGold = metal !== 'silver';
+  const [stickyGold, setStickyGold] = useState('');
+  const [goldVal, setGoldVal] = useState('');
 
   useEffect(() => {
     if (date) setSelectedRateDate(date);
@@ -61,6 +70,7 @@ export default function DailyRatesEditor({ date }: Props) {
     setSilverRetailVal(String(snap.silverRetailRate));
     setSilverCostVal(String(snap.silverCostRate));
     setSilverBrandedCostVal(String(snap.silverBrandedCostRate));
+    setGoldVal(snap.goldRate ? String(snap.goldRate) : '');
     setIsLocked(isRateLockedForDate(selectedRateDate));
   }, [selectedRateDate, open]);
 
@@ -70,23 +80,41 @@ export default function DailyRatesEditor({ date }: Props) {
     setStickyRetail(String(s.silverRetailRate));
     setStickyCost(String(s.silverCostRate));
     setStickyBrandedCost(String(s.silverBrandedCostRate));
+    setStickyGold(s.goldRate ? String(s.goldRate) : '');
+    setMetal(getRateMetal());
   }, [open]);
+
+  const changeMetal = (m: RateMetal) => {
+    setRateMetal(m);
+    setMetal(m);
+    persistRatesToBackend();
+    toast.success(m === 'gold' ? 'Default rate is now GOLD for this customer' : m === 'both' ? 'Default rate now covers GOLD + SILVER' : 'Default rate is now SILVER for this customer');
+  };
 
   const saveSticky = () => {
     const retail = parseFloat(stickyRetail);
     const cost = parseFloat(stickyCost);
     const bcost = parseFloat(stickyBrandedCost);
-    if ([retail, cost, bcost].some(v => isNaN(v) || v <= 0)) {
-      toast.error('All rates must be positive numbers');
+    const gold = parseFloat(stickyGold);
+    if (showSilver && [retail, cost, bcost].some(v => isNaN(v) || v <= 0)) {
+      toast.error('All silver rates must be positive numbers');
       return;
     }
+    if (showGold && (isNaN(gold) || gold <= 0)) {
+      toast.error('Gold rate must be a positive number');
+      return;
+    }
+    const cur = getStickyRates();
     setStickyRates({
-      ...getStickyRates(),
-      silverRetailRate: retail,
-      silverSellRate: retail,
-      silverBrandedSellRate: retail,
-      silverCostRate: cost,
-      silverBrandedCostRate: bcost,
+      ...cur,
+      ...(showSilver ? {
+        silverRetailRate: retail,
+        silverSellRate: retail,
+        silverBrandedSellRate: retail,
+        silverCostRate: cost,
+        silverBrandedCostRate: bcost,
+      } : {}),
+      ...(showGold ? { goldRate: gold } : {}),
     });
     setStickySnap(getStickyRates());
     setEditingSticky(false);
@@ -102,18 +130,26 @@ export default function DailyRatesEditor({ date }: Props) {
     const retail = parseFloat(silverRetail);
     const cost = parseFloat(silverCost);
     const bcost = parseFloat(silverBrandedCost);
-    if (isNaN(retail) || retail <= 0) {
+    const gold = parseFloat(goldVal);
+    if (showSilver && (isNaN(retail) || retail <= 0)) {
       toast.error('Silver Retail Rate must be a positive number');
+      return;
+    }
+    if (showGold && (isNaN(gold) || gold <= 0)) {
+      toast.error('Gold Rate must be a positive number');
       return;
     }
     const existing = getRatesForDate(selectedRateDate);
     saveRatesForDate(selectedRateDate, {
       ...existing,
-      silverRetailRate: retail,
-      silverSellRate: retail,
-      silverBrandedSellRate: retail,
-      silverCostRate: (!isNaN(cost) && cost > 0) ? cost : existing.silverCostRate,
-      silverBrandedCostRate: (!isNaN(bcost) && bcost > 0) ? bcost : existing.silverBrandedCostRate,
+      ...(showSilver ? {
+        silverRetailRate: retail,
+        silverSellRate: retail,
+        silverBrandedSellRate: retail,
+        silverCostRate: (!isNaN(cost) && cost > 0) ? cost : existing.silverCostRate,
+        silverBrandedCostRate: (!isNaN(bcost) && bcost > 0) ? bcost : existing.silverBrandedCostRate,
+      } : {}),
+      ...(showGold ? { goldRate: gold } : {}),
     });
     lockRatesForDate(selectedRateDate);
     setIsLocked(true);
@@ -147,9 +183,16 @@ export default function DailyRatesEditor({ date }: Props) {
         <Settings2 className="h-3.5 w-3.5 text-primary shrink-0" />
         <span className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">Daily Rates</span>
         <span className="text-[10px] text-foreground ml-1">
-          Ag Retail <span className="text-primary font-semibold">{snap.silverRetailRate}</span>
-          &nbsp;·&nbsp; Cost <span className="text-primary font-semibold">{snap.silverCostRate}</span>
-          &nbsp;·&nbsp; B.Cost <span className="text-primary font-semibold">{snap.silverBrandedCostRate}</span>
+          {showGold && (
+            <>Gold <span className="text-primary font-semibold">{snap.goldRate || '—'}</span>{showSilver && <>&nbsp;·&nbsp;</>}</>
+          )}
+          {showSilver && (
+            <>
+              Ag Retail <span className="text-primary font-semibold">{snap.silverRetailRate}</span>
+              &nbsp;·&nbsp; Cost <span className="text-primary font-semibold">{snap.silverCostRate}</span>
+              &nbsp;·&nbsp; B.Cost <span className="text-primary font-semibold">{snap.silverBrandedCostRate}</span>
+            </>
+          )}
         </span>
         {!hasDateOverride && (
           <Pin className="h-3 w-3 text-info ml-1 shrink-0" />
@@ -163,6 +206,25 @@ export default function DailyRatesEditor({ date }: Props) {
       {open && (
         <div className="mt-2 px-3 py-3 rounded-lg bg-card border border-border space-y-3 animate-in fade-in slide-in-from-top-2 duration-200">
 
+          {/* ── RATE METAL (per customer) ── */}
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider shrink-0">Rate for</span>
+            {(['silver', 'gold', 'both'] as RateMetal[]).map(m => (
+              <button
+                key={m}
+                type="button"
+                disabled={!isSuperAdmin}
+                onClick={() => changeMetal(m)}
+                className={`text-[10px] px-2.5 py-1 rounded border transition-colors disabled:opacity-60 ${
+                  metal === m ? 'bg-primary text-primary-foreground border-primary' : 'border-border text-muted-foreground hover:text-foreground'
+                }`}
+              >
+                {m === 'silver' ? 'Silver' : m === 'gold' ? 'Gold' : 'Gold + Silver'}
+              </button>
+            ))}
+            <span className="text-[10px] text-muted-foreground ml-1">(this customer only)</span>
+          </div>
+
           {/* ── STICKY DEFAULT RATE SECTION ── */}
           <div className="rounded-md border border-info/30 bg-info/5 px-3 py-2.5 space-y-2">
             <div className="flex items-center justify-between">
@@ -172,7 +234,8 @@ export default function DailyRatesEditor({ date }: Props) {
               </div>
               <div className="flex items-center gap-2">
                 <span className="text-[10px] text-muted-foreground">
-                  Retail <strong>{stickySnap.silverRetailRate}</strong> · Cost <strong>{stickySnap.silverCostRate}</strong> · B.Cost <strong>{stickySnap.silverBrandedCostRate}</strong>
+                  {showGold && <>Gold <strong>{stickySnap.goldRate || '—'}</strong>{showSilver && ' · '}</>}
+                  {showSilver && <>Retail <strong>{stickySnap.silverRetailRate}</strong> · Cost <strong>{stickySnap.silverCostRate}</strong> · B.Cost <strong>{stickySnap.silverBrandedCostRate}</strong></>}
                 </span>
                 <Button
                   variant="outline"
@@ -191,6 +254,14 @@ export default function DailyRatesEditor({ date }: Props) {
 
             {editingSticky && (
               <div className="space-y-2 pt-1 border-t border-info/20">
+                {showGold && (
+                  <div className="flex items-center gap-3">
+                    <span className="text-xs text-muted-foreground w-40 shrink-0">Gold Rate (AED/g)</span>
+                    <Input type="number" step="0.01" value={stickyGold} onChange={e => setStickyGold(e.target.value)}
+                      placeholder="e.g. 426.25" className="h-7 text-xs bg-background border-border w-24" />
+                  </div>
+                )}
+                {showSilver && (<>
                 <div className="flex items-center gap-3">
                   <span className="text-xs text-muted-foreground w-40 shrink-0">Silver Retail (AED/g)</span>
                   <Input type="number" step="0.5" value={stickyRetail} onChange={e => setStickyRetail(e.target.value)}
@@ -206,6 +277,7 @@ export default function DailyRatesEditor({ date }: Props) {
                   <Input type="number" step="0.5" value={stickyBrandedCost} onChange={e => setStickyBrandedCost(e.target.value)}
                     className="h-7 text-xs bg-background border-border w-24" />
                 </div>
+                </>)}
                 <Button size="sm" className="text-xs h-7 bg-info text-white hover:bg-info" onClick={saveSticky}>
                   <Pin className="h-3 w-3 mr-1" /> Save as Default
                 </Button>
@@ -261,12 +333,28 @@ export default function DailyRatesEditor({ date }: Props) {
 
           {!isSuperAdmin ? (
             <div className="space-y-1 text-xs text-muted-foreground">
+              {showGold && <div className="flex justify-between"><span>Gold Rate</span><span className="font-semibold text-foreground">{snap.goldRate || '—'}</span></div>}
+              {showSilver && <>
               <div className="flex justify-between"><span>Silver Retail Rate</span><span className="font-semibold text-foreground">{snap.silverRetailRate}</span></div>
               <div className="flex justify-between"><span>Silver Cost (Non-Branded)</span><span className="font-semibold text-foreground">{snap.silverCostRate}</span></div>
               <div className="flex justify-between"><span>Silver Cost (Branded)</span><span className="font-semibold text-foreground">{snap.silverBrandedCostRate}</span></div>
+              </>}
             </div>
           ) : (
             <>
+              {showGold && (
+                <>
+                  <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">Gold</p>
+                  <div className="flex items-center gap-3">
+                    <span className="text-xs text-muted-foreground w-40 shrink-0">Gold Rate (AED/g)</span>
+                    <Input type="number" step="0.01" value={goldVal} onChange={e => setGoldVal(e.target.value)}
+                      placeholder="e.g. 426.25" disabled={isLocked}
+                      className="h-7 text-xs bg-background border-border w-24 disabled:opacity-50" />
+                  </div>
+                  {showSilver && <div className="h-px bg-border" />}
+                </>
+              )}
+              {showSilver && (<>
               <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">Silver Retail (selling price for all silver)</p>
               <div className="flex items-center gap-3">
                 <span className="text-xs text-muted-foreground w-40 shrink-0">Retail Rate (AED/g)</span>
@@ -289,6 +377,7 @@ export default function DailyRatesEditor({ date }: Props) {
                   placeholder="27" disabled={isLocked}
                   className="h-7 text-xs bg-background border-border w-24 disabled:opacity-50" />
               </div>
+              </>)}
             </>
           )}
 

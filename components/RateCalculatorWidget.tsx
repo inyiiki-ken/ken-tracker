@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { Calculator, X } from 'lucide-react';
 import { Input } from '@/components/ui/input';
-import { getRatesForDate } from '@/lib/ratesStore';
+import { getRatesForDate, getRateMetal } from '@/lib/ratesStore';
 
 function todayKey(): string {
   const now = new Date();
@@ -18,12 +18,14 @@ type Category = 'silver' | 'silver_branded' | 'gold';
 export default function RateCalculatorWidget() {
   const [open, setOpen] = useState(false);
   const [grams, setGrams] = useState('');
-  const [category, setCategory] = useState<Category>('silver');
+  // Gold-rate customers open on the Gold tab; everyone else keeps Silver.
+  const [category, setCategory] = useState<Category>(() => (getRateMetal() === 'gold' ? 'gold' : 'silver'));
   const [goldRate, setGoldRate] = useState('');
 
   const rates = getRatesForDate(todayKey());
   const gramsNum = parseFloat(grams) || 0;
-  const goldRateNum = parseFloat(goldRate) || 0;
+  // Typed rate wins; otherwise fall back to today's Daily/Sticky gold rate.
+  const goldRateNum = parseFloat(goldRate) || rates.goldRate || 0;
 
   let priceAED = 0;
   if (category === 'silver') priceAED = gramsNum * rates.silverSellRate;
@@ -98,7 +100,7 @@ export default function RateCalculatorWidget() {
                 <label className="text-[10px] block mb-1 text-muted-foreground">Gold Rate (AED/g)</label>
                 <Input
                   type="number"
-                  placeholder="e.g. 210"
+                  placeholder={rates.goldRate ? String(rates.goldRate) : "e.g. 210"}
                   value={goldRate}
                   onChange={e => setGoldRate(e.target.value)}
                   className="h-8 text-sm"

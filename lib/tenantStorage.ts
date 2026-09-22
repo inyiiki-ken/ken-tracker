@@ -27,6 +27,8 @@ const SCOPED_KEYS = [
   "pricing_config",
   "tab_config",
   "rates_current_default",
+  "rate_metal_mode",
+  "myDeals_selectedLiver",
 ];
 
 /** rates_YYYY-MM-DD and rates_lock_* are per-date, so match them by prefix. */
@@ -45,8 +47,27 @@ function clearScopedStorage(): void {
 }
 
 /**
+ * Call right BEFORE switching workspace + reloading. Clears this browser's cached
+ * settings and stamps the new tenant, so after the reload every settings module
+ * starts from clean defaults and then loads ONLY the new customer's own config.
+ *
+ * Why this matters: each settings module (pricing, masterlist mapping, labels…)
+ * boots from this cache, and a customer who has never saved a given setting has
+ * nothing to overwrite it with — so without clearing, customer B would silently
+ * run on customer A's settings (and saving in B would copy A's into B's sheet).
+ */
+export function prepareTenantSwitch(nextTenantId: string): void {
+  if (typeof localStorage === "undefined") return;
+  clearScopedStorage();
+  try { localStorage.setItem(TENANT_MARKER, String(nextTenantId ?? "").trim()); } catch { /* ignore */ }
+}
+
+/**
  * Call once the active tenant is known. Returns true if the workspace changed
- * (and the stale cache was cleared), so the caller can re-load fresh config.
+ * (and the stale cache was cleared). The caller must then do a FULL page reload
+ * (not just re-fetch): the settings modules keep their values in memory, and a
+ * customer with no saved value for a setting would otherwise keep the previous
+ * customer's value.
  */
 export function ensureTenantScope(tenantId: string | null | undefined): boolean {
   if (typeof localStorage === "undefined") return false;

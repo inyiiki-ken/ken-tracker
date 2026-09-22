@@ -16,6 +16,7 @@ import {
   getRatesForDate, saveRatesForDate,
   DEFAULT_PHP_RATE, DEFAULT_SILVER_SELL_RATE, DEFAULT_SILVER_BRANDED_SELL_RATE,
   DEFAULT_SILVER_COST_RATE, DEFAULT_SILVER_BRANDED_COST_RATE,
+  usesGold,
 } from '@/lib/ratesStore';
 import { DatabaseRowType } from '@/types';
 import { getOptions } from '@/lib/optionsConfig';
@@ -99,6 +100,8 @@ export default function AddClientModal({ onClose, userFirstName, userEmail, onRe
   const [silverBrandedSellRate, setSilverBrandedSellRateVal] = useState(() => String(todayRates.silverBrandedSellRate));
   const [silverCostRate, setSilverCostRateVal] = useState(() => String(todayRates.silverCostRate));
   const [silverBrandedCostRate, setSilverBrandedCostRateVal] = useState(() => String(todayRates.silverBrandedCostRate));
+  // Gold tenants: pre-fill the gold rate from the Daily/Sticky gold rate.
+  const defaultGoldRate = usesGold() && todayRates.goldRate > 0 ? String(todayRates.goldRate) : '';
   const [form, setForm] = useState({
     minerName: '',
     itemDescription: '',
@@ -106,7 +109,7 @@ export default function AddClientModal({ onClose, userFirstName, userEmail, onRe
     mc: '',
     grams: '',
     clientRate: '',
-    goldRate: '',
+    goldRate: defaultGoldRate,
     orderId: '',
     currency: 'AED',
     modeOfPayment: '',
@@ -275,6 +278,7 @@ export default function AddClientModal({ onClose, userFirstName, userEmail, onRe
         silverCostRate: safeSilverCost,
         silverBrandedCostRate: safeSilverBrandedCost,
         silverRetailRate: safeSilverSell,
+        goldRate: getRatesForDate(form.dateOfLive).goldRate,
       });
       
       toast.success(isBulkAdd ? 'Item added! Ready for next item.' : 'Client record created');
@@ -289,7 +293,7 @@ export default function AddClientModal({ onClose, userFirstName, userEmail, onRe
           tog: '', 
           category: '', 
           mc: '', 
-          goldRate: '', 
+          goldRate: defaultGoldRate, 
           clientRate: '', 
           supplierRateOverride: '' 
         }));

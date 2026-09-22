@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
 import { getMyContext, switchTenant, saveTenant } from "@/lib/tenancy";
+import { prepareTenantSwitch } from "@/lib/tenantStorage";
 import { backfillRowKeys } from "@/lib/api";
 import type { MyContext, Tenant } from "@/lib/tenancy-types";
 import NewCustomerWizard from "@/components/godmode/NewCustomerWizard";
@@ -57,6 +58,8 @@ export default function GodModePanel() {
     setSwitching(t.tenantId);
     try {
       await switchTenant({ tenantId: t.tenantId });
+      // Drop the previous customer's cached settings so nothing carries over.
+      prepareTenantSwitch(t.tenantId);
       toast.success(`Switched to ${t.displayName}. Reloading…`);
       setTimeout(() => window.location.reload(), 500);
     } catch (err) {

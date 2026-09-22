@@ -136,7 +136,10 @@ function AppContent() {
         setDevContext(ctx);
         // Wipe any cached config/rates belonging to a DIFFERENT customer, then
         // reload so money is never computed with another workspace's numbers.
-        if (ensureTenantScope(ctx?.activeTenant?.tenantId)) fetchData();
+        // Full reload (not just fetchData): settings live in memory too, and a
+        // customer who never saved a setting would otherwise inherit the
+        // previous customer's value.
+        if (ensureTenantScope(ctx?.activeTenant?.tenantId)) window.location.reload();
       })
       .catch(() => setDevContext(null))
       .finally(() => setDevReady(true));

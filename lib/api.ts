@@ -50,6 +50,8 @@ export {
   getCustomToggles,
   saveCustomToggles,
   backfillRowKeys,
+  checkDatabaseColumns,
+  fixDatabaseColumns,
   getMasterlistTemplate,
   saveMasterlistTemplate,
   clearMasterlistTemplate,

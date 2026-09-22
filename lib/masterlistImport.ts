@@ -1,8 +1,12 @@
 import {
   getMasterlistMapping,
   resolveMasterlistMapping,
+  cleanTitle,
+  categoryForMc,
+  type MasterlistMapping,
   type ResolvedMasterlistMapping,
 } from "./masterlistMapping";
+import { usesGold, getRatesForDate } from "./ratesStore";
 
 /**
  * Replaces the old Apps Script processUpload() entirely. Instead of
@@ -41,6 +45,7 @@ export interface ParsedMasterlistRow {
   source: string;
   category: string;
   goldRate: string;
+  mc: string;
   clientRate: string;
   currency: string;
   qty: string;
@@ -73,6 +78,17 @@ export interface ParsedSheetSummary {
 function isNonMasterlistSheet(name: string): boolean {
   const n = name.trim().toUpperCase().replace(/[’']/g, "'");
   return n === "DATA'S" || n === "DATA" || n === "DATAS" || n.startsWith("DATA'S");
+}
+
+/** Number from a cell, tolerant of spaces and thousands commas (" 2,861.78 "). */
+function toNum(v: string): number {
+  const x = parseFloat(String(v ?? "").replace(/[,\s]/g, ""));
+  return Number.isFinite(x) ? x : 0;
+}
+
+/** "Tuesday, August 25, 2026" -> "August 25, 2026" (weekday confuses date parsing). */
+function cleanDate(v: string): string {
+  return String(v ?? "").trim().replace(/^[a-z]+day,?\s+/i, "");
 }
 
 /** Read a cell by 0-based col index (or "" if the column isn't mapped/present). */
@@ -115,10 +131,20 @@ function parseSheetGrid(data: unknown[][], m: ResolvedMasterlistMapping): {
     }
   }
 
+  // A fixed rate cell (set by the import setup) beats the label search.
+  if (m.rateCell) {
+    const v = toNum(String(data[m.rateCell.row]?.[m.rateCell.col] ?? ""));
+    if (v > 0) globalRate = v;
+  }
+
   const liveDate = m.liveDate && data[m.liveDate.row]?.[m.liveDate.col] != null
-    ? String(data[m.liveDate.row][m.liveDate.col]) : "";
+    ? cleanDate(String(data[m.liveDate.row][m.liveDate.col])) : "";
   const pageName = m.page && data[m.page.row]?.[m.page.col] != null
-    ? String(data[m.page.row][m.page.col]) : "";
+    ? cleanTitle(data[m.page.row][m.page.col]) : "";
+
+  // Gold-rate customers: if the file has no rate at all, use the Daily/Sticky gold rate.
+  let fallbackGold = globalRate;
+  if (!fallbackGold && usesGold()) fallbackGold = getRatesForDate(liveDate).goldRate || 0;
 
   const rows: ParsedMasterlistRow[] = [];
 
@@ -132,14 +158,31 @@ function parseSheetGrid(data: unknown[][], m: ResolvedMasterlistMapping): {
     if (!code || !minerName || !itemDescription) continue;
 
     const currency = cell(row, m.col.currency).toUpperCase();
-    const category = cell(row, m.col.category);
+    const mcForCat = toNum(cell(row, m.col.mc));
+    const category = cell(row, m.col.category) || categoryForMc(m.mcCategories, mcForCat) || m.defaultCategory;
     const source = cell(row, m.col.source);
     const qty = String(parseInt(cell(row, m.col.qty), 10) || 1);
     const tog = cell(row, m.col.tog);
     const grams = String(parseFloat(cell(row, m.col.grams)) || 0);
 
-    let clientRate = parseFloat(cell(row, m.col.clientRate));
-    if (isNaN(clientRate) || clientRate === 0) clientRate = parseFloat(cell(row, m.col.amount)) || 0;
+    const mc = toNum(cell(row, m.col.mc));
+    const rowGold = toNum(cell(row, m.col.goldRate));
+    const goldRate = rowGold > 0 ? rowGold : fallbackGold;
+
+    let clientRate: number;
+    if (m.priceMode === "rate_plus_mc") {
+      // e.g. Crown: selling rate per gram = gold rate + MC (AMOUNT = WT x (RATE + MC)).
+      const base = toNum(cell(row, m.col.clientRate)) || goldRate;
+      clientRate = base > 0 ? base + mc : 0;
+      if (!clientRate) {
+        const amt = toNum(cell(row, m.col.amount));
+        const g = toNum(grams);
+        clientRate = amt > 0 && g > 0 ? amt / g : amt;
+      }
+    } else {
+      clientRate = parseFloat(cell(row, m.col.clientRate));
+      if (isNaN(clientRate) || clientRate === 0) clientRate = toNum(cell(row, m.col.amount));
+    }
 
     const remarks = cell(row, m.col.remarks);
     // Address + Number are the client's delivery details — NOT "Review Chasing".
@@ -157,7 +200,8 @@ function parseSheetGrid(data: unknown[][], m: ResolvedMasterlistMapping): {
       grams,
       source,
       category,
-      goldRate: String(globalRate),
+      goldRate: String(goldRate),
+      mc: mc ? String(mc) : "",
       clientRate: String(clientRate),
       currency,
       qty,
@@ -184,7 +228,7 @@ function parseSheetGrid(data: unknown[][], m: ResolvedMasterlistMapping): {
  * FIRST sheet that produced rows (kept for the existing upload-label caller);
  * `sheets` gives the full per-sheet breakdown.
  */
-export async function parseMasterlistFile(file: File): Promise<{
+export async function parseMasterlistFile(file: File, mappingOverride?: MasterlistMapping): Promise<{
   rows: ParsedMasterlistRow[];
   liverName: string;
   pageName: string;
@@ -198,7 +242,7 @@ export async function parseMasterlistFile(file: File): Promise<{
   const workbook = XLSX.read(buffer, { type: "array", cellDates: false });
 
   // Resolve the customer's configured column layout once for this file.
-  const resolved = resolveMasterlistMapping(getMasterlistMapping());
+  const resolved = resolveMasterlistMapping(mappingOverride ?? getMasterlistMapping());
 
   const rows: ParsedMasterlistRow[] = [];
   const sheets: ParsedSheetSummary[] = [];

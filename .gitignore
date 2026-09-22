@@ -15,3 +15,8 @@ outputs
 .env.local
 .env.*.local
 desktop/*.env
+
+# downloaded Google keys
+key.json
+*service-account*.json
+mykabayan-tracker-*.json

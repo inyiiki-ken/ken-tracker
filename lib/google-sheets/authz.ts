@@ -1,7 +1,7 @@
 import "server-only";
 import { getActiveWorksheet } from "./tenant-context";
 import { ROLES_HEADERS } from "./sheet-config";
-import { getSessionEmail, isDeveloper } from "./tenancy-core";
+import { getSessionEmail, isDeveloper, getActiveSheetId } from "./tenancy-core";
 import { getUserRole } from "@/config/roles";
 
 /**
@@ -18,12 +18,17 @@ function authzEnabled(): boolean {
   return process.env.DISABLE_SERVER_AUTHZ !== "true";
 }
 
-// Small cache so we don't re-read the Roles sheet on every action.
-let rolesCache: { at: number; rows: { email: string; role: string }[] } | null = null;
+// Small cache so we don't re-read the Roles sheet on every action. KEYED BY
+// CUSTOMER SHEET: one shared cache let one customer's roles answer permission
+// checks for another customer for up to 30s on a shared server (Vercel).
+const rolesCache = new Map<string, { at: number; rows: { email: string; role: string }[] }>();
 const ROLES_TTL_MS = 30_000;
 
 async function getRolesData(): Promise<{ email: string; role: string }[]> {
-  if (rolesCache && Date.now() - rolesCache.at < ROLES_TTL_MS) return rolesCache.rows;
+  let sheetId = "";
+  try { sheetId = await getActiveSheetId(); } catch { return []; }
+  const cached = rolesCache.get(sheetId);
+  if (cached && Date.now() - cached.at < ROLES_TTL_MS) return cached.rows;
   try {
     const sheet = await getActiveWorksheet("roles");
     const rows = await sheet.getRows();
@@ -31,7 +36,7 @@ async function getRolesData(): Promise<{ email: string; role: string }[]> {
       email: String(r.get(ROLES_HEADERS.email) ?? ""),
       role: String(r.get(ROLES_HEADERS.role) ?? ""),
     }));
-    rolesCache = { at: Date.now(), rows: data };
+    rolesCache.set(sheetId, { at: Date.now(), rows: data });
     return data;
   } catch {
     return [];

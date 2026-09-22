@@ -1,6 +1,6 @@
 import { DatabaseRowType } from '@/types';
 import { parseISO, isValid, parse } from 'date-fns';
-import { getRatesForDate, RateSnapshot } from '@/lib/ratesStore';
+import { getRatesForDate, RateSnapshot, usesGold } from '@/lib/ratesStore';
 import { parseBillingModifiers, getTotalChargesAED, getTotalDiscountsAED } from '@/lib/billingModifiers';
 import { getTimezoneOffsetMs } from '@/lib/businessConfig';
 import { getUsdToAed, getPerPcFallback, getB1t1Multiplier, getCcSurchargeRate, getShippingFeeForRegion, getShippingFeeInternational, getShippingFeeMeetUp } from '@/lib/pricingConfig';
@@ -239,14 +239,14 @@ export function calcItemCostAED(record: DatabaseRowType): number {
   const category = (record.category || '').toLowerCase();
   const desc = (record.itemDescription || '').toLowerCase();
   const grams = n(record.grams);
-  const goldRate = n(record.goldRate);
+  const rowGoldRate = n(record.goldRate);
   const supplierRate = n(record.supplierRate);
   
   if (category.includes('diamond')) return roundPrice(supplierRate * getQty(record));
 
   if (category.includes('per pc') || category.includes('screw type')) {
     const fallback = getPerPcFallback();
-    let rate = supplierRate > 0 ? supplierRate : goldRate > 0 ? goldRate : fallback;
+    let rate = supplierRate > 0 ? supplierRate : rowGoldRate > 0 ? rowGoldRate : fallback;
     // B1T1 multiplier only applies when we're on the fallback per-pc price.
     if (rate === fallback && (desc.includes('buy 1 take 1') || desc.includes('b1t1'))) rate *= getB1t1Multiplier();
     return roundPrice(rate * getQty(record));
@@ -255,6 +255,12 @@ export function calcItemCostAED(record: DatabaseRowType): number {
   const snap = getRatesForDate(record.dateOfLive || '');
   if (category.includes('silver branded')) return roundPrice(snap.silverBrandedCostRate * grams);
   if (category.includes('silver')) return roundPrice(snap.silverCostRate * grams);
+
+  // Gold-rate customers only: a gold item with no gold rate on the row falls back
+  // to that day's Daily/Sticky gold rate. Silver-only customers (the default)
+  // never reach this, so their numbers are unchanged.
+  const goldRate = rowGoldRate > 0 ? rowGoldRate
+    : (usesGold() && snap.goldRate > 0 && !category.includes('silver') ? snap.goldRate : 0);
 
   if (goldRate > 0) {
     // FORCE MC TO 16/21/25 IF EMPTY OR ZERO
@@ -272,6 +278,11 @@ export function calcItemCostAED(record: DatabaseRowType): number {
   return 0;
 }
 
+/** Gold-rate customers: true when a daily/sticky gold rate can price this row. */
+function hasDailyGold(record: DatabaseRowType): boolean {
+  return usesGold() && getRatesForDate(record.dateOfLive || '').goldRate > 0;
+}
+
 export function calcProfitNative(record: DatabaseRowType): number {
   if (isUnitMode()) {
     const costAED = calcItemCostAED(record);
@@ -287,7 +298,7 @@ export function calcProfitNative(record: DatabaseRowType): number {
   const grams = n(record.grams);
 
   if (!isSilver && !isPerPcType && grams > 0) {
-    if (n(record.goldRate) === 0 && n(record.supplierRate) === 0) return 0;
+    if (n(record.goldRate) === 0 && n(record.supplierRate) === 0 && !hasDailyGold(record)) return 0;
   }
 
   const costAED = calcItemCostAED(record);
@@ -317,7 +328,7 @@ export function calcProfitAED(record: DatabaseRowType): number {
   const isPerPcType = category.includes('per pc') || category.includes('screw type') || category.includes('diamond');
 
   if (!isSilver && !isPerPcType && grams > 0) {
-    if (n(record.goldRate) === 0 && n(record.supplierRate) === 0) return 0;
+    if (n(record.goldRate) === 0 && n(record.supplierRate) === 0 && !hasDailyGold(record)) return 0;
   }
 
   const ccFeeDeduction = record.modeOfPayment === 'Credit Card' ? roundPrice(calcItemPriceAED(record) * getCcSurchargeRate()) : 0;

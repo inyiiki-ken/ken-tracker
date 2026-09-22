@@ -6,7 +6,7 @@ import { readConfig, writeConfig, readConfigByPrefix, deleteConfigMarker, readCo
 import { parseSheetId } from "./sheetId";
 import { requireSession, requireRole } from "./authz";
 import { rowToDatabaseRecord, databaseRecordToRow } from "./row-mapper";
-import { DATABASE_HEADERS, ROLES_HEADERS, UPLOADS_HEADERS } from "./sheet-config";
+import { DATABASE_HEADERS, DATABASE_HEADER_ALIASES, ROLES_HEADERS, UPLOADS_HEADERS } from "./sheet-config";
 import type { DatabaseRowType } from "@/types";
 import { buildCustomerIdIndex, resolveCustomerIdFor } from "@/lib/customerId";
 
@@ -603,6 +603,61 @@ export async function importRows(params: {
   }
 
   return { success: errors.length === 0, createdCount: created, errors };
+}
+
+// ---------- Database column check / fix (per customer sheet) ----------
+
+/**
+ * Database columns the app writes that the ACTIVE customer's sheet doesn't have
+ * yet (an accepted alternate name, e.g. "Address" for "Client Address", counts
+ * as present). Values for a missing column are silently dropped on import, so
+ * the upload preview warns about these and offers fixDatabaseColumns().
+ */
+export async function checkDatabaseColumns(): Promise<{ missing: string[]; error?: string }> {
+  await requireSession();
+  try {
+    const sheet = await getActiveWorksheet("database");
+    await sheet.loadHeaderRow();
+    const have = new Set((sheet.headerValues ?? []).map((h) => String(h ?? "").trim()));
+    const extra = await getTenantColumnAliases();
+    const missing: string[] = [];
+    for (const [key, header] of Object.entries(DATABASE_HEADERS)) {
+      if (have.has(header)) continue;
+      const alts = [...(DATABASE_HEADER_ALIASES[key] ?? []), ...(extra[key] ?? [])];
+      if (alts.some((a) => have.has(a))) continue;
+      missing.push(header);
+    }
+    return { missing };
+  } catch (err) {
+    return { missing: [], error: err instanceof Error ? err.message : "Could not read the Database tab" };
+  }
+}
+
+/**
+ * Adds the missing columns to the END of the active customer's Database header
+ * row. Never renames, moves or deletes existing columns or data. Only touches
+ * the customer currently selected.
+ */
+export async function fixDatabaseColumns(): Promise<{ success: boolean; added: string[]; error?: string }> {
+  await requireRole(["admin", "super_admin"]);
+  const { missing, error } = await checkDatabaseColumns();
+  if (error) return { success: false, added: [], error };
+  if (missing.length === 0) return { success: true, added: [] };
+  try {
+    const sheet = await getActiveWorksheet("database");
+    await sheet.loadHeaderRow();
+    const current = [...(sheet.headerValues ?? [])].map((h) => String(h ?? ""));
+    while (current.length && !current[current.length - 1].trim()) current.pop();
+    const next = [...current, ...missing];
+    if (sheet.columnCount < next.length) {
+      await sheet.resize({ rowCount: sheet.rowCount, columnCount: next.length });
+    }
+    await sheet.setHeaderRow(next);
+    invalidateActiveRows();
+    return { success: true, added: missing };
+  } catch (err) {
+    return { success: false, added: [], error: err instanceof Error ? err.message : "Could not update the sheet" };
+  }
 }
 
 /**
