@@ -1,0 +1,17 @@
+node_modules
+.next
+out
+dist
+uploads
+outputs
+.vercel
+*.exe
+*.blockmap
+*.log
+*.tsbuildinfo
+
+# secrets — never commit
+.env
+.env.local
+.env.*.local
+desktop/*.env

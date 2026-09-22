@@ -1,0 +1,21 @@
+# Vercel installs dependencies and builds on its own, so don't upload any of
+# this. Also keeps local secrets and the desktop/electron artifacts off Vercel.
+node_modules
+.next
+out
+dist
+electron
+desktop
+uploads
+outputs
+.git
+.vercel
+*.exe
+*.blockmap
+*.log
+*.tsbuildinfo
+
+# local secrets — env vars are set in the Vercel dashboard instead
+.env
+.env.local
+.env.*.local

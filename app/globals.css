@@ -1,0 +1,299 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+  Palette extracted exactly from your myk3-v7.html prototype's :root block.
+  This is a deliberate pivot from the emerald/light theme I built earlier
+  (which came from the OLD compiled bundle) to this dark gold "luxury
+  jewellery" look, which your prototype shows as the real target design.
+*/
+@layer base {
+  :root {
+    --background: 30 5% 8%;        /* #151413 */
+    --foreground: 0 0% 98%;        /* #FBFBFB */
+    --muted: 36 8% 14%;
+    --muted-foreground: 51 30% 55%;
+    --border: 51 20% 18%;
+    --input: 51 20% 18%;
+    --card: 36 10% 10%;            /* #1C1A17 */
+    --card-foreground: 0 0% 98%;
+    --popover: 36 10% 10%;
+    --popover-foreground: 0 0% 98%;
+
+    /* Gold gradient stops, used directly (not just as --primary) since the
+       prototype's signature look is a 4-stop gold gradient on text/buttons/
+       left-border-accents, not a single flat brand color. */
+    --gold-1: 46 68% 47%;  /* #C9A227 */
+    --gold-2: 51 100% 50%; /* #FFD700 */
+    --gold-3: 51 50% 62%;  /* #CEBF6D */
+    --gold-4: 43 72% 37%;  /* #A47E1B */
+
+    --primary: 51 100% 50%;        /* g2, brightest gold -- used for solid accents */
+    --primary-foreground: 30 5% 8%;
+    --secondary: 36 8% 14%;
+    --secondary-foreground: 0 0% 98%;
+    --accent: 51 50% 62%;
+    --accent-foreground: 30 5% 8%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 98%;
+    --ring: 51 100% 50%;
+    /* Softer corners across the app — the sharp 0.25rem read as dated and
+       fought the rounded dashboard cards. */
+    --radius: 0.6rem;
+
+    /* Status/badge semantic colors, matching .bp/.bw/.bf/.bd2/.bv/.bx exactly */
+    --status-pending: 51 50% 62%;      /* gold */
+    --status-waiting: 217 91% 70%;     /* blue */
+    --status-pullout: 271 70% 72%;     /* purple */
+    --status-dispatched: 33 90% 62%;   /* orange */
+    --status-delivered: 142 71% 60%;   /* green */
+    --status-cancelled: 0 72% 70%;     /* red */
+
+    /* Semantic meaning colours. These replace hardcoded Tailwind shades
+       (text-green-400, bg-amber-500, …) which were tuned for the dark theme
+       and turn illegible on white when a customer picks light mode.
+       applyBrandSettingsToDom() swaps these for higher-contrast values in
+       light mode, so meaning survives the theme switch. */
+    --success: 142 69% 58%;    /* paid, delivered, balance clear */
+    --warning: 27 96% 61%;     /* owed, needs attention */
+    --info: 187 86% 53%;       /* verification, informational */
+    --attention: 48 96% 53%;   /* review / chasing */
+    --hold: 255 92% 76%;       /* on hold, overpaid */
+
+    --font-cinzel: "Cinzel", serif;
+    --font-lato: "Lato", system-ui, sans-serif;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground font-sans;
+    /* Crisper rendering for the app's many small-text elements */
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+    /* Diamond/gem lattice texture from the prototype, very low opacity */
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='56' height='100' viewBox='0 0 56 100'%3E%3Cpath d='M28 66L0 50L0 16L28 0L56 16L56 50L28 66ZM28 100L0 84L0 50L28 34L56 50L56 84L28 100Z' fill='none' stroke='%23CEBF6D' stroke-width='0.4' opacity='0.06'/%3E%3C/svg%3E");
+    background-attachment: fixed;
+  }
+  h1, h2, h3, .invoice-title, .metric-highlight {
+    @apply font-cinzel;
+  }
+
+  /* Keyboard-accessible focus ring, themed to the gold accent. Only shows on
+     keyboard navigation (not mouse clicks), so it doesn't fight the design. */
+  :focus-visible {
+    outline: 2px solid hsl(var(--ring));
+    outline-offset: 1px;
+    border-radius: 2px;
+  }
+
+  ::selection {
+    background: hsl(var(--gold-2) / 0.35);
+    color: hsl(var(--foreground));
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+@layer utilities {
+  /* Hide scrollbar (used by the horizontal tab bar). */
+  .no-scrollbar::-webkit-scrollbar { display: none; }
+  .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+
+  /* Subtle themed scrollbars everywhere else, matching the dark-gold look. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: hsl(var(--border)) transparent;
+  }
+  *::-webkit-scrollbar { width: 8px; height: 8px; }
+  *::-webkit-scrollbar-track { background: transparent; }
+  *::-webkit-scrollbar-thumb {
+    background: hsl(var(--border));
+    border-radius: 4px;
+  }
+  *::-webkit-scrollbar-thumb:hover { background: hsl(var(--accent)); }
+
+  /* Signature gold gradient text/background, matching .gt / .gbg exactly */
+  .gold-text {
+    @apply bg-clip-text text-transparent;
+    background-image: linear-gradient(135deg, hsl(var(--gold-1)), hsl(var(--gold-2)), hsl(var(--gold-3)), hsl(var(--gold-4)));
+  }
+  .gold-bg {
+    background-image: linear-gradient(135deg, hsl(var(--gold-1)), hsl(var(--gold-2)), hsl(var(--gold-3)), hsl(var(--gold-4)));
+  }
+  .gold-bar,
+  .brand-gradient-bar {
+    background-image: linear-gradient(90deg, hsl(var(--gold-1)), hsl(var(--gold-2)), hsl(var(--gold-3)), hsl(var(--gold-4)));
+    height: 3px;
+    width: 100%;
+  }
+  /* Left-border accent bar used on client cards / KPI cards in the prototype */
+  .gold-left-bar {
+    position: relative;
+  }
+  .gold-left-bar::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 3px;
+    background-image: linear-gradient(180deg, hsl(var(--gold-2)), hsl(var(--gold-1)), hsl(var(--gold-4)));
+  }
+  /* Small centered divider with a diamond glyph, used on the login screen */
+  .ornamental-divider {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+  }
+  .ornamental-divider::before,
+  .ornamental-divider::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: hsl(var(--border));
+  }
+  .ornamental-divider span {
+    padding: 0 0.75rem;
+  }
+}
+
+@media print {
+  @page {
+    size: A4;
+    margin: 12mm;
+  }
+  body {
+    background: white !important;
+    background-image: none !important;
+    color: black !important;
+  }
+  .no-print {
+    display: none !important;
+  }
+}
+
+
+/* ── Shell polish ──────────────────────────────────────────────────────────
+   Applies to every screen: slightly deeper card separation and calmer tab
+   chrome. Purely visual — no layout or behaviour changes. */
+@layer components {
+  /* Gentle lift so cards read as surfaces rather than outlines. */
+  .bg-card {
+    box-shadow: 0 1px 2px hsl(0 0% 0% / 0.04), 0 1px 3px hsl(0 0% 0% / 0.03);
+  }
+
+  /* Tab bar: rounded top, smoother active state. */
+  .no-scrollbar > button {
+    border-radius: 0.5rem 0.5rem 0 0;
+  }
+}
+
+/* Comfortable rhythm for the dashboard screens without touching dense ones. */
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+
+/* Indeterminate loading sweep used on the loading screen. */
+@keyframes loading-sweep {
+  0%   { transform: translateX(-120%); }
+  100% { transform: translateX(420%); }
+}
+.loading-sweep {
+  animation: loading-sweep 1.15s cubic-bezier(0.65, 0, 0.35, 1) infinite;
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   MOTION LAYER — app-wide.
+   Rules kept deliberately tight because staff do bulk data entry during live
+   sales: everything is under 300ms, fires only on ENTRANCE or STATE CHANGE,
+   never on typing, and the whole layer switches off for anyone who prefers
+   no motion (OS setting or the toggle in Settings).
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+@keyframes kt-rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+@keyframes kt-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes kt-pop  { 0% { transform: scale(.85); opacity: 0; } 60% { transform: scale(1.05); } 100% { transform: scale(1); opacity: 1; } }
+@keyframes kt-shimmer { 0% { background-position: -200% 0; } 100% { background-position: 200% 0; } }
+@keyframes kt-soft-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .45; } }
+@keyframes kt-draw { from { stroke-dashoffset: 26; } to { stroke-dashoffset: 0; } }
+
+/* Entrance: cards/rows ease up into place. */
+.kt-rise { animation: kt-rise .34s cubic-bezier(.22,1,.36,1) both; }
+.kt-fade { animation: kt-fade .24s ease both; }
+
+/* Stagger — applied to a container; children enter in sequence.
+   Capped at 8 so a 300-row list never waits on animation. */
+.kt-stagger > * { animation: kt-rise .32s cubic-bezier(.22,1,.36,1) both; }
+.kt-stagger > *:nth-child(1) { animation-delay: .02s; }
+.kt-stagger > *:nth-child(2) { animation-delay: .05s; }
+.kt-stagger > *:nth-child(3) { animation-delay: .08s; }
+.kt-stagger > *:nth-child(4) { animation-delay: .11s; }
+.kt-stagger > *:nth-child(5) { animation-delay: .14s; }
+.kt-stagger > *:nth-child(6) { animation-delay: .17s; }
+.kt-stagger > *:nth-child(7) { animation-delay: .20s; }
+.kt-stagger > *:nth-child(n+8) { animation-delay: .22s; }
+
+/* Confirmation: the saved tick draws itself. */
+.kt-pop { animation: kt-pop .32s cubic-bezier(.34,1.56,.64,1) both; }
+.kt-draw { stroke-dasharray: 26; animation: kt-draw .4s ease both; }
+
+/* Loading: shimmering placeholder instead of a blank gap. */
+.kt-skeleton {
+  background: linear-gradient(90deg,
+    hsl(var(--muted)) 25%,
+    hsl(var(--background)) 50%,
+    hsl(var(--muted)) 75%);
+  background-size: 200% 100%;
+  animation: kt-shimmer 1.4s linear infinite;
+  border-radius: 6px;
+}
+
+/* Attention: calmer than the old hard blink. */
+.kt-attention { animation: kt-soft-pulse 1.8s ease-in-out infinite; }
+
+/* Interaction: subtle lift on hover, press-down on click. */
+.kt-lift { transition: transform .16s cubic-bezier(.22,1,.36,1), box-shadow .16s ease; }
+.kt-lift:hover { transform: translateY(-2px); }
+.kt-lift:active { transform: translateY(0) scale(.995); }
+
+/* Values that change should animate, not jump. */
+.kt-bar-fill { transition: width .7s cubic-bezier(.22,1,.36,1); }
+
+/* ── Respect the user ──────────────────────────────────────────────────────
+   Honours the OS "reduce motion" setting AND the app's own toggle
+   (data-motion="off" on <html>). Transitions are kept for hover feedback but
+   all looping/entrance animation stops. */
+@media (prefers-reduced-motion: reduce) {
+  .kt-rise, .kt-fade, .kt-stagger > *, .kt-pop, .kt-draw,
+  .kt-skeleton, .kt-attention { animation: none !important; opacity: 1 !important; transform: none !important; }
+  .kt-lift, .kt-bar-fill { transition: none !important; }
+}
+html[data-motion="off"] .kt-rise,
+html[data-motion="off"] .kt-fade,
+html[data-motion="off"] .kt-stagger > *,
+html[data-motion="off"] .kt-pop,
+html[data-motion="off"] .kt-draw,
+html[data-motion="off"] .kt-attention {
+  animation: none !important; opacity: 1 !important; transform: none !important;
+}
+html[data-motion="off"] .kt-skeleton { animation: none !important; }
