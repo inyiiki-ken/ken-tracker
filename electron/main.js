@@ -117,12 +117,9 @@ function serverEntry() {
 function startServer() {
   const entry = serverEntry();
   if (!fs.existsSync(entry)) {
-    dialog.showErrorBox(
-      "Server not found",
-      `Could not find the app server at:\n${entry}\n\nDid the build run? (npm run build)`
-    );
-    app.quit();
-    return;
+    // Broken install: try to repair by pulling the newest release first.
+    rescueUpdate(`Could not find the app server at:\n${entry}`);
+    return false;
   }
   // Run the Next server using Electron's bundled Node (ELECTRON_RUN_AS_NODE),
   // so customers don't need Node installed. windowsHide hides any console.
@@ -145,15 +142,52 @@ function startServer() {
   serverProc.stdout.on("data", (d) => console.log("[next]", String(d).trim()));
   serverProc.stderr.on("data", (d) => console.error("[next]", String(d).trim()));
   serverProc.on("exit", (code) => console.log("[next] exited", code));
+  return true;
+}
+
+/**
+ * SELF-REPAIR. If this version can't start (missing/broken app files), don't
+ * just quit — that would leave the PC stuck on a broken version forever,
+ * because the normal updater only runs once the app window is open. Instead
+ * download the newest release from GitHub and install it automatically.
+ */
+function rescueUpdate(reason) {
+  const fail = (extra) => {
+    dialog.showErrorBox(
+      "Ken Tracker can't start",
+      `${reason}\n\n${extra}\n\nPlease reinstall Ken Tracker from the latest installer.`
+    );
+    app.quit();
+  };
+  if (isDev) return fail("(development build)");
+  let autoUpdater;
+  try { ({ autoUpdater } = require("electron-updater")); } catch { return fail("Updater not available."); }
+  const logUpd = (msg) => {
+    try { fs.appendFileSync(path.join(app.getPath("userData"), "startup.log"), `\n[rescue] ${msg}`); } catch {}
+  };
+  logUpd(reason);
+  const splash = new BrowserWindow({
+    width: 420, height: 160, frame: false, resizable: false, backgroundColor: "#151413", show: true,
+    webPreferences: { contextIsolation: true, nodeIntegration: false },
+  });
+  splash.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(
+    '<body style="margin:0;font-family:Segoe UI,Arial;background:#151413;color:#eee;display:flex;align-items:center;justify-content:center;height:100vh;text-align:center">' +
+    '<div><b>Ken Tracker is repairing itself…</b><br><small style="color:#aaa">Downloading the latest version. This can take a minute.</small></div></body>'
+  ));
+  autoUpdater.autoDownload = true;
+  autoUpdater.on("update-not-available", () => { logUpd("no newer version"); try { splash.close(); } catch {} fail("No newer version is available yet."); });
+  autoUpdater.on("error", (err) => { logUpd(`error: ${err}`); try { splash.close(); } catch {} fail(`Update failed: ${err}`); });
+  autoUpdater.on("update-downloaded", (info) => {
+    logUpd(`installing ${info.version}`);
+    try { autoUpdater.quitAndInstall(true, true); } catch (e) { fail(`Install failed: ${e}`); }
+  });
+  autoUpdater.checkForUpdates().catch((e) => { try { splash.close(); } catch {} fail(`Update failed: ${e}`); });
 }
 
 function waitForServer(onReady, tries = 0) {
   const req = http.get({ host: "127.0.0.1", port: PORT, path: "/" }, () => onReady());
   req.on("error", () => {
-    if (tries > 80) {
-      dialog.showErrorBox("Startup timeout", "The app server did not start in time.");
-      return app.quit();
-    }
+    if (tries > 80) return rescueUpdate("The app server did not start in time.");
     setTimeout(() => waitForServer(onReady, tries + 1), 400);
   });
 }
@@ -233,7 +267,7 @@ function setupAutoUpdate(win) {
 app.whenReady().then(() => {
   const envInfo = loadEnv();
   checkConfig(envInfo);
-  startServer();
+  if (startServer() === false) return; // repairing itself
   waitForServer(createWindow);
 
   app.on("activate", () => {
