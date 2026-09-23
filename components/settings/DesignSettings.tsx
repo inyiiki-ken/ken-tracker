@@ -170,6 +170,31 @@ export default function DesignSettings() {
         </h2>
 
         <div>
+          <Label className="text-xs text-muted-foreground mb-2 block">Interface Style</Label>
+          <div className="flex gap-2">
+            {([
+              { id: "modern", label: "Modern", hint: "Clean, Apple-style" },
+              { id: "classic", label: "Classic", hint: "Original look" },
+            ] as const).map((opt) => {
+              const active = (settings.uiStyle ?? "modern") === opt.id;
+              return (
+                <button
+                  key={opt.id}
+                  onClick={() => setSettings((s) => ({ ...s, uiStyle: opt.id }))}
+                  className={`px-4 py-2 rounded-md text-sm border text-left transition-colors ${
+                    active ? "border-primary bg-primary/10 text-primary" : "border-border text-muted-foreground hover:bg-muted"
+                  }`}
+                >
+                  <div className="font-medium">{opt.label}</div>
+                  <div className="text-[11px] opacity-70">{opt.hint}</div>
+                </button>
+              );
+            })}
+          </div>
+          <p className="text-[11px] text-muted-foreground mt-1.5">Previews instantly. Press Save below to keep it for this customer.</p>
+        </div>
+
+        <div>
           <Label className="text-xs text-muted-foreground mb-2 block">Primary Color</Label>
           <div className="flex items-center gap-3">
             <input

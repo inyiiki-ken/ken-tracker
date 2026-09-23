@@ -276,7 +276,7 @@ function AppContent() {
   return (
     <div className="min-h-screen bg-background">
       {/* Header */}
-      <div className="sticky top-0 z-40 border-b border-border bg-card">
+      <div className="kt-appbar sticky top-0 z-40 border-b border-border bg-card">
         <div className="brand-gradient-bar" />
         <div className="flex items-center justify-between px-3 py-2">
           <div className="flex items-center gap-2.5">
@@ -288,8 +288,8 @@ function AppContent() {
               </div>
             )}
             <div>
-              <h1 className="font-cinzel text-[11px] text-primary tracking-widest">{brandSettings.companyName.toUpperCase()}</h1>
-              <p className="text-[9px] truncate max-w-[160px] text-muted-foreground">
+              <h1 className="kt-brandname font-cinzel text-[11px] text-primary tracking-widest">{brandSettings.companyName.toUpperCase()}</h1>
+              <p className="kt-brandsub text-[9px] truncate max-w-[160px] text-muted-foreground">
                 {activeWorkspace ? <span className="text-primary">{activeWorkspace}</span> : user.email}
                 {isDeveloper && <Crown className="inline h-2.5 w-2.5 ml-1 text-primary" />}
                 {!isDeveloper && isSuperAdmin && <Crown className="inline h-2.5 w-2.5 ml-1 text-primary" />}
@@ -307,7 +307,7 @@ function AppContent() {
             {(effectiveRoles.includes('super_admin') || effectiveRoles.includes('admin')) && <UploadMasterlistFAB onRefresh={fetchData} />}
             <button
               onClick={() => logout({ returnTo: window.location.origin })}
-              className="flex items-center justify-center w-7 h-7 font-cinzel text-[10px] border border-border rounded-md transition-colors hover:bg-accent text-primary"
+              className="kt-avatar flex items-center justify-center w-7 h-7 font-cinzel text-[10px] border border-border rounded-md transition-colors hover:bg-accent text-primary"
               title="Sign out"
             >
               {initials}
@@ -316,12 +316,13 @@ function AppContent() {
         </div>
 
         {/* Tab bar */}
-        <div className="flex px-2 pb-0 gap-0.5 overflow-x-auto no-scrollbar">
+        <div className="kt-tabs flex px-2 pb-0 gap-0.5 overflow-x-auto no-scrollbar">
           {visibleTabs.map(tab => (
             <button
               key={tab.key}
               onClick={() => setActiveTab(tab.key)}
-              className={`flex items-center gap-1 px-3 py-2 font-cinzel text-[10px] uppercase whitespace-nowrap transition-all relative ${
+              data-active={activeTab === tab.key ? "true" : undefined}
+              className={`kt-tab flex items-center gap-1 px-3 py-2 font-cinzel text-[10px] uppercase whitespace-nowrap transition-all relative ${
                 activeTab === tab.key
                   ? 'border-b-2 border-primary text-primary bg-primary/10'
                   : 'text-muted-foreground hover:text-primary'
@@ -347,7 +348,7 @@ function AppContent() {
       </div>
 
       {/* Record count */}
-      <div className="flex items-center justify-between px-3 py-1 border-b border-border bg-muted/50">
+      <div className="kt-statusbar flex items-center justify-between px-3 py-1 border-b border-border bg-muted/50">
         <span className="text-[10px] font-medium text-muted-foreground">
           {records.length.toLocaleString()} records loaded
         </span>

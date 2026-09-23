@@ -27,13 +27,13 @@ export default function TabHeader({ title, subtitle, searchQuery, onSearchChange
   }, [searchQuery]);
 
   return (
-    <div className="sticky top-0 z-20 backdrop-blur border-b border-border pb-4 pt-0 px-4 bg-background/95">
+    <div className="kt-pagehead sticky top-0 z-20 backdrop-blur border-b border-border pb-4 pt-0 px-4 bg-background/95">
       <div className="brand-gradient-bar mb-4" />
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
-          <h1 className="text-xl sm:text-2xl font-cinzel text-primary">{title}</h1>
+          <h1 className="kt-pagetitle text-xl sm:text-2xl font-cinzel text-primary">{title}</h1>
           {subtitle && (
-            <p className="text-[10px] mt-1 uppercase text-muted-foreground" style={{ letterSpacing: '0.3em' }}>
+            <p className="kt-pagesub text-[10px] mt-1 uppercase text-muted-foreground" style={{ letterSpacing: '0.3em' }}>
               {subtitle}
             </p>
           )}

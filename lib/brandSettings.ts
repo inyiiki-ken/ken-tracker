@@ -31,6 +31,8 @@ export interface BrandSettings {
   invoiceAddress?: string;
   /** WhatsApp / contact number printed on invoices. Empty = line hidden. */
   invoiceContact?: string;
+  /** Overall look: "modern" (clean, Apple-style) or "classic" (original). */
+  uiStyle?: "modern" | "classic";
 }
 
 export const DEFAULT_BRAND_SETTINGS: BrandSettings = {
@@ -185,7 +187,18 @@ export function applyBrandSettingsToDom(settings: BrandSettings) {
   override(["--border", "--input"], settings.borderColorHex);
   override(["--accent"], settings.accentColorHex);
 
+  // Interface style: all "modern" rules in globals.css are scoped to this attribute,
+  // so "classic" is exactly the original look.
+  document.documentElement.dataset.ui = settings.uiStyle === "classic" ? "classic" : "modern";
+  document.documentElement.dataset.theme = settings.themeMode;
+  // Let the modern style refine the page/card tones only when the customer
+  // hasn't picked their own colours.
+  document.documentElement.dataset.customBg = settings.backgroundColorHex ? "1" : "0";
+  document.documentElement.dataset.customCard = settings.cardColorHex ? "1" : "0";
+
   const pair = FONT_PAIRS.find((f) => f.id === settings.fontPairId) ?? FONT_PAIRS[0];
+  // The brand's own heading font stays on the company name in modern style.
+  root.setProperty("--font-brand", `"${fontFamilyName(pair.heading)}", serif`);
   root.setProperty("--font-cinzel", `"${fontFamilyName(pair.heading)}", serif`);
   root.setProperty("--font-lato", `"${fontFamilyName(pair.body)}", system-ui, sans-serif`);
 

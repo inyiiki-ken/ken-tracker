@@ -297,3 +297,259 @@ html[data-motion="off"] .kt-attention {
   animation: none !important; opacity: 1 !important; transform: none !important;
 }
 html[data-motion="off"] .kt-skeleton { animation: none !important; }
+
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   MODERN INTERFACE STYLE (Apple-inspired) — Settings → Theme → Interface Style.
+   Everything below is scoped to html[data-ui="modern"], so "Classic" is exactly
+   the original look. Brand colours, light/dark and per-customer overrides are
+   still respected; this layer only changes shape, type, depth and motion.
+   Principles: instant press feedback, calm hierarchy (weight/size, not CAPS),
+   translucent chrome over content, soft depth instead of hard lines,
+   critically-damped motion, and graceful fallbacks for reduced motion /
+   transparency / more contrast.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+html[data-ui="modern"] {
+  /* System typeface first: SF Pro on Mac, Segoe UI Variable on Windows. */
+  --font-lato: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI Variable Text", "Segoe UI", Inter, system-ui, sans-serif !important;
+  --font-cinzel: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI Variable Display", "Segoe UI", Inter, system-ui, sans-serif !important;
+  --radius: 0.875rem;                 /* 14px cards, 12px md, 10px sm */
+  --kt-ease: cubic-bezier(0.22, 1, 0.36, 1);      /* critically-damped feel */
+  --kt-sheet-ease: cubic-bezier(0.32, 0.72, 0, 1); /* iOS sheet curve */
+  --kt-shadow-1: 0 1px 2px hsl(0 0% 0% / 0.04), 0 2px 8px hsl(0 0% 0% / 0.04);
+  --kt-shadow-2: 0 4px 12px hsl(0 0% 0% / 0.08), 0 18px 48px hsl(0 0% 0% / 0.12);
+}
+/* Page vs surface tones: light = soft grey page, white cards (like Settings on
+   iOS/macOS); dark = near-black page, slightly raised cards. */
+html[data-ui="modern"][data-theme="light"][data-custom-bg="0"] { --background: 240 7% 96.5% !important; }
+html[data-ui="modern"][data-theme="light"][data-custom-card="0"] { --card: 0 0% 100% !important; --popover: 0 0% 100% !important; }
+html[data-ui="modern"][data-theme="dark"][data-custom-bg="0"] { --background: 30 4% 6% !important; }
+html[data-ui="modern"][data-theme="dark"][data-custom-card="0"] { --card: 30 5% 10.5% !important; --popover: 30 5% 12% !important; }
+html[data-ui="modern"][data-theme="dark"] {
+  --kt-shadow-1: 0 0 0 1px hsl(0 0% 100% / 0.05), 0 2px 8px hsl(0 0% 0% / 0.35);
+  --kt-shadow-2: 0 0 0 1px hsl(0 0% 100% / 0.06), 0 24px 64px hsl(0 0% 0% / 0.55);
+}
+
+/* ── Type ── */
+html[data-ui="modern"] body {
+  background-image: none;
+  font-optical-sizing: auto;
+  letter-spacing: -0.003em;
+}
+html[data-ui="modern"] h1,
+html[data-ui="modern"] h2,
+html[data-ui="modern"] h3 { font-weight: 650; letter-spacing: -0.015em; }
+/* Hierarchy from weight + size, not ALL CAPS with wide tracking. */
+html[data-ui="modern"] .font-cinzel { letter-spacing: -0.005em !important; font-weight: 600; }
+html[data-ui="modern"] .font-cinzel.uppercase { text-transform: none; }
+html[data-ui="modern"] .uppercase.tracking-widest,
+html[data-ui="modern"] .uppercase.tracking-wider { letter-spacing: 0.04em !important; }
+/* The smallest sizes were hard to read — nudge them up a touch. */
+html[data-ui="modern"] .text-\[9px\] { font-size: 10px; }
+html[data-ui="modern"] .text-\[10px\] { font-size: 11px; }
+html[data-ui="modern"] .text-\[11px\] { font-size: 11.5px; }
+html[data-ui="modern"] .tabular-nums,
+html[data-ui="modern"] td { font-variant-numeric: tabular-nums; }
+
+/* ── Surfaces: soft depth instead of outlines ── */
+html[data-ui="modern"] .bg-card {
+  border-color: hsl(var(--border) / 0.55);
+  box-shadow: var(--kt-shadow-1);
+}
+html[data-ui="modern"] .brand-gradient-bar,
+html[data-ui="modern"] .gold-bar { height: 2px; opacity: 0.9; }
+
+/* ── App bar: translucent material, content scrolls underneath ── */
+html[data-ui="modern"] .kt-appbar {
+  background: hsl(var(--card) / 0.72);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+  backdrop-filter: saturate(180%) blur(20px);
+  border-bottom-color: hsl(var(--border) / 0.45);
+  box-shadow: none;
+}
+html[data-ui="modern"] .kt-appbar > .brand-gradient-bar { display: none; }
+html[data-ui="modern"] .kt-brandname {
+  font-family: var(--font-brand), serif;
+  font-size: 12px;
+  letter-spacing: 0.14em !important;
+  text-transform: uppercase;
+}
+html[data-ui="modern"] .kt-avatar {
+  border-radius: 999px;
+  font-family: var(--font-lato);
+  font-weight: 600;
+  background: hsl(var(--primary) / 0.12);
+  border-color: transparent;
+}
+
+/* Main navigation: pill segments, sentence case. */
+html[data-ui="modern"] .kt-tabs { gap: 4px; padding: 2px 10px 8px; }
+html[data-ui="modern"] .kt-tab {
+  border: 0 !important;
+  border-radius: 999px !important;
+  padding: 6px 12px;
+  font-family: var(--font-lato);
+  font-size: 12.5px;
+  font-weight: 550;
+  letter-spacing: -0.005em !important;
+  text-transform: none;
+  background: transparent;
+  color: hsl(var(--muted-foreground));
+  transition: background-color .2s var(--kt-ease), color .2s var(--kt-ease), transform .1s ease-out;
+}
+html[data-ui="modern"] .kt-tab:hover { background: hsl(var(--foreground) / 0.06); color: hsl(var(--foreground)); }
+html[data-ui="modern"] .kt-tab:active { transform: scale(0.97); transition-duration: 60ms; }
+html[data-ui="modern"] .kt-tab[data-active] {
+  background: hsl(var(--primary) / 0.14);
+  color: hsl(var(--primary));
+  font-weight: 650;
+}
+html[data-ui="modern"] .kt-statusbar { background: transparent; border-bottom-color: transparent; }
+
+/* Page header: large title on a translucent layer; soft edge, no hard line. */
+html[data-ui="modern"] .kt-pagehead {
+  background: hsl(var(--background) / 0.8);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+  backdrop-filter: saturate(180%) blur(20px);
+  border-bottom-color: transparent;
+  box-shadow: 0 1px 0 hsl(var(--border) / 0.5);
+  padding-top: 18px;
+}
+html[data-ui="modern"] .kt-pagehead > .brand-gradient-bar { display: none; }
+html[data-ui="modern"] .kt-pagetitle {
+  color: hsl(var(--foreground));
+  font-size: clamp(1.5rem, 2.4vw, 2rem);
+  font-weight: 700;
+  line-height: 1.1;
+  letter-spacing: -0.025em !important;
+}
+html[data-ui="modern"] .kt-pagesub {
+  text-transform: none;
+  letter-spacing: 0 !important;
+  font-size: 13px;
+}
+
+/* ── Controls ── */
+html[data-ui="modern"] [data-slot="button"] {
+  border-radius: 10px;
+  font-weight: 600;
+  letter-spacing: -0.005em;
+  transition: transform .1s ease-out, background-color .2s var(--kt-ease), box-shadow .2s var(--kt-ease), opacity .2s;
+}
+/* Feedback on press, instantly — not on release. */
+html[data-ui="modern"] [data-slot="button"]:active:not(:disabled) { transform: scale(0.97); transition-duration: 60ms; }
+html[data-ui="modern"] [data-slot="button"][data-variant="default"] {
+  box-shadow: inset 0 1px 0 hsl(0 0% 100% / 0.18), 0 1px 2px hsl(0 0% 0% / 0.14);
+}
+html[data-ui="modern"] [data-slot="button"][data-variant="outline"] {
+  background: hsl(var(--card));
+  border-color: hsl(var(--border) / 0.8);
+  box-shadow: 0 1px 2px hsl(0 0% 0% / 0.05);
+}
+html[data-ui="modern"] [data-slot="button"][data-variant="outline"]:hover,
+html[data-ui="modern"] [data-slot="button"][data-variant="ghost"]:hover {
+  background: hsl(var(--foreground) / 0.06);
+  color: hsl(var(--foreground));
+}
+
+html[data-ui="modern"] [data-slot="input"] {
+  border-radius: 10px;
+  background-color: hsl(var(--foreground) / 0.035);
+  border-color: hsl(var(--border) / 0.8);
+  box-shadow: none;
+  transition: box-shadow .18s var(--kt-ease), border-color .18s var(--kt-ease), background-color .18s;
+}
+html[data-ui="modern"] [data-slot="input"]:focus,
+html[data-ui="modern"] [data-slot="input"]:focus-visible,
+html[data-ui="modern"] [data-slot="input"][data-state="open"] {
+  outline: none;
+  background-color: hsl(var(--card));
+  border-color: hsl(var(--primary) / 0.65);
+  box-shadow: 0 0 0 3px hsl(var(--primary) / 0.18);
+}
+
+html[data-ui="modern"] [data-slot="badge"] { border-radius: 999px; font-weight: 600; letter-spacing: 0; }
+
+html[data-ui="modern"] [data-slot="segmented"] { border-radius: 10px; padding: 3px; background: hsl(var(--foreground) / 0.06); }
+html[data-ui="modern"] [data-slot="segment"] { border-radius: 8px; transition: background-color .2s var(--kt-ease), box-shadow .2s var(--kt-ease); }
+html[data-ui="modern"] [data-slot="segment"][data-state="active"] { background: hsl(var(--card)); box-shadow: 0 1px 3px hsl(0 0% 0% / 0.12); }
+
+/* ── Menus & popovers: translucent material, anchored to their trigger ── */
+html[data-ui="modern"] [data-slot="menu"] {
+  border-radius: 12px;
+  border-color: hsl(var(--border) / 0.5);
+  background: hsl(var(--popover) / 0.88);
+  -webkit-backdrop-filter: saturate(180%) blur(24px);
+  backdrop-filter: saturate(180%) blur(24px);
+  box-shadow: var(--kt-shadow-2);
+  transform-origin: var(--radix-select-content-transform-origin, var(--radix-popover-content-transform-origin, top));
+}
+
+/* ── Dialogs & sheets: dim to focus, soft large corners ── */
+html[data-ui="modern"] [data-slot="overlay"] {
+  background: hsl(0 0% 0% / 0.32) !important;
+  -webkit-backdrop-filter: blur(3px);
+  backdrop-filter: blur(3px);
+}
+html[data-ui="modern"] [data-slot="dialog"] {
+  border-radius: 18px !important;
+  border-color: hsl(var(--border) / 0.4);
+  box-shadow: var(--kt-shadow-2);
+}
+html[data-ui="modern"] [data-slot="sheet"] { box-shadow: var(--kt-shadow-2); border-color: hsl(var(--border) / 0.4); }
+html[data-ui="modern"] [data-slot="sheet"][data-side="bottom"] {
+  border-radius: 20px 20px 0 0;
+  padding-top: 28px;
+}
+/* Grabber — tells you it's a sheet you can dismiss downward. */
+html[data-ui="modern"] [data-slot="sheet"][data-side="bottom"]::before {
+  content: "";
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  width: 36px;
+  height: 5px;
+  margin-left: -18px;
+  border-radius: 999px;
+  background: hsl(var(--muted-foreground) / 0.35);
+}
+html[data-ui="modern"] [data-slot="sheet"][data-side="bottom"][data-state="open"] { animation: kt-sheet-up .44s var(--kt-sheet-ease) both; }
+html[data-ui="modern"] [data-slot="sheet"][data-side="right"] { border-radius: 18px 0 0 18px; }
+html[data-ui="modern"] [data-slot="sheet"][data-side="right"][data-state="open"] { animation: kt-sheet-in .4s var(--kt-sheet-ease) both; }
+@keyframes kt-sheet-up { from { transform: translateY(100%); } to { transform: none; } }
+@keyframes kt-sheet-in { from { transform: translateX(100%); } to { transform: none; } }
+
+/* ── Motion: settle without bounce for things that weren't thrown ── */
+@keyframes kt-pop-soft { from { transform: scale(.9); opacity: 0; } to { transform: none; opacity: 1; } }
+html[data-ui="modern"] .kt-pop { animation-name: kt-pop-soft; animation-timing-function: var(--kt-ease); }
+html[data-ui="modern"] .kt-lift:hover { transform: translateY(-1px); box-shadow: var(--kt-shadow-2); }
+
+/* Focus ring: soft halo in the brand colour. */
+html[data-ui="modern"] :focus-visible {
+  outline: 3px solid hsl(var(--ring) / 0.45);
+  outline-offset: 2px;
+  border-radius: 8px;
+}
+html[data-ui="modern"] *::-webkit-scrollbar-thumb { border-radius: 999px; border: 2px solid transparent; background-clip: padding-box; }
+
+/* ── Accessibility fallbacks ── */
+@media (prefers-reduced-motion: reduce) {
+  html[data-ui="modern"] [data-slot="sheet"][data-state="open"] { animation: kt-fade .2s ease both; }
+  html[data-ui="modern"] [data-slot="button"]:active, html[data-ui="modern"] .kt-tab:active { transform: none; }
+}
+@media (prefers-reduced-transparency: reduce) {
+  html[data-ui="modern"] .kt-appbar { background: hsl(var(--card)); backdrop-filter: none; -webkit-backdrop-filter: none; }
+  html[data-ui="modern"] .kt-pagehead { background: hsl(var(--background)); backdrop-filter: none; -webkit-backdrop-filter: none; }
+  html[data-ui="modern"] [data-slot="menu"] { background: hsl(var(--popover)); backdrop-filter: none; -webkit-backdrop-filter: none; }
+  html[data-ui="modern"] [data-slot="overlay"] { backdrop-filter: none; -webkit-backdrop-filter: none; }
+}
+@media (prefers-contrast: more) {
+  html[data-ui="modern"] .bg-card,
+  html[data-ui="modern"] [data-slot="input"],
+  html[data-ui="modern"] [data-slot="menu"] { border-color: hsl(var(--foreground) / 0.5); }
+}
+/* Printing invoices is unaffected. */
+@media print {
+  html[data-ui="modern"] .bg-card { box-shadow: none; }
+}
