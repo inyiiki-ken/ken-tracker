@@ -20,3 +20,6 @@ desktop/*.env
 key.json
 *service-account*.json
 mykabayan-tracker-*.json
+
+.vercel
+.env*
