@@ -80,7 +80,8 @@ export default function DesignSettings() {
       if (kind === "header") setHeaderLogoPreview(dataUrl);
       else setInvoiceLogoPreview(dataUrl);
 
-      await saveBrandLogo({ kind, dataUrl });
+      const res = await saveBrandLogo({ kind, dataUrl });
+      if (!res.success) { toast.error(res.error || "Couldn't save the logo"); return; }
       toast.success(`${kind === "header" ? "Header" : "Invoice"} logo updated for everyone.`);
       refreshGlobalBrand();
     } catch (err) {
@@ -141,6 +142,22 @@ export default function DesignSettings() {
               value={settings.location}
               onChange={(e) => setSettings((s) => ({ ...s, location: e.target.value }))}
               placeholder="City, Country"
+            />
+          </div>
+          <div className="sm:col-span-2">
+            <Label className="text-xs text-muted-foreground">Invoice Address</Label>
+            <Input
+              value={settings.invoiceAddress ?? ""}
+              onChange={(e) => setSettings((s) => ({ ...s, invoiceAddress: e.target.value }))}
+              placeholder="Shop / office address shown on invoices (blank = Location)"
+            />
+          </div>
+          <div className="sm:col-span-2">
+            <Label className="text-xs text-muted-foreground">Invoice WhatsApp &amp; Contact No.</Label>
+            <Input
+              value={settings.invoiceContact ?? ""}
+              onChange={(e) => setSettings((s) => ({ ...s, invoiceContact: e.target.value }))}
+              placeholder="e.g. +971 50 123 4567 (blank = hidden on invoices)"
             />
           </div>
         </div>

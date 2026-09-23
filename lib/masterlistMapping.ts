@@ -62,6 +62,12 @@ export interface MasterlistMapping {
    *  (e.g. Crown: {"21":"Gold Normal","28":"Special Price","55":"Special Price EF"}).
    *  An MC not listed falls back to defaultCategory. */
   mcCategories: Record<string, string>;
+  /** Round the rate UP to a whole number before adding MC (426.25 -> 427), the way the liver prices it. */
+  roundRateUp: boolean;
+  /** A1 cell holding the liver's name when the file has no "LIVER NAME" label (e.g. the "AMBIE" title). */
+  liverCell: string;
+  /** T.O.G to use when the file has no T.O.G column (e.g. "18K"). */
+  defaultTog: string;
 }
 
 /** Defaults reproduce the original hard-coded AR/MYK layout exactly. */
@@ -94,6 +100,9 @@ export const DEFAULT_MASTERLIST_MAPPING: MasterlistMapping = {
   priceMode: "rate",
   defaultCategory: "",
   mcCategories: {},
+  roundRateUp: false,
+  liverCell: "",
+  defaultTog: "",
 };
 
 /** Human labels for the settings editor. */
@@ -149,6 +158,9 @@ export interface ResolvedMasterlistMapping {
   priceMode: PriceMode;
   defaultCategory: string;
   mcCategories: Record<string, string>;
+  roundRateUp: boolean;
+  liverCell: { row: number; col: number } | null;
+  defaultTog: string;
 }
 
 export function resolveMasterlistMapping(m: MasterlistMapping): ResolvedMasterlistMapping {
@@ -168,6 +180,9 @@ export function resolveMasterlistMapping(m: MasterlistMapping): ResolvedMasterli
     priceMode: m.priceMode === "rate_plus_mc" ? "rate_plus_mc" : "rate",
     defaultCategory: (m.defaultCategory || "").trim(),
     mcCategories: m.mcCategories || {},
+    roundRateUp: !!m.roundRateUp,
+    liverCell: cellToRC(m.liverCell),
+    defaultTog: (m.defaultTog || "").trim(),
   };
 }
 
@@ -194,6 +209,9 @@ function normalize(p: Partial<MasterlistMapping> | null | undefined): Masterlist
     priceMode: p?.priceMode === "rate_plus_mc" ? "rate_plus_mc" : "rate",
     defaultCategory: (p?.defaultCategory ?? "").toString().trim(),
     mcCategories: normalizeMcCategories(p?.mcCategories),
+    roundRateUp: p?.roundRateUp === true,
+    liverCell: (p?.liverCell ?? "").toString().trim().toUpperCase(),
+    defaultTog: (p?.defaultTog ?? "").toString().trim(),
   };
 }
 
@@ -369,6 +387,8 @@ export function detectMapping(grid: unknown[][]): DetectResult | null {
   }
 
   const meta = detectMeta(grid, bestRow);
+  const hasLiverLabel = grid.slice(0, bestRow).some((row) =>
+    (row || []).some((c) => String(c ?? "").toUpperCase().includes(DEFAULT_MASTERLIST_MAPPING.liverNameLabel)));
 
   const mapping: MasterlistMapping = normalize({
     ...DEFAULT_MASTERLIST_MAPPING,
@@ -380,6 +400,11 @@ export function detectMapping(grid: unknown[][]): DetectResult | null {
     priceMode,
     // Only needed when the file has no Category column.
     defaultCategory: columns.category ? "" : meta.defaultCategory,
+    // No "LIVER NAME" label -> the big title (e.g. "AMBIE") is the liver.
+    liverCell: hasLiverLabel ? "" : meta.titleCell,
+    defaultTog: columns.tog ? "" : meta.karat,
+    // Rate + MC lists (gold livers) usually charge a whole-number rate.
+    roundRateUp: priceMode === "rate_plus_mc",
   });
 
   return { mapping, headerRowIndex: bestRow, headerRow: rawHeader, assigned };
@@ -417,7 +442,10 @@ function detectMeta(grid: unknown[][], headerRow: number): {
   pageCell: string;
   rateCell: string;
   defaultCategory: string;
+  titleCell: string;
+  karat: string;
 } {
+  let karat = "";
   let liveDateCell = "";
   let pageCell = "";
   let rateCell = "";
@@ -441,6 +469,8 @@ function detectMeta(grid: unknown[][], headerRow: number): {
         }
       }
 
+      if (!karat && /^\d{2}\s*K(T)?$/.test(up)) karat = up.replace(/\s+/g, "").replace(/KT$/, "K");
+
       if (!defaultCategory && (up === "GOLD" || up === "SILVER")) {
         defaultCategory = up === "GOLD" ? "Gold Normal" : "Silver Normal";
       }
@@ -462,5 +492,7 @@ function detectMeta(grid: unknown[][], headerRow: number): {
     pageCell: pageCell || DEFAULT_MASTERLIST_MAPPING.pageCell,
     rateCell,
     defaultCategory,
+    titleCell: pageCell,
+    karat,
   };
 }

@@ -36,7 +36,8 @@ export default function PageLogosSettings() {
     setBusy(true);
     try {
       const dataUrl = await resizeImageToDataUrl(file, 200);
-      await savePageLogo({ page: page.trim(), dataUrl });
+      const res = await savePageLogo({ page: page.trim(), dataUrl });
+      if (!res.success) { toast.error(res.error || "Couldn't save the logo"); return; }
       toast.success(`Logo saved for "${page.trim()}".`);
       setNewPage("");
       load();

@@ -7,7 +7,7 @@ import { getRatesForDate } from '@/lib/ratesStore';
 import { numberToWords } from '@/lib/numberToWords';
 import { formatDate } from '@/lib/formatters';
 import { parseBillingModifiers, getTotalChargesAED, getTotalDiscountsAED } from '@/lib/billingModifiers';
-import { BRAND } from '@/config/brand';
+import { brandInitials } from '@/lib/brandSettings';
 import { useBrand } from '@/components/BrandThemeLoader';
 
 interface Props {
@@ -54,12 +54,13 @@ function calcPhpItemAmount(r: DatabaseRowType): number {
 }
 
 export default function InvoicePrintContent({ records, currency, ccIncludeShipping = false }: Props) {
-  const { settings, invoiceLogo, pageLogos } = useBrand();
+  const { settings, invoiceLogo, headerLogo, pageLogos } = useBrand();
   const BRAND_NAME = `${settings.companyName.toUpperCase()} ${settings.legalSuffix}`;
   const WATERMARK_TEXT = `${settings.companyName.toUpperCase()} OFFICIAL`;
   const first = records[0];
   // Per-page brand logo (if set for this invoice's page), else the default invoice logo.
-  const effectiveLogo = (first?.page && pageLogos[first.page]) || invoiceLogo;
+  // Then the header logo, so a customer with only one logo still gets it on invoices.
+  const effectiveLogo = (first?.page && pageLogos[first.page]) || invoiceLogo || headerLogo;
 
   // Use the most recent record's rate snapshot for invoice-level conversions (e.g. shipping).
   const latestRecord = records.reduce((latest, r) => {
@@ -340,15 +341,17 @@ export default function InvoicePrintContent({ records, currency, ccIncludeShippi
             <tr>
               <td style={{ width: '65%', padding: '12px 16px', verticalAlign: 'top', border: '1px solid #999' }}>
                 <div style={{ fontWeight: 900, fontSize: 24, letterSpacing: 1 }}>{brandName}</div>
-                <div style={{ marginTop: 8, textAlign: 'left', fontSize: 11 }}>{settings.location.toUpperCase()}</div>
-                <div style={{ marginTop: 4, fontSize: 11 }}>WhatsApp &amp; Contact no.: (add your number)</div>
+                <div style={{ marginTop: 8, textAlign: 'left', fontSize: 11 }}>{(settings.invoiceAddress?.trim() || settings.location).toUpperCase()}</div>
+                {settings.invoiceContact?.trim() && (
+                  <div style={{ marginTop: 4, fontSize: 11 }}>WhatsApp &amp; Contact no.: {settings.invoiceContact.trim()}</div>
+                )}
               </td>
               <td style={{ width: '35%', padding: '12px 16px', verticalAlign: 'middle', textAlign: 'center', border: '1px solid #999' }}>
                 {effectiveLogo ? (
                   <img src={effectiveLogo} alt={settings.companyName} style={{ width: '80px', height: '80px', objectFit: 'contain', margin: '0 auto', display: 'block' }} />
                 ) : (
                   <div style={{ width: '80px', height: '80px', borderRadius: '12px', backgroundColor: '#0f7a5f', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto' }}>
-                    <span style={{ fontFamily: 'Cinzel, serif', fontSize: '28px', fontWeight: 900, color: '#fff', letterSpacing: '2px' }}>{BRAND.initials}</span>
+                    <span style={{ fontFamily: 'Cinzel, serif', fontSize: '28px', fontWeight: 900, color: '#fff', letterSpacing: '2px' }}>{brandInitials(settings.companyName)}</span>
                   </div>
                 )}
               </td>

@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Printer, AlertCircle, Copy, Loader2, CreditCard, Download } from 'lucide-react';
 import { DatabaseRowType } from '@/types';
-import { calcShippingFee, isFreeSf } from '@/lib/calculations';
+import { calcShippingFee, isFreeSf, getEffectiveCurrency } from '@/lib/calculations';
 import { getCcIncludeShipping } from '@/lib/pricingConfig';
 import InvoicePrintContent from '@/components/InvoicePrintContent';
 import { parseDateRobust } from '@/lib/calculations';
@@ -70,7 +70,9 @@ export default function InvoiceModal({ records, onClose }: Props) {
     dispatchedRecords;
 
   const baseRecord = visibleRecords[0] || records[0];
-  const [currency, setCurrency] = useState(baseRecord?.currency || 'PHP');
+  // Default = the item's own currency; a blank currency means AED (local),
+  // matching how the rest of the app prices it. Change it in the dropdown if needed.
+  const [currency, setCurrency] = useState(() => (baseRecord ? getEffectiveCurrency(baseRecord) : 'AED'));
 
   // Show "Include Shipping in CC" toggle only when there are CC items AND shipping applies
   const hasCcItems = visibleRecords.some(r => (r.modeOfPayment || '') === 'Credit Card');

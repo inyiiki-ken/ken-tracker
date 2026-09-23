@@ -26,7 +26,7 @@ import { getUserRole, EMAIL_TO_LIVER_NAME } from '@/config/roles';
 import { applyRatesConfig } from '@/lib/ratesStore';
 import { computeClientMilestones } from '@/lib/milestones';
 import { DatabaseRowType } from '@/types';
-import { BRAND } from '@/config/brand';
+import { brandInitials } from '@/lib/brandSettings';
 import { BrandThemeLoader, useBrand } from '@/components/BrandThemeLoader';
 
 import WelcomeScreen from '@/components/WelcomeScreen';
@@ -284,7 +284,7 @@ function AppContent() {
               <img src={headerLogo} alt={brandSettings.companyName} className="w-8 h-8 rounded-lg object-contain bg-primary" />
             ) : (
               <div className="w-8 h-8 rounded-lg bg-primary flex items-center justify-center">
-                <span className="font-cinzel text-xs text-primary-foreground font-bold">{BRAND.initials}</span>
+                <span className="font-cinzel text-xs text-primary-foreground font-bold">{brandInitials(brandSettings.companyName)}</span>
               </div>
             )}
             <div>

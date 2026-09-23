@@ -9,17 +9,31 @@ import { Label } from '@/components/ui/label';
 import { toast } from 'sonner';
 import { createUpload, importRows, recordLastImport, getLastImport, undoLastImport, checkDatabaseColumns, fixDatabaseColumns, type LastImportInfo } from '@/lib/api';
 import { parseMasterlistFile, type ParsedMasterlistRow, type ParsedSheetSummary } from '@/lib/masterlistImport';
+import { parseMasterlistImage, isImageFile } from '@/lib/masterlistOcr';
+import { getMasterlistMapping, categoryForMc } from '@/lib/masterlistMapping';
+import { Input } from '@/components/ui/input';
 import { useDataOptions } from '@/lib/dataOptions';
 
 interface Props {
   onRefresh: () => void;
 }
 
+interface Group extends ParsedSheetSummary {
+  /** Where this sheet/photo's rows sit in Parsed.rows. */
+  start: number;
+  isPhoto: boolean;
+  warnings: string[];
+  /** Excel files: the per-worksheet breakdown (for the summary chips). */
+  subSheets?: ParsedSheetSummary[];
+}
+
 interface Parsed {
   rows: ParsedMasterlistRow[];
   liverName: string;
   pageName: string;
-  sheets: ParsedSheetSummary[];
+  sheets: Group[];
+  /** orderId@groupIndex of photo rows whose numbers didn't add up. */
+  flagged: Set<string>;
 }
 
 /**
@@ -33,7 +47,8 @@ export default function UploadMasterlistFAB({ onRefresh }: Props) {
   const [importing, setImporting] = useState(false);
   const [progress, setProgress] = useState<string | null>(null);
   const [pct, setPct] = useState(0);
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
+  const selectedFile = selectedFiles[0] ?? null;
   const [parsed, setParsed] = useState<Parsed | null>(null);
   const [lastImport, setLastImport] = useState<LastImportInfo | null>(null);
   const [undoing, setUndoing] = useState(false);
@@ -70,24 +85,74 @@ export default function UploadMasterlistFAB({ onRefresh }: Props) {
     getLastImport().then(setLastImport).catch(() => setLastImport(null));
   }, [open]);
 
-  const reset = () => { setSelectedFile(null); setParsed(null); setProgress(null); };
+  const reset = () => { setSelectedFiles([]); setParsed(null); setProgress(null); };
 
   const doParse = async () => {
-    if (!selectedFile) { toast.error('Please select a file'); return; }
+    if (!selectedFiles.length) { toast.error('Please select a file'); return; }
     setParsing(true);
     try {
-      const res = await parseMasterlistFile(selectedFile);
-      if (res.rows.length === 0) {
-        toast.error('No valid rows found. Check the file matches the masterlist format (data starts row 6).');
+      // Excel/CSV files and screenshots can be mixed; each photo = one sheet.
+      const rows: ParsedMasterlistRow[] = [];
+      const sheets: Group[] = [];
+      const flagged = new Set<string>();
+      for (let fi = 0; fi < selectedFiles.length; fi++) {
+        const f = selectedFiles[fi];
+        if (isImageFile(f)) {
+          setProgress(`Reading photo ${fi + 1} of ${selectedFiles.length}…`);
+          const res = await parseMasterlistImage(f);
+          const gi = sheets.length;
+          sheets.push({ sheetName: f.name, page: res.pageName, liverName: res.liverName, liveDate: res.liveDate, globalRate: res.globalRate, rowCount: res.rows.length, start: rows.length, isPhoto: true, warnings: res.warnings });
+          res.flagged.forEach((code) => flagged.add(`${code}@${gi}`));
+          rows.push(...res.rows);
+        } else {
+          const res = await parseMasterlistFile(f);
+          sheets.push({ sheetName: f.name, page: res.pageName, liverName: res.liverName, liveDate: res.liveDate, globalRate: res.globalRate, rowCount: res.rows.length, start: rows.length, isPhoto: false, warnings: [], subSheets: res.sheets });
+          rows.push(...res.rows);
+        }
+      }
+      if (rows.length === 0) {
+        toast.error('No valid rows found. Check the file matches this customer\'s masterlist setup.');
         return;
       }
-      setParsed({ rows: res.rows, liverName: res.liverName, pageName: res.pageName, sheets: res.sheets });
+      setParsed({ rows, liverName: sheets[0]?.liverName ?? '', pageName: sheets[0]?.page ?? '', sheets, flagged });
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Could not read file');
     } finally {
       setParsing(false);
+      setProgress(null);
     }
   };
+
+  // ── Editing photo results before import ──
+  const groupOf = (i: number) => parsed?.sheets.findIndex((g) => i >= g.start && i < g.start + g.rowCount) ?? -1;
+  const editGroup = (gi: number, patch: { liverName?: string; liveDate?: string }) =>
+    setParsed((p) => {
+      if (!p) return p;
+      const g = p.sheets[gi];
+      const rows = p.rows.map((r, i) =>
+        i >= g.start && i < g.start + g.rowCount
+          ? { ...r, ...(patch.liverName !== undefined ? { liverName: patch.liverName } : {}), ...(patch.liveDate !== undefined ? { dateOfLive: patch.liveDate } : {}) }
+          : r);
+      const sheets = p.sheets.map((s, k) => (k === gi ? { ...s, ...patch } : s));
+      return { ...p, rows, sheets };
+    });
+  const editRow = (i: number, patch: Partial<ParsedMasterlistRow>) =>
+    setParsed((p) => {
+      if (!p) return p;
+      const m = getMasterlistMapping();
+      const rows = p.rows.map((r, k) => {
+        if (k !== i) return r;
+        const next = { ...r, ...patch };
+        if (patch.mc !== undefined) {
+          const mc = parseFloat(patch.mc) || 0;
+          if (m.priceMode === 'rate_plus_mc') next.clientRate = String((parseFloat(next.goldRate) || 0) + mc);
+          const cat = categoryForMc(m.mcCategories, mc);
+          if (cat) next.category = cat;
+        }
+        return next;
+      });
+      return { ...p, rows };
+    });
 
   // Validation warnings against the customer's DATA'S option lists.
   const warnings = useMemo(() => {
@@ -122,7 +187,7 @@ export default function UploadMasterlistFAB({ onRefresh }: Props) {
         allErrors.push(...result.errors);
       }
       const sheetLabel = sheets.length > 1 ? `${sheets.length} sheets` : `${liverName} / ${pageName}`;
-      const fileName = `${selectedFile?.name ?? 'masterlist'} (${sheetLabel})`;
+      const fileName = `${selectedFiles.length > 1 ? `${selectedFiles.length} files` : (selectedFile?.name ?? 'masterlist')} (${sheetLabel})`;
       await createUpload({
         masterlistFile: fileName,
         status: allErrors.length ? `Processed ${created} items, ${allErrors.length} errors` : `Processed ${created} items`,
@@ -170,7 +235,10 @@ export default function UploadMasterlistFAB({ onRefresh }: Props) {
     }
   };
 
-  const preview = parsed?.rows.slice(0, 8) ?? [];
+  const hasPhotos = !!parsed?.sheets.some((g) => g.isPhoto);
+  // Photos: show every row (so each can be checked/edited). Excel: a sample.
+  const preview = (hasPhotos ? parsed?.rows : parsed?.rows.slice(0, 8)) ?? [];
+  const chips = parsed?.sheets.flatMap((g) => g.subSheets ?? [g]) ?? [];
 
   return (
     <Sheet open={open} onOpenChange={(o) => { setOpen(o); if (!o) reset(); }}>
@@ -209,23 +277,30 @@ export default function UploadMasterlistFAB({ onRefresh }: Props) {
                 className="border-2 border-dashed border-border rounded-lg p-6 text-center cursor-pointer hover:border-primary/50 transition-colors"
                 onClick={() => fileRef.current?.click()}
               >
-                {selectedFile ? (
+                {selectedFiles.length > 1 ? (
+                  <div className="flex items-center justify-center gap-2">
+                    <CheckCircle className="h-4 w-4 text-primary" />
+                    <span className="text-sm text-foreground">{selectedFiles.length} files selected</span>
+                    <button onClick={(e) => { e.stopPropagation(); setSelectedFiles([]); }}><X className="h-4 w-4 text-muted-foreground" /></button>
+                  </div>
+                ) : selectedFile ? (
                   <div className="flex items-center justify-center gap-2">
                     <CheckCircle className="h-4 w-4 text-primary" />
                     <span className="text-sm text-foreground truncate max-w-[200px]">{selectedFile.name}</span>
-                    <button onClick={(e) => { e.stopPropagation(); setSelectedFile(null); }}><X className="h-4 w-4 text-muted-foreground" /></button>
+                    <button onClick={(e) => { e.stopPropagation(); setSelectedFiles([]); }}><X className="h-4 w-4 text-muted-foreground" /></button>
                   </div>
                 ) : (
                   <div>
                     <Upload className="h-8 w-8 text-muted-foreground mx-auto mb-2" />
                     <p className="text-sm text-muted-foreground">Tap to select file</p>
+                    <p className="text-[11px] text-muted-foreground mt-1">Excel / CSV, or screenshots (PNG/JPG) — you can pick several at once</p>
                   </div>
                 )}
               </div>
-              <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv" className="hidden" onChange={(e) => setSelectedFile(e.target.files?.[0] || null)} />
+              <input ref={fileRef} type="file" multiple accept=".xlsx,.xls,.csv,image/png,image/jpeg,image/webp" className="hidden" onChange={(e) => { setSelectedFiles(Array.from(e.target.files || [])); e.target.value = ''; }} />
             </div>
             <Button onClick={doParse} disabled={parsing || !selectedFile} className="w-full font-cinzel uppercase tracking-widest">
-              {parsing ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> Reading…</> : 'Preview'}
+              {parsing ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> {progress || 'Reading…'}</> : 'Preview'}
             </Button>
           </div>
         ) : (
@@ -234,10 +309,10 @@ export default function UploadMasterlistFAB({ onRefresh }: Props) {
             <div className="rounded-lg border border-border p-3">
               <p className="text-sm">
                 <span className="font-semibold text-primary">{parsed.rows.length}</span> items ready across{' '}
-                <span className="font-semibold">{parsed.sheets.length}</span> sheet{parsed.sheets.length !== 1 ? 's' : ''}.
+                <span className="font-semibold">{chips.length}</span> sheet{chips.length !== 1 ? 's' : ''}.
               </p>
               <div className="mt-2 flex flex-wrap gap-1.5">
-                {parsed.sheets.map((s) => (
+                {chips.map((s) => (
                   <span key={s.sheetName} className="text-[11px] px-2 py-0.5 rounded-full bg-muted text-muted-foreground flex items-center gap-1">
                     <FileSpreadsheet className="h-3 w-3" /> {s.page || s.sheetName}: {s.rowCount}
                   </span>
@@ -254,6 +329,26 @@ export default function UploadMasterlistFAB({ onRefresh }: Props) {
                 {warnings.unknownSources.length > 0 && <p className="text-[11px] text-muted-foreground">Sources not in your DATA&apos;S list: {warnings.unknownSources.join(', ')}</p>}
               </div>
             )}
+
+            {/* Photos: liver / date per screenshot (editable) */}
+            {parsed.sheets.map((g, gi) => g.isPhoto && (
+              <div key={gi} className="rounded-lg border border-border p-3 space-y-2">
+                <p className="text-[11px] text-muted-foreground flex items-center gap-1.5">
+                  <FileSpreadsheet className="h-3 w-3" /> Photo: <span className="text-foreground truncate">{g.sheetName}</span> · {g.rowCount} item(s)
+                </p>
+                <div className="grid grid-cols-2 gap-2">
+                  <label className="text-[11px] text-muted-foreground space-y-1">
+                    <span>Liver</span>
+                    <Input value={g.liverName} onChange={(e) => editGroup(gi, { liverName: e.target.value.toUpperCase() })} className="h-7 text-xs" />
+                  </label>
+                  <label className="text-[11px] text-muted-foreground space-y-1">
+                    <span>Date of live</span>
+                    <Input value={g.liveDate} onChange={(e) => editGroup(gi, { liveDate: e.target.value })} className="h-7 text-xs" placeholder="September 17, 2026" />
+                  </label>
+                </div>
+                {g.warnings.map((w, k) => <p key={k} className="text-[11px] text-warning">⚠ {w}</p>)}
+              </div>
+            ))}
 
             {/* Sheet format check */}
             {missingCols.length > 0 && (
@@ -272,6 +367,7 @@ export default function UploadMasterlistFAB({ onRefresh }: Props) {
               <table className="w-full text-[11px]">
                 <thead className="bg-muted/50 text-muted-foreground">
                   <tr>
+                    {hasPhotos && <th className="text-left px-2 py-1.5">Code</th>}
                     <th className="text-left px-2 py-1.5">Name</th>
                     <th className="text-left px-2 py-1.5">Item</th>
                     <th className="text-left px-2 py-1.5">Cat</th>
@@ -285,22 +381,32 @@ export default function UploadMasterlistFAB({ onRefresh }: Props) {
                   </tr>
                 </thead>
                 <tbody>
-                  {preview.map((r, i) => (
-                    <tr key={i} className="border-t border-border/50">
-                      <td className="px-2 py-1.5 truncate max-w-[110px]">{r.minerName}</td>
-                      <td className="px-2 py-1.5 truncate max-w-[140px]">{r.itemDescription}</td>
-                      <td className="px-2 py-1.5 truncate max-w-[90px]">{r.category}</td>
-                      <td className="px-2 py-1.5 text-right">{r.qty}</td>
-                      <td className="px-2 py-1.5 text-right">{r.grams}</td>
-                      <td className="px-2 py-1.5 text-right">{parseFloat(r.goldRate) > 0 ? r.goldRate : '—'}</td>
-                      <td className="px-2 py-1.5 text-right">{r.mc || '—'}</td>
-                      <td className="px-2 py-1.5 text-right">{r.clientRate}</td>
-                      <td className="px-2 py-1.5 text-right">{Math.round((parseFloat(r.grams) || 0) * (parseFloat(r.clientRate) || 0)).toLocaleString()}</td>
-                      <td className="px-2 py-1.5">{r.currency || 'AED'}</td>
-                    </tr>
-                  ))}
+                  {preview.map((r, i) => {
+                    const gi = groupOf(i);
+                    const photo = !!parsed.sheets[gi]?.isPhoto;
+                    const bad = parsed.flagged.has(`${r.orderId}@${gi}`);
+                    const cellIn = (field: keyof ParsedMasterlistRow, w: string) => (
+                      <Input value={String(r[field] ?? '')} onChange={(e) => editRow(i, { [field]: field === 'grams' || field === 'mc' ? e.target.value : e.target.value.toUpperCase() } as Partial<ParsedMasterlistRow>)} className={`h-6 px-1 text-[11px] ${w}`} />
+                    );
+                    return (
+                      <tr key={i} className={`border-t border-border/50 ${bad ? 'bg-warning/15' : ''}`}>
+                        {hasPhotos && <td className="px-2 py-1 whitespace-nowrap">{photo ? cellIn('orderId', 'w-16') : r.orderId}</td>}
+                        <td className="px-2 py-1 truncate max-w-[130px]">{photo ? cellIn('minerName', 'w-28') : r.minerName}</td>
+                        <td className="px-2 py-1 truncate max-w-[160px]">{photo ? cellIn('itemDescription', 'w-36') : r.itemDescription}</td>
+                        <td className="px-2 py-1 truncate max-w-[90px]">{r.category}</td>
+                        <td className="px-2 py-1 text-right">{r.qty}</td>
+                        <td className="px-2 py-1 text-right">{photo ? cellIn('grams', 'w-14 text-right') : r.grams}</td>
+                        <td className="px-2 py-1 text-right">{parseFloat(r.goldRate) > 0 ? r.goldRate : '—'}</td>
+                        <td className="px-2 py-1 text-right">{photo ? cellIn('mc', 'w-12 text-right') : (r.mc || '—')}</td>
+                        <td className="px-2 py-1 text-right">{r.clientRate}</td>
+                        <td className="px-2 py-1 text-right">{Math.round((parseFloat(r.grams) || 0) * (parseFloat(r.clientRate) || 0)).toLocaleString()}</td>
+                        <td className="px-2 py-1">{r.currency || 'AED'}</td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
+              {hasPhotos && <p className="text-[11px] text-muted-foreground px-2 py-1.5 border-t border-border/50">Read from a photo — check each row against the screenshot. Yellow rows didn&apos;t add up. You can edit any white box.</p>}
               {parsed.rows.length > preview.length && (
                 <p className="text-[11px] text-muted-foreground px-2 py-1.5 border-t border-border/50">+ {parsed.rows.length - preview.length} more…</p>
               )}

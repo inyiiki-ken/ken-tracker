@@ -208,6 +208,22 @@ export default function MasterlistImportSetup({ activeName }: { activeName?: str
                 <option value="rate_plus_mc">Rate + MC</option>
               </select>
             </Meta>
+            <Meta label="Liver name cell">
+              <Input value={mapping.liverCell} onChange={(e) => update({ liverCell: e.target.value.toUpperCase() })} className="h-7 text-xs font-mono" placeholder="(uses LIVER NAME label)" />
+            </Meta>
+            <Meta label="T.O.G if file has none">
+              <Input value={mapping.defaultTog} onChange={(e) => update({ defaultTog: e.target.value.toUpperCase() })} className="h-7 text-xs" placeholder="e.g. 18K" />
+            </Meta>
+            <Meta label="Round rate up (426.25 → 427)">
+              <select
+                value={mapping.roundRateUp ? "yes" : "no"}
+                onChange={(e) => update({ roundRateUp: e.target.value === "yes" })}
+                className="h-7 w-full text-xs rounded-md border border-border bg-background px-2"
+              >
+                <option value="no">No — keep decimals</option>
+                <option value="yes">Yes — whole number up</option>
+              </select>
+            </Meta>
             <Meta label="Category if file has none">
               <Input value={mapping.defaultCategory} onChange={(e) => update({ defaultCategory: e.target.value })} className="h-7 text-xs" placeholder="e.g. Gold Normal" />
             </Meta>
@@ -288,7 +304,7 @@ export default function MasterlistImportSetup({ activeName }: { activeName?: str
                   <table className="w-full text-[11px] whitespace-nowrap">
                     <thead className="bg-muted/50 text-muted-foreground">
                       <tr>
-                        {["Code", "Client", "Item", "Grams", "Gold rate", "MC", "Rate/g", "Amount", "Category"].map((h) => (
+                        {["Code", "Client", "Item", "Grams", "Gold rate", "MC", "Rate/g", "Amount", "Category", "T.O.G", "Liver"].map((h) => (
                           <th key={h} className="text-left px-2 py-1.5">{h}</th>
                         ))}
                       </tr>
@@ -305,6 +321,8 @@ export default function MasterlistImportSetup({ activeName }: { activeName?: str
                           <td className="px-2 py-1">{r.clientRate}</td>
                           <td className="px-2 py-1">{amountOf(r).toLocaleString()}</td>
                           <td className="px-2 py-1">{r.category || "—"}</td>
+                          <td className="px-2 py-1">{r.tog || "—"}</td>
+                          <td className="px-2 py-1">{r.liverName || "—"}</td>
                         </tr>
                       ))}
                     </tbody>

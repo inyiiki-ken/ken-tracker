@@ -142,11 +142,19 @@ function parseSheetGrid(data: unknown[][], m: ResolvedMasterlistMapping): {
   const pageName = m.page && data[m.page.row]?.[m.page.col] != null
     ? cleanTitle(data[m.page.row][m.page.col]) : "";
 
+  // No "LIVER NAME" label: read the liver from its own cell (e.g. the "AMBIE" title).
+  if (liverName === "Unknown" && m.liverCell) {
+    const v = cleanTitle(data[m.liverCell.row]?.[m.liverCell.col]);
+    if (v) liverName = v;
+  }
+
   // Gold-rate customers: if the file has no rate at all, use the Daily/Sticky gold rate.
   let fallbackGold = globalRate;
   if (!fallbackGold && usesGold()) fallbackGold = getRatesForDate(liveDate).goldRate || 0;
 
   const rows: ParsedMasterlistRow[] = [];
+  // Round a rate UP to a whole number when this customer's setup says so (426.25 -> 427).
+  const up = (v: number) => (m.roundRateUp && v > 0 ? Math.ceil(v - 1e-9) : v);
 
   for (let i = m.dataStartIndex; i < data.length; i++) {
     const row = data[i];
@@ -162,17 +170,17 @@ function parseSheetGrid(data: unknown[][], m: ResolvedMasterlistMapping): {
     const category = cell(row, m.col.category) || categoryForMc(m.mcCategories, mcForCat) || m.defaultCategory;
     const source = cell(row, m.col.source);
     const qty = String(parseInt(cell(row, m.col.qty), 10) || 1);
-    const tog = cell(row, m.col.tog);
+    const tog = cell(row, m.col.tog) || m.defaultTog;
     const grams = String(parseFloat(cell(row, m.col.grams)) || 0);
 
     const mc = toNum(cell(row, m.col.mc));
     const rowGold = toNum(cell(row, m.col.goldRate));
-    const goldRate = rowGold > 0 ? rowGold : fallbackGold;
+    const goldRate = up(rowGold > 0 ? rowGold : fallbackGold);
 
     let clientRate: number;
     if (m.priceMode === "rate_plus_mc") {
       // e.g. Crown: selling rate per gram = gold rate + MC (AMOUNT = WT x (RATE + MC)).
-      const base = toNum(cell(row, m.col.clientRate)) || goldRate;
+      const base = up(toNum(cell(row, m.col.clientRate))) || goldRate;
       clientRate = base > 0 ? base + mc : 0;
       if (!clientRate) {
         const amt = toNum(cell(row, m.col.amount));
@@ -182,6 +190,7 @@ function parseSheetGrid(data: unknown[][], m: ResolvedMasterlistMapping): {
     } else {
       clientRate = parseFloat(cell(row, m.col.clientRate));
       if (isNaN(clientRate) || clientRate === 0) clientRate = toNum(cell(row, m.col.amount));
+      else clientRate = up(clientRate);
     }
 
     const remarks = cell(row, m.col.remarks);
@@ -214,6 +223,11 @@ function parseSheetGrid(data: unknown[][], m: ResolvedMasterlistMapping): {
   }
 
   return { rows, liverName, pageName, liveDate, globalRate };
+}
+
+/** Parse an already-built grid (e.g. from a photo) with the customer's layout. */
+export function parseMasterlistGrid(data: unknown[][], mapping?: MasterlistMapping) {
+  return parseSheetGrid(data, resolveMasterlistMapping(mapping ?? getMasterlistMapping()));
 }
 
 /**

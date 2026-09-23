@@ -27,6 +27,10 @@ export interface BrandSettings {
   cardColorHex?: string;       // panels, cards, dropdown menus
   borderColorHex?: string;     // borders + input outlines
   accentColorHex?: string;     // secondary accent (badges, hovers)
+  /** Printed under the company name on invoices (defaults to Location). */
+  invoiceAddress?: string;
+  /** WhatsApp / contact number printed on invoices. Empty = line hidden. */
+  invoiceContact?: string;
 }
 
 export const DEFAULT_BRAND_SETTINGS: BrandSettings = {
@@ -199,22 +203,49 @@ export function applyBrandSettingsToDom(settings: BrandSettings) {
 
 /** Resizes + compresses an uploaded image client-side before storing as base64
  * (Google Sheets cells cap out around 50,000 characters -- this keeps logos well under that). */
+/** Longest data URL that fits safely in one Google Sheets cell (limit 50,000). */
+export const MAX_LOGO_DATAURL = 44000;
+
+/**
+ * Resize + compress an image until it fits in one Google Sheets cell.
+ * Tries sharp PNG first (keeps transparency), then WebP, then smaller sizes,
+ * so detailed/photo-like logos no longer fail with "too large".
+ */
 export function resizeImageToDataUrl(file: File, maxDimension = 160): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => {
       const img = new Image();
       img.onload = () => {
-        const scale = Math.min(1, maxDimension / Math.max(img.width, img.height));
-        const canvas = document.createElement("canvas");
-        canvas.width = img.width * scale;
-        canvas.height = img.height * scale;
-        const ctx = canvas.getContext("2d");
-        if (!ctx) return reject(new Error("Canvas not supported"));
-        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-        resolve(canvas.toDataURL("image/png", 0.9));
+        const render = (dim: number, type: string, quality?: number): string => {
+          const scale = Math.min(1, dim / Math.max(img.width, img.height));
+          const canvas = document.createElement("canvas");
+          canvas.width = Math.max(1, Math.round(img.width * scale));
+          canvas.height = Math.max(1, Math.round(img.height * scale));
+          const ctx = canvas.getContext("2d");
+          if (!ctx) throw new Error("Canvas not supported");
+          if (type === "image/jpeg") { ctx.fillStyle = "#ffffff"; ctx.fillRect(0, 0, canvas.width, canvas.height); }
+          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+          return canvas.toDataURL(type, quality);
+        };
+        try {
+          const dims = [maxDimension, Math.round(maxDimension * 0.8), Math.round(maxDimension * 0.6), 96];
+          for (const dim of dims) {
+            const png = render(dim, "image/png");
+            if (png.length <= MAX_LOGO_DATAURL) return resolve(png);
+            for (const q of [0.92, 0.8, 0.65, 0.5]) {
+              const webp = render(dim, "image/webp", q);
+              if (webp.startsWith("data:image/webp") && webp.length <= MAX_LOGO_DATAURL) return resolve(webp);
+              const jpg = render(dim, "image/jpeg", q);
+              if (jpg.length <= MAX_LOGO_DATAURL) return resolve(jpg);
+            }
+          }
+          reject(new Error("This image is too detailed to store. Try a simpler logo (plain background, fewer details)."));
+        } catch (e) {
+          reject(e);
+        }
       };
-      img.onerror = reject;
+      img.onerror = () => reject(new Error("Couldn't read that image. Use a PNG or JPG file."));
       img.src = reader.result as string;
     };
     reader.onerror = reject;

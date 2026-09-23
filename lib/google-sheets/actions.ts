@@ -899,12 +899,19 @@ export async function getBrandLogo(kind: "header" | "invoice"): Promise<{ dataUr
   return { dataUrl: (await readConfig(LOGO_MARKERS[kind])) || null };
 }
 
-export async function saveBrandLogo(params: { kind: "header" | "invoice"; dataUrl: string }): Promise<{ success: boolean }> {
+// Returns { success:false, error } instead of throwing: in production builds
+// Next.js hides thrown messages ("An error occurred in the Server Components
+// render…"), so the user never saw WHY a logo failed.
+export async function saveBrandLogo(params: { kind: "header" | "invoice"; dataUrl: string }): Promise<{ success: boolean; error?: string }> {
   await requireRole(["super_admin"]);
   if (params.dataUrl.length > 45000) {
-    throw new Error("Image is too large even after compression. Try a smaller or simpler image.");
+    return { success: false, error: "Image is too large even after compression. Try a smaller or simpler image." };
   }
-  await writeConfig(LOGO_MARKERS[params.kind], params.dataUrl);
+  try {
+    await writeConfig(LOGO_MARKERS[params.kind], params.dataUrl);
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : "Couldn't save the logo to the sheet." };
+  }
   return { success: true };
 }
 
@@ -923,14 +930,18 @@ export async function getPageLogos(_params?: Record<string, never>): Promise<Pag
     .filter((p) => p.page && p.dataUrl);
 }
 
-export async function savePageLogo(params: { page: string; dataUrl: string }): Promise<{ success: boolean }> {
+export async function savePageLogo(params: { page: string; dataUrl: string }): Promise<{ success: boolean; error?: string }> {
   await requireRole(["super_admin"]);
   if (params.dataUrl.length > 45000) {
-    throw new Error("Image is too large even after compression. Try a smaller or simpler image.");
+    return { success: false, error: "Image is too large even after compression. Try a smaller or simpler image." };
   }
   const page = params.page.trim();
-  if (!page) throw new Error("Page name is required.");
-  await writeConfig(PGLOGO_PREFIX + page, params.dataUrl);
+  if (!page) return { success: false, error: "Page name is required." };
+  try {
+    await writeConfig(PGLOGO_PREFIX + page, params.dataUrl);
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : "Couldn't save the logo to the sheet." };
+  }
   return { success: true };
 }
 
