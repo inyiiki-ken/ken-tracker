@@ -36,7 +36,7 @@ if errorlevel 1 goto :fail
 
 echo.
 echo === 2/5  Bumping version ===
-call npm version patch -m "Release v%%s - %MSG%"
+call npm version patch -m "Release - %MSG%"
 if errorlevel 1 goto :fail
 
 echo.
