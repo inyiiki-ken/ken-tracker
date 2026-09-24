@@ -7,6 +7,7 @@ import { requireRole, requireSession } from "./authz";
 import { getSessionEmail } from "./tenancy-core";
 import {
   parsePriceList,
+  parseOutLog,
   newLiveId,
   roundAmount,
   round2,
@@ -39,6 +40,7 @@ const SESSION_H = {
   weightBack: "Weight Back (g)",
   status: "Status",
   notes: "Notes",
+  outLog: "Out Log",
   updatedBy: "Updated By",
   updatedAt: "Updated At",
 } as const;
@@ -141,6 +143,7 @@ export async function getLiveData(_params?: Record<string, never>): Promise<Live
         weightBack: status === "Out" || back === "" ? null : num(back),
         status,
         notes: str(r.get(SESSION_H.notes)),
+        outLog: parseOutLog(str(r.get(SESSION_H.outLog))),
       };
     });
 
@@ -239,6 +242,7 @@ export async function startLiveSession(params: { date: string; seller: string; w
     [SESSION_H.weightBack]: "",
     [SESSION_H.status]: "Out",
     [SESSION_H.notes]: str(params.notes),
+    [SESSION_H.outLog]: JSON.stringify([{ at: stamp(), grams: round2(num(params.weightOut)), note: "Weighed out" }]),
     [SESSION_H.updatedBy]: who,
     [SESSION_H.updatedAt]: stamp(),
   });
@@ -294,6 +298,7 @@ export async function finishLiveSession(params: {
       [SESSION_H.weightBack]: String(back),
       [SESSION_H.status]: "Returned",
       [SESSION_H.notes]: str(params.notes),
+      [SESSION_H.outLog]: JSON.stringify([{ at: stamp(), grams: out, note: "Weighed out" }]),
       [SESSION_H.updatedBy]: who,
       [SESSION_H.updatedAt]: stamp(),
     });
@@ -420,4 +425,119 @@ export async function deleteLiveStock(params: { id: string }): Promise<{ success
   const row = rows.find((r) => str(r.get(STOCK_H.id)) === params.id);
   if (row) await row.delete();
   return { success: true };
+}
+
+// ── While the live is running ──────────────────────────────────────────────
+
+type SessionRow = Awaited<ReturnType<GoogleSpreadsheetWorksheet["getRows"]>>[number];
+
+function pushLog(row: SessionRow, grams: number, note: string) {
+  const log = parseOutLog(str(row.get(SESSION_H.outLog)));
+  if (!log.length) {
+    // Older rows had no log: seed it with the original weigh-out.
+    const before = num(row.get(SESSION_H.weightOut));
+    if (before) log.push({ at: "", grams: before, note: "Weighed out" });
+  }
+  log.push({ at: stamp(), grams: round2(grams), note });
+  row.set(SESSION_H.outLog, JSON.stringify(log.slice(-200)));
+}
+
+/** More pieces taken from the room during the live (weighed and added to the seller). */
+export async function addToLiveSession(params: { sessionId: string; grams: number; note?: string }): Promise<{ weightOut: number }> {
+  await requireRole(ROLES);
+  const who = (await getSessionEmail().catch(() => null)) || "";
+  const grams = round2(num(params.grams));
+  if (!(grams > 0)) throw new Error("Enter the grams taken.");
+  const ws = await getTab("sessions");
+  const rows = await ws.getRows();
+  const row = rows.find((r) => str(r.get(SESSION_H.id)) === params.sessionId);
+  if (!row) throw new Error("That weigh-out was not found. Refresh and try again.");
+  if (str(row.get(SESSION_H.status)) !== "Out") throw new Error("This live was already weighed back.");
+  pushLog(row, grams, str(params.note) || "Added");
+  const total = round2(num(row.get(SESSION_H.weightOut)) + grams);
+  row.set(SESSION_H.weightOut, String(total));
+  row.set(SESSION_H.updatedBy, who);
+  row.set(SESSION_H.updatedAt, stamp());
+  await row.save();
+  return { weightOut: total };
+}
+
+/**
+ * A seller lends grams that are out with her to another seller. It goes back
+ * through the room: it comes off her weigh-out and goes onto the other
+ * seller's open weigh-out (one is started if she has none). Shop stock is
+ * unchanged.
+ */
+export async function transferLiveWeight(params: { fromSessionId: string; toSeller: string; grams: number; date?: string; note?: string }): Promise<{ success: boolean }> {
+  await requireRole(ROLES);
+  const who = (await getSessionEmail().catch(() => null)) || "";
+  const grams = round2(num(params.grams));
+  const to = str(params.toSeller).toUpperCase();
+  if (!(grams > 0)) throw new Error("Enter the grams.");
+  if (!to) throw new Error("Choose who receives it.");
+  const ws = await getTab("sessions");
+  const rows = await ws.getRows();
+  const from = rows.find((r) => str(r.get(SESSION_H.id)) === params.fromSessionId);
+  if (!from || str(from.get(SESSION_H.status)) !== "Out") throw new Error("That weigh-out is not open any more. Refresh and try again.");
+  const fromSeller = str(from.get(SESSION_H.seller)).toUpperCase();
+  if (fromSeller === to) throw new Error("Choose a different seller.");
+  const fromOut = num(from.get(SESSION_H.weightOut));
+  if (grams > fromOut + 0.001) throw new Error(`${fromSeller} only has ${round2(fromOut)} g out.`);
+  const note = str(params.note);
+
+  pushLog(from, -grams, `Given to ${to}${note ? ` — ${note}` : ""}`);
+  from.set(SESSION_H.weightOut, String(round2(fromOut - grams)));
+  from.set(SESSION_H.updatedBy, who);
+  from.set(SESSION_H.updatedAt, stamp());
+  await from.save();
+
+  const target = rows.find((r) => str(r.get(SESSION_H.status)) === "Out" && str(r.get(SESSION_H.seller)).toUpperCase() === to);
+  const logNote = `From ${fromSeller}${note ? ` — ${note}` : ""}`;
+  if (target) {
+    pushLog(target, grams, logNote);
+    target.set(SESSION_H.weightOut, String(round2(num(target.get(SESSION_H.weightOut)) + grams)));
+    target.set(SESSION_H.updatedBy, who);
+    target.set(SESSION_H.updatedAt, stamp());
+    await target.save();
+  } else {
+    await ws.addRow({
+      [SESSION_H.id]: newLiveId("LS"),
+      [SESSION_H.date]: isoDate(params.date) || isoDate(from.get(SESSION_H.date)) || todayISO(),
+      [SESSION_H.seller]: to,
+      [SESSION_H.weightOut]: String(grams),
+      [SESSION_H.weightBack]: "",
+      [SESSION_H.status]: "Out",
+      [SESSION_H.notes]: "",
+      [SESSION_H.outLog]: JSON.stringify([{ at: stamp(), grams, note: logNote }]),
+      [SESSION_H.updatedBy]: who,
+      [SESSION_H.updatedAt]: stamp(),
+    });
+  }
+  return { success: true };
+}
+
+/** Move on-hold items from one seller's container to another's (borrowing). */
+export async function moveLiveItems(params: { ids: string[]; toSeller: string }): Promise<{ moved: number }> {
+  await requireRole(ROLES);
+  const who = (await getSessionEmail().catch(() => null)) || "";
+  const to = str(params.toSeller).toUpperCase();
+  if (!to) throw new Error("Choose who receives the items.");
+  const ids = new Set(params.ids || []);
+  const ws = await getTab("items");
+  const rows = await ws.getRows();
+  let moved = 0;
+  for (const r of rows) {
+    if (!ids.has(str(r.get(ITEM_H.id)))) continue;
+    if ((str(r.get(ITEM_H.status)) || "On hold") !== "On hold") continue;
+    const from = str(r.get(ITEM_H.seller)).toUpperCase();
+    if (from === to) continue;
+    const prev = str(r.get(ITEM_H.notes));
+    r.set(ITEM_H.seller, to);
+    r.set(ITEM_H.notes, [prev, `Moved from ${from} on ${todayISO()}`].filter(Boolean).join(" · "));
+    r.set(ITEM_H.updatedBy, who);
+    r.set(ITEM_H.updatedAt, stamp());
+    await r.save();
+    moved++;
+  }
+  return { moved };
 }

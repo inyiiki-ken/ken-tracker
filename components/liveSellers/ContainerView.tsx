@@ -7,14 +7,15 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { ArrowLeft, Loader2, PackageCheck, XCircle, FileText, Plus, Pencil, Printer, Undo2, Scale } from "lucide-react";
+import { ArrowLeft, Loader2, PackageCheck, XCircle, FileText, Plus, Pencil, Printer, Undo2, ArrowRightLeft } from "lucide-react";
 import { toast } from "sonner";
-import { updateLiveItems } from "@/lib/api";
+import { updateLiveItems, moveLiveItems } from "@/lib/api";
 import { useBrand } from "@/components/BrandThemeLoader";
 import { brandInitials } from "@/lib/brandSettings";
 import { buildLiveInvoiceHtml, printHtml } from "@/lib/liveInvoice";
 import { daysSince, fmtDate, rateFor, roundAmount, todayISO, type LiveData, type LiveItem, type LiveSession } from "@/lib/liveSellers";
 import { Chip, Field, g, holdingLabel, money } from "./parts";
+import OpenOutPanel from "./OpenOutPanel";
 
 interface Props {
   seller: string;
@@ -23,9 +24,10 @@ interface Props {
   onChanged: () => Promise<void> | void;
   onAddItems: () => void;
   onWeighBack: (s: LiveSession) => void;
+  onOutAction: (action: "add" | "give", s: LiveSession) => void;
 }
 
-export default function ContainerView({ seller, data, onBack, onChanged, onAddItems, onWeighBack }: Props) {
+export default function ContainerView({ seller, data, onBack, onChanged, onAddItems, onWeighBack, onOutAction }: Props) {
   const { settings, invoiceLogo, headerLogo } = useBrand();
   const cur = data.priceList.currency;
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -39,6 +41,8 @@ export default function ContainerView({ seller, data, onBack, onChanged, onAddIt
   const [editForm, setEditForm] = useState({ description: "", type: "", grams: "", amount: "", liveDate: "" });
   const [lastInvoice, setLastInvoice] = useState<string | null>(null);
   const [historyTab, setHistoryTab] = useState<"sold" | "cancelled">("sold");
+  const [moveOpen, setMoveOpen] = useState(false);
+  const [moveTo, setMoveTo] = useState("");
 
   const mine = useMemo(() => data.items.filter((i) => i.seller === seller), [data.items, seller]);
   const hold = useMemo(
@@ -178,6 +182,28 @@ export default function ContainerView({ seller, data, onBack, onChanged, onAddIt
     }
   };
 
+  const otherSellers = useMemo(
+    () => [...new Set([...data.items.map((i) => i.seller), ...data.sessions.map((x) => x.seller)])].filter((n) => n && n !== seller).sort(),
+    [data, seller]
+  );
+  const doMove = async () => {
+    const to = moveTo.trim().toUpperCase();
+    if (!to) return toast.error("Choose who receives the items.");
+    if (to === seller) return toast.error("Choose a different seller.");
+    setBusy(true);
+    try {
+      const res = await moveLiveItems({ ids: sel.map((i) => i.id), toSeller: to });
+      toast.success(`${res.moved} item${res.moved === 1 ? "" : "s"} moved to ${to}.`);
+      setSelected(new Set());
+      setMoveOpen(false);
+      await onChanged();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Move failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const lastInvoiceItems = lastInvoice ? mine.filter((i) => i.invoiceNo === lastInvoice) : [];
 
   return (
@@ -196,10 +222,8 @@ export default function ContainerView({ seller, data, onBack, onChanged, onAddIt
       </div>
 
       {openOut.map((s) => (
-        <div key={s.id} className="flex flex-wrap items-center gap-2 rounded-lg border border-info/40 bg-info/10 px-3 py-2 mb-3 text-sm">
-          <Scale className="h-4 w-4 text-info" />
-          <span className="mr-auto"><b>{g(s.weightOut)}</b> out for live since {fmtDate(s.date)} — not weighed back yet.</span>
-          <Button size="sm" onClick={() => onWeighBack(s)}>Weigh back</Button>
+        <div key={s.id} className="mb-3">
+          <OpenOutPanel session={s} onAdd={() => onOutAction("add", s)} onGive={() => onOutAction("give", s)} onWeighBack={() => onWeighBack(s)} />
         </div>
       ))}
 
@@ -220,6 +244,9 @@ export default function ContainerView({ seller, data, onBack, onChanged, onAddIt
           <span className="text-sm text-muted-foreground mr-auto">
             {hold.length} item{hold.length === 1 ? "" : "s"} · {g(holdGrams)} · {money(holdTotal, cur)}
           </span>
+          <Button size="sm" variant="outline" onClick={() => { if (!sel.length) return toast.error("Tick the items to move."); setMoveTo(""); setMoveOpen(true); }} disabled={busy} title="Lend to another seller">
+            <ArrowRightLeft className="h-3.5 w-3.5 mr-1.5" /> Move
+          </Button>
           <Button size="sm" variant="outline" onClick={() => (sel.length ? setCancelOpen(true) : toast.error("Tick the items to cancel."))} disabled={busy}>
             <XCircle className="h-3.5 w-3.5 mr-1.5" /> Cancel
           </Button>
@@ -360,6 +387,24 @@ export default function ContainerView({ seller, data, onBack, onChanged, onAddIt
             <Button size="sm" onClick={doPullout} disabled={busy}>
               {busy ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <PackageCheck className="h-4 w-4 mr-2" />}Mark sold & make invoice
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Move to another seller */}
+      <Dialog open={moveOpen} onOpenChange={setMoveOpen}>
+        <DialogContent className="bg-card border-border max-w-md" aria-describedby={undefined}>
+          <DialogHeader><DialogTitle className="font-cinzel text-primary">Move {sel.length} item{sel.length === 1 ? "" : "s"} to another seller</DialogTitle></DialogHeader>
+          <p className="text-xs text-muted-foreground">
+            For borrowing: the items come back to the room and go out to the other seller. They stay on hold, now in her container ({g(sel.reduce((s, i) => s + i.grams, 0))}).
+          </p>
+          <Field label="Move to">
+            <Input list="ls-move-to" value={moveTo} onChange={(e) => setMoveTo(e.target.value)} placeholder="e.g. NENA" className="text-sm uppercase" autoFocus />
+            <datalist id="ls-move-to">{otherSellers.map((n) => <option key={n} value={n} />)}</datalist>
+          </Field>
+          <DialogFooter>
+            <Button variant="outline" size="sm" onClick={() => setMoveOpen(false)} disabled={busy}>Cancel</Button>
+            <Button size="sm" onClick={doMove} disabled={busy}>{busy ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : null}Move</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

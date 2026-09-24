@@ -78,6 +78,26 @@ export interface LiveSession {
   weightBack: number | null; // null while still out
   status: LiveSessionStatus;
   notes: string;
+  /** Each weigh-out movement: first pull, extra pieces, grams given to / received from another seller. */
+  outLog: LiveOutEntry[];
+}
+
+export interface LiveOutEntry {
+  at: string; // ISO timestamp
+  grams: number; // + more out to this seller, − given away
+  note: string;
+}
+
+export function parseOutLog(raw: string): LiveOutEntry[] {
+  if (!raw) return [];
+  try {
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr)
+      ? arr.map((e) => ({ at: String(e?.at ?? ""), grams: Number(e?.grams) || 0, note: String(e?.note ?? "") }))
+      : [];
+  } catch {
+    return [];
+  }
 }
 
 export interface LiveItem {

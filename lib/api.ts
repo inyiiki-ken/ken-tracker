@@ -83,5 +83,8 @@ export {
   updateLiveItems,
   addLiveStock,
   deleteLiveStock,
+  addToLiveSession,
+  transferLiveWeight,
+  moveLiveItems,
 } from "./google-sheets/liveSellers";
 export type { LiveItemInput } from "./google-sheets/liveSellers";

@@ -6,12 +6,14 @@ import { Input } from "@/components/ui/input";
 import { Loader2, Scale, Plus, RefreshCw, Users, ChevronRight, Search } from "lucide-react";
 import { toast } from "sonner";
 import { getLiveData } from "@/lib/api";
-import { DEFAULT_PRICE_LIST, computeSellers, computeStock, fmtDate, todayISO, type LiveData, type LiveSession } from "@/lib/liveSellers";
+import { DEFAULT_PRICE_LIST, computeSellers, computeStock, todayISO, type LiveData, type LiveSession } from "@/lib/liveSellers";
 import LiveDayDialog, { type LiveDayMode } from "./LiveDayDialog";
 import ContainerView from "./ContainerView";
 import StockView from "./StockView";
 import ReportView from "./ReportView";
 import PriceListView from "./PriceListView";
+import OutActionDialog, { type OutAction } from "./OutActionDialog";
+import OpenOutPanel from "./OpenOutPanel";
 import { Chip, Kpi, g, holdingLabel, money } from "./parts";
 
 type View = "sellers" | "stock" | "report" | "prices";
@@ -30,6 +32,7 @@ export default function LiveSellersTab({ canEditSettings }: { canEditSettings: b
   const [seller, setSeller] = useState<string | null>(null);
   const [dialog, setDialog] = useState<{ mode: LiveDayMode; session?: LiveSession | null; seller?: string } | null>(null);
   const [search, setSearch] = useState("");
+  const [outAction, setOutAction] = useState<{ action: OutAction; session: LiveSession } | null>(null);
 
   const load = useCallback(async (quiet = false) => {
     if (!quiet) setLoading(true);
@@ -96,6 +99,7 @@ export default function LiveSellersTab({ canEditSettings }: { canEditSettings: b
             onChanged={() => load(true)}
             onAddItems={() => setDialog({ mode: "hold", seller })}
             onWeighBack={(s) => setDialog({ mode: "back", session: s })}
+            onOutAction={(action, session) => setOutAction({ action, session })}
           />
         ) : view === "sellers" ? (
           <>
@@ -151,10 +155,13 @@ export default function LiveSellersTab({ canEditSettings }: { canEditSettings: b
                       This month: {money(s.soldAmount, cur)} sold{s.cancelledCount ? ` · ${s.cancelledCount} cancelled` : ""}
                     </div>
                     {s.out && (
-                      <div className="flex items-center gap-2 rounded-lg bg-info/10 border border-info/30 px-2 py-1.5 text-xs">
-                        <span className="mr-auto"><b>{g(s.out.weightOut)}</b> out since {fmtDate(s.out.date)}</span>
-                        <Button size="sm" className="h-7" onClick={() => setDialog({ mode: "back", session: s.out })}>Weigh back</Button>
-                      </div>
+                      <OpenOutPanel
+                        compact
+                        session={s.out}
+                        onAdd={() => setOutAction({ action: "add", session: s.out! })}
+                        onGive={() => setOutAction({ action: "give", session: s.out! })}
+                        onWeighBack={() => setDialog({ mode: "back", session: s.out })}
+                      />
                     )}
                   </div>
                 ))}
@@ -170,6 +177,14 @@ export default function LiveSellersTab({ canEditSettings }: { canEditSettings: b
         )}
       </div>
 
+      <OutActionDialog
+        open={!!outAction}
+        action={outAction?.action ?? "add"}
+        session={outAction?.session ?? null}
+        sellers={sellerNames}
+        onClose={() => setOutAction(null)}
+        onSaved={() => load(true)}
+      />
       <LiveDayDialog
         open={!!dialog}
         mode={dialog?.mode ?? "back"}
