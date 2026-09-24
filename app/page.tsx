@@ -383,7 +383,7 @@ function AppContent() {
         <InvoicingTab records={records} searchQuery={searchQueries.invoicing} onSearchChange={handleSearchChange} onUpdate={handleUpdate} />
       )}
       {activeTab === 'livesellers' && !isTabHidden('livesellers') && (
-        <LiveSellersTab canEditSettings={effectiveRoles.includes('super_admin') || effectiveRoles.includes('admin')} />
+        <LiveSellersTab records={records} canEditSettings={effectiveRoles.includes('super_admin') || effectiveRoles.includes('admin')} />
       )}
       {activeTab === 'settings' && <DesignSettings />}
       {activeTab === 'godmode' && <GodModePanel />}

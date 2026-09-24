@@ -4,13 +4,13 @@ import { useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
-import { Loader2, Plus, Minus, Trash2 } from "lucide-react";
+import { Loader2, Plus, Minus, Trash2, Pencil } from "lucide-react";
 import { toast } from "sonner";
-import { addLiveStock, deleteLiveStock, deleteLiveSession } from "@/lib/api";
-import { fmtDate, round2, todayISO, type LiveData, type LiveStockEntry, type StockSummary } from "@/lib/liveSellers";
+import { addLiveStock, deleteLiveStock } from "@/lib/api";
+import { fmtDate, round2, todayISO, type LiveData, type LiveSession, type LiveStockEntry, type StockSummary } from "@/lib/liveSellers";
 import { Chip, Field, Kpi, g } from "./parts";
 
-export default function StockView({ data, stock, onChanged, canDelete }: { data: LiveData; stock: StockSummary; onChanged: () => Promise<void> | void; canDelete: boolean }) {
+export default function StockView({ data, stock, onChanged, canDelete, onEditSession, onAddItems }: { data: LiveData; stock: StockSummary; onChanged: () => Promise<void> | void; canDelete: boolean; onEditSession: (s: LiveSession) => void; onAddItems: (s: LiveSession) => void }) {
   const [form, setForm] = useState({ date: todayISO(), grams: "", pcs: "", description: "", note: "" });
   const [adjust, setAdjust] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -45,16 +45,6 @@ export default function StockView({ data, stock, onChanged, canDelete }: { data:
       toast.error(err instanceof Error ? err.message : "Save failed");
     } finally {
       setSaving(false);
-    }
-  };
-
-  const removeSession = async (id: string) => {
-    try {
-      await deleteLiveSession({ sessionId: id });
-      toast.success("Weigh-out removed.");
-      await onChanged();
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Delete failed");
     }
   };
 
@@ -120,6 +110,7 @@ export default function StockView({ data, stock, onChanged, canDelete }: { data:
                   <th className="px-2 py-2 font-medium text-right">Missing</th>
                   <th className="px-2 py-2 font-medium text-right">Listed</th>
                   <th className="px-2 py-2 font-medium">Check</th>
+                  <th className="w-8" />
                 </tr>
               </thead>
               <tbody>
@@ -136,15 +127,17 @@ export default function StockView({ data, stock, onChanged, canDelete }: { data:
                       <td className="px-2 py-2 text-right tabular-nums">{s.listed.toFixed(2)}</td>
                       <td className="px-2 py-2">
                         {s.status === "Out" ? (
-                          <span className="flex items-center gap-2">
-                            <Chip>Out</Chip>
-                            <button onClick={() => removeSession(s.id)} className="text-muted-foreground hover:text-destructive" title="Delete weigh-out entered by mistake"><Trash2 className="h-3.5 w-3.5" /></button>
-                          </span>
+                          <Chip>Out</Chip>
                         ) : diff !== null && Math.abs(diff) <= 0.1 ? (
                           <Chip tone="Sold">Matches</Chip>
                         ) : (
-                          <Chip tone="On hold">{diff !== null && diff > 0 ? `${diff.toFixed(2)} g not listed` : `${Math.abs(diff ?? 0).toFixed(2)} g over`}</Chip>
+                          <button onClick={() => onAddItems(s)} title="Add the missing items to this live">
+                            <Chip tone="On hold">{diff !== null && diff > 0 ? `${diff.toFixed(2)} g not listed · add items` : `${Math.abs(diff ?? 0).toFixed(2)} g over`}</Chip>
+                          </button>
                         )}
+                      </td>
+                      <td className="px-2 py-2">
+                        <button onClick={() => onEditSession(s)} className="text-muted-foreground hover:text-primary" title="Edit or delete"><Pencil className="h-3.5 w-3.5" /></button>
                       </td>
                     </tr>
                   );

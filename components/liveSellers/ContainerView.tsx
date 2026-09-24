@@ -7,9 +7,9 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { ArrowLeft, Loader2, PackageCheck, XCircle, FileText, Plus, Pencil, Printer, Undo2, ArrowRightLeft } from "lucide-react";
+import { ArrowLeft, Loader2, PackageCheck, XCircle, FileText, Plus, Pencil, Printer, Undo2, ArrowRightLeft, Trash2 } from "lucide-react";
 import { toast } from "sonner";
-import { updateLiveItems, moveLiveItems } from "@/lib/api";
+import { updateLiveItems, moveLiveItems, deleteLiveItems } from "@/lib/api";
 import { useBrand } from "@/components/BrandThemeLoader";
 import { brandInitials } from "@/lib/brandSettings";
 import { buildLiveInvoiceHtml, printHtml } from "@/lib/liveInvoice";
@@ -24,7 +24,7 @@ interface Props {
   onChanged: () => Promise<void> | void;
   onAddItems: () => void;
   onWeighBack: (s: LiveSession) => void;
-  onOutAction: (action: "add" | "give", s: LiveSession) => void;
+  onOutAction: (action: "add" | "give" | "edit", s: LiveSession) => void;
 }
 
 export default function ContainerView({ seller, data, onBack, onChanged, onAddItems, onWeighBack, onOutAction }: Props) {
@@ -204,6 +204,21 @@ export default function ContainerView({ seller, data, onBack, onChanged, onAddIt
     }
   };
 
+  const deleteItem = async () => {
+    if (!edit) return;
+    setBusy(true);
+    try {
+      await deleteLiveItems({ ids: [edit.id] });
+      toast.success("Item deleted.");
+      setEdit(null);
+      await onChanged();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Delete failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const lastInvoiceItems = lastInvoice ? mine.filter((i) => i.invoiceNo === lastInvoice) : [];
 
   return (
@@ -223,7 +238,7 @@ export default function ContainerView({ seller, data, onBack, onChanged, onAddIt
 
       {openOut.map((s) => (
         <div key={s.id} className="mb-3">
-          <OpenOutPanel session={s} onAdd={() => onOutAction("add", s)} onGive={() => onOutAction("give", s)} onWeighBack={() => onWeighBack(s)} />
+          <OpenOutPanel session={s} onAdd={() => onOutAction("add", s)} onGive={() => onOutAction("give", s)} onWeighBack={() => onWeighBack(s)} onEdit={() => onOutAction("edit", s)} />
         </div>
       ))}
 
@@ -452,9 +467,14 @@ export default function ContainerView({ seller, data, onBack, onChanged, onAddIt
             </Field>
           </div>
           <p className="text-xs text-muted-foreground">Leave amount empty to use grams × rate ({money(editAuto, cur)}).</p>
-          <DialogFooter>
+          <DialogFooter className="sm:justify-between gap-2">
+            <Button variant="ghost" size="sm" className="text-destructive" onClick={deleteItem} disabled={busy} title="Remove an item entered by mistake">
+              <Trash2 className="h-3.5 w-3.5 mr-1" /> Delete item
+            </Button>
+            <div className="flex gap-2 justify-end">
             <Button variant="outline" size="sm" onClick={() => setEdit(null)} disabled={busy}>Cancel</Button>
             <Button size="sm" onClick={saveEdit} disabled={busy}>{busy ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : null}Save</Button>
+            </div>
           </DialogFooter>
         </DialogContent>
       </Dialog>

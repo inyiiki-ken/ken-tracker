@@ -61,6 +61,7 @@ const ITEM_H = {
   invoiceNo: "Invoice No",
   cancelledDate: "Cancelled Date",
   notes: "Notes",
+  recordKey: "Record Key",
   updatedBy: "Updated By",
   updatedAt: "Updated At",
 } as const;
@@ -168,6 +169,7 @@ export async function getLiveData(_params?: Record<string, never>): Promise<Live
         invoiceNo: str(r.get(ITEM_H.invoiceNo)),
         cancelledDate: isoDate(r.get(ITEM_H.cancelledDate)),
         notes: str(r.get(ITEM_H.notes)),
+        recordKey: str(r.get(ITEM_H.recordKey)),
       };
     });
 
@@ -199,6 +201,7 @@ export interface LiveItemInput {
   grams: number;
   rate: number;
   amount?: number;
+  recordKey?: string;
 }
 
 function itemRow(
@@ -220,6 +223,7 @@ function itemRow(
     [ITEM_H.rate]: String(rate),
     [ITEM_H.amount]: String(amount),
     [ITEM_H.status]: "On hold",
+    [ITEM_H.recordKey]: str(it.recordKey),
     [ITEM_H.updatedBy]: who,
     [ITEM_H.updatedAt]: stamp(),
   };
@@ -312,20 +316,95 @@ export async function finishLiveSession(params: {
   return { id, added: valid.length };
 }
 
-/** Delete a weigh-out that was entered by mistake (only while still "Out"). */
-export async function deleteLiveSession(params: { sessionId: string }): Promise<{ success: boolean }> {
+/**
+ * Delete a weigh-out entered by mistake. A returned one also removes the items
+ * it put on hold (not ones already sold — undo those pullouts first).
+ */
+export async function deleteLiveSession(params: { sessionId: string }): Promise<{ success: boolean; removedItems: number }> {
   await requireRole(ROLES);
   const sws = await getTab("sessions");
   const rows = await sws.getRows();
   const row = rows.find((r) => str(r.get(SESSION_H.id)) === params.sessionId);
-  if (!row) return { success: true };
-  if (str(row.get(SESSION_H.status)) !== "Out") throw new Error("Only a weigh-out that hasn't come back can be deleted.");
+  if (!row) return { success: true, removedItems: 0 };
+  const iws = await getTab("items");
+  const irows = await iws.getRows();
+  const linked = irows.filter((r) => str(r.get(ITEM_H.sessionId)) === params.sessionId);
+  if (linked.some((r) => str(r.get(ITEM_H.status)) === "Sold")) {
+    throw new Error("Some items from this live are already sold. Undo those pullouts first.");
+  }
+  for (const r of linked.sort((a, b) => b.rowNumber - a.rowNumber)) await r.delete();
   await row.delete();
+  return { success: true, removedItems: linked.length };
+}
+
+/** Fix a weigh-out / weigh-back that was entered wrong. */
+export async function updateLiveSession(params: {
+  sessionId: string;
+  date?: string;
+  seller?: string;
+  weightOut?: number;
+  weightBack?: number | null;
+  notes?: string;
+}): Promise<{ success: boolean }> {
+  await requireRole(ROLES);
+  const who = (await getSessionEmail().catch(() => null)) || "";
+  const sws = await getTab("sessions");
+  const rows = await sws.getRows();
+  const row = rows.find((r) => str(r.get(SESSION_H.id)) === params.sessionId);
+  if (!row) throw new Error("That weigh-out was not found. Refresh and try again.");
+  const status = str(row.get(SESSION_H.status));
+  const out = params.weightOut !== undefined ? round2(num(params.weightOut)) : num(row.get(SESSION_H.weightOut));
+  if (!(out > 0)) throw new Error("Weight out must be more than 0.");
+  if (status !== "Out" && params.weightBack !== undefined && params.weightBack !== null) {
+    const back = round2(num(params.weightBack));
+    if (back < 0) throw new Error("Weight back can't be negative.");
+    if (back > out + 0.1) throw new Error("Weight back is more than weight out.");
+    row.set(SESSION_H.weightBack, String(back));
+  }
+  const oldOut = num(row.get(SESSION_H.weightOut));
+  if (out !== oldOut) pushLog(row, round2(out - oldOut), "Corrected");
+  row.set(SESSION_H.weightOut, String(out));
+  if (params.date) row.set(SESSION_H.date, isoDate(params.date));
+  if (params.notes !== undefined) row.set(SESSION_H.notes, str(params.notes));
+  const oldSeller = str(row.get(SESSION_H.seller)).toUpperCase();
+  const newSeller = params.seller !== undefined ? str(params.seller).toUpperCase() : oldSeller;
+  if (!newSeller) throw new Error("Seller is required.");
+  row.set(SESSION_H.seller, newSeller);
+  row.set(SESSION_H.updatedBy, who);
+  row.set(SESSION_H.updatedAt, stamp());
+  await row.save();
+  // Wrong seller picked: carry this live's items over too.
+  if (newSeller !== oldSeller) {
+    const iws = await getTab("items");
+    const irows = await iws.getRows();
+    for (const r of irows) {
+      if (str(r.get(ITEM_H.sessionId)) === params.sessionId && str(r.get(ITEM_H.seller)).toUpperCase() === oldSeller) {
+        r.set(ITEM_H.seller, newSeller);
+        r.set(ITEM_H.updatedBy, who);
+        r.set(ITEM_H.updatedAt, stamp());
+        await r.save();
+      }
+    }
+  }
   return { success: true };
 }
 
+/** Remove items that were entered by mistake (not sold ones). */
+export async function deleteLiveItems(params: { ids: string[] }): Promise<{ deleted: number }> {
+  await requireRole(ROLES);
+  const ids = new Set(params.ids || []);
+  const iws = await getTab("items");
+  const rows = await iws.getRows();
+  const targets = rows
+    .filter((r) => ids.has(str(r.get(ITEM_H.id))))
+    .sort((a, b) => b.rowNumber - a.rowNumber);
+  if (targets.some((r) => str(r.get(ITEM_H.status)) === "Sold")) throw new Error("A sold item can't be deleted. Undo the pullout first.");
+  for (const r of targets) await r.delete();
+  return { deleted: targets.length };
+}
+
 /** Put items on hold for a seller straight from the shop (e.g. a customer swap). */
-export async function addLiveItems(params: { seller: string; liveDate: string; items: LiveItemInput[] }): Promise<{ added: number }> {
+export async function addLiveItems(params: { seller: string; liveDate: string; items: LiveItemInput[]; sessionId?: string }): Promise<{ added: number }> {
   await requireRole(ROLES);
   const who = (await getSessionEmail().catch(() => null)) || "";
   const seller = str(params.seller).toUpperCase();
@@ -333,7 +412,16 @@ export async function addLiveItems(params: { seller: string; liveDate: string; i
   const valid = (params.items || []).filter((it) => str(it.description) || num(it.grams) > 0);
   if (!valid.length) return { added: 0 };
   const iws = await getTab("items");
-  await iws.addRows(valid.map((it) => itemRow(it, { sessionId: "", seller, liveDate: isoDate(params.liveDate) || todayISO() }, who)));
+  // With a sessionId the items belong to a live that was already weighed back
+  // (listed later) — its weight already left the shop, so stock isn't taken twice.
+  let sessionId = "";
+  if (params.sessionId) {
+    const sws = await getTab("sessions");
+    const srow = (await sws.getRows()).find((r) => str(r.get(SESSION_H.id)) === params.sessionId);
+    if (!srow) throw new Error("That live was not found. Refresh and try again.");
+    sessionId = params.sessionId;
+  }
+  await iws.addRows(valid.map((it) => itemRow(it, { sessionId, seller, liveDate: isoDate(params.liveDate) || todayISO() }, who)));
   return { added: valid.length };
 }
 

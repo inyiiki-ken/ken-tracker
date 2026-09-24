@@ -14,6 +14,8 @@ import ReportView from "./ReportView";
 import PriceListView from "./PriceListView";
 import OutActionDialog, { type OutAction } from "./OutActionDialog";
 import OpenOutPanel from "./OpenOutPanel";
+import EditSessionDialog from "./EditSessionDialog";
+import type { DatabaseRowType } from "@/types";
 import { Chip, Kpi, g, holdingLabel, money } from "./parts";
 
 type View = "sellers" | "stock" | "report" | "prices";
@@ -25,7 +27,7 @@ function monthStart(): string {
   return todayISO(new Date(d.getFullYear(), d.getMonth(), 1));
 }
 
-export default function LiveSellersTab({ canEditSettings }: { canEditSettings: boolean }) {
+export default function LiveSellersTab({ canEditSettings, records = [] }: { canEditSettings: boolean; records?: DatabaseRowType[] }) {
   const [data, setData] = useState<LiveData>(EMPTY);
   const [loading, setLoading] = useState(true);
   const [view, setView] = useState<View>("sellers");
@@ -33,6 +35,7 @@ export default function LiveSellersTab({ canEditSettings }: { canEditSettings: b
   const [dialog, setDialog] = useState<{ mode: LiveDayMode; session?: LiveSession | null; seller?: string } | null>(null);
   const [search, setSearch] = useState("");
   const [outAction, setOutAction] = useState<{ action: OutAction; session: LiveSession } | null>(null);
+  const [editSession, setEditSession] = useState<LiveSession | null>(null);
 
   const load = useCallback(async (quiet = false) => {
     if (!quiet) setLoading(true);
@@ -55,6 +58,10 @@ export default function LiveSellersTab({ canEditSettings }: { canEditSettings: b
     [data.items, from]
   );
   const sellerNames = useMemo(() => sellers.map((s) => s.seller), [sellers]);
+  const usedKeys = useMemo(
+    () => new Set(data.items.filter((i) => i.recordKey && i.status !== "Cancelled").map((i) => i.recordKey)),
+    [data.items]
+  );
   const cur = data.priceList.currency;
   const warn = data.priceList.holdWarnDays;
   const shown = sellers.filter((s) => !search.trim() || s.seller.includes(search.trim().toUpperCase()));
@@ -99,7 +106,7 @@ export default function LiveSellersTab({ canEditSettings }: { canEditSettings: b
             onChanged={() => load(true)}
             onAddItems={() => setDialog({ mode: "hold", seller })}
             onWeighBack={(s) => setDialog({ mode: "back", session: s })}
-            onOutAction={(action, session) => setOutAction({ action, session })}
+            onOutAction={(action, session) => (action === "edit" ? setEditSession(session) : setOutAction({ action, session }))}
           />
         ) : view === "sellers" ? (
           <>
@@ -161,6 +168,7 @@ export default function LiveSellersTab({ canEditSettings }: { canEditSettings: b
                         onAdd={() => setOutAction({ action: "add", session: s.out! })}
                         onGive={() => setOutAction({ action: "give", session: s.out! })}
                         onWeighBack={() => setDialog({ mode: "back", session: s.out })}
+                        onEdit={() => setEditSession(s.out)}
                       />
                     )}
                   </div>
@@ -169,7 +177,7 @@ export default function LiveSellersTab({ canEditSettings }: { canEditSettings: b
             )}
           </>
         ) : view === "stock" ? (
-          <StockView data={data} stock={stock} onChanged={() => load(true)} canDelete={canEditSettings} />
+          <StockView data={data} stock={stock} onChanged={() => load(true)} canDelete={canEditSettings} onEditSession={setEditSession} onAddItems={(s) => setDialog({ mode: "hold", session: s })} />
         ) : view === "report" ? (
           <ReportView data={data} />
         ) : (
@@ -194,6 +202,17 @@ export default function LiveSellersTab({ canEditSettings }: { canEditSettings: b
         onSaved={() => load(true)}
         priceList={data.priceList}
         sellers={sellerNames}
+        records={records}
+        usedKeys={usedKeys}
+        alreadyListed={dialog?.session ? data.items.filter((i) => i.sessionId === dialog.session!.id).reduce((t, i) => t + i.grams, 0) : 0}
+      />
+      <EditSessionDialog
+        session={editSession}
+        data={data}
+        sellers={sellerNames}
+        onClose={() => setEditSession(null)}
+        onSaved={() => load(true)}
+        onAddItems={(s) => setDialog({ mode: "hold", session: s })}
       />
     </div>
   );

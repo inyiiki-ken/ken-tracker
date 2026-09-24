@@ -86,5 +86,7 @@ export {
   addToLiveSession,
   transferLiveWeight,
   moveLiveItems,
+  updateLiveSession,
+  deleteLiveItems,
 } from "./google-sheets/liveSellers";
 export type { LiveItemInput } from "./google-sheets/liveSellers";

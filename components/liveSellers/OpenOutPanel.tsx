@@ -2,19 +2,20 @@
 
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
-import { Plus, ArrowRightLeft, ChevronDown, ChevronUp } from "lucide-react";
+import { Plus, ArrowRightLeft, ChevronDown, ChevronUp, Pencil } from "lucide-react";
 import { fmtDate, type LiveSession } from "@/lib/liveSellers";
 import { g } from "./parts";
 
 /** An open weigh-out: running total, its movements, and the actions available during the live. */
 export default function OpenOutPanel({
-  session, compact, onAdd, onGive, onWeighBack,
+  session, compact, onAdd, onGive, onWeighBack, onEdit,
 }: {
   session: LiveSession;
   compact?: boolean;
   onAdd: () => void;
   onGive: () => void;
   onWeighBack: () => void;
+  onEdit?: () => void;
 }) {
   const [showLog, setShowLog] = useState(false);
   const moves = session.outLog.length;
@@ -30,6 +31,11 @@ export default function OpenOutPanel({
             </button>
           )}
         </span>
+        {onEdit && (
+          <Button size="sm" variant="ghost" className={compact ? "h-7 px-1.5" : ""} onClick={onEdit} title="Fix a wrong entry">
+            <Pencil className="h-3.5 w-3.5" />
+          </Button>
+        )}
         <Button size="sm" variant="outline" className={compact ? "h-7 px-2" : ""} onClick={onAdd} title="More pieces taken from the room">
           <Plus className="h-3.5 w-3.5 mr-1" /> Add more
         </Button>

@@ -116,6 +116,8 @@ export interface LiveItem {
   invoiceNo: string;
   cancelledDate: string;
   notes: string;
+  /** Row Key of the masterlist (Admin) record this item came from, if any. */
+  recordKey: string;
 }
 
 export interface LiveStockEntry {
