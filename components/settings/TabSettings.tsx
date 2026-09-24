@@ -8,6 +8,7 @@ import { toast } from "sonner";
 import { getTabConfig, saveTabConfig } from "@/lib/api";
 import {
   CONFIGURABLE_TAB_KEYS,
+  isOptInTab,
   DEFAULT_TAB_LABELS,
   applyTabConfig,
   getTabConfig as getLocalTabConfig,
@@ -39,7 +40,7 @@ export default function TabSettings() {
         const vis: Record<string, boolean> = {};
         const lab: Record<string, string> = {};
         for (const k of CONFIGURABLE_TAB_KEYS) {
-          vis[k] = cfg.overrides[k]?.visible !== false;
+          vis[k] = isOptInTab(k) ? cfg.overrides[k]?.visible === true : cfg.overrides[k]?.visible !== false;
           lab[k] = cfg.overrides[k]?.label ?? "";
         }
         setVisible(vis);
@@ -62,7 +63,8 @@ export default function TabSettings() {
     const overrides: TabConfig["overrides"] = {};
     for (const k of CONFIGURABLE_TAB_KEYS) {
       const o: { visible?: boolean; label?: string } = {};
-      if (visible[k] === false) o.visible = false;
+      if (isOptInTab(k)) { if (visible[k] === true) o.visible = true; }
+      else if (visible[k] === false) o.visible = false;
       if (labels[k] && labels[k].trim() && labels[k].trim() !== DEFAULT_TAB_LABELS[k]) o.label = labels[k].trim();
       if (o.visible !== undefined || o.label !== undefined) overrides[k] = o;
     }

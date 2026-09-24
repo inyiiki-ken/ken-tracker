@@ -17,11 +17,23 @@ export type ConfigurableTabKey =
   | "bossing"
   | "liver"
   | "purchasing"
-  | "invoicing";
+  | "invoicing"
+  | "livesellers";
 
 export const CONFIGURABLE_TAB_KEYS: ConfigurableTabKey[] = [
-  "admin", "dispatch", "accounts", "bossing", "liver", "purchasing", "invoicing",
+  "admin", "dispatch", "accounts", "bossing", "liver", "purchasing", "invoicing", "livesellers",
 ];
+
+/**
+ * Tabs that are OFF unless a customer's tab config explicitly turns them on.
+ * New optional features ship this way so enabling one for a customer never
+ * changes what the other customers see.
+ */
+export const OPT_IN_TAB_KEYS: ConfigurableTabKey[] = ["livesellers"];
+
+export function isOptInTab(key: string): boolean {
+  return OPT_IN_TAB_KEYS.includes(key as ConfigurableTabKey);
+}
 
 export const DEFAULT_TAB_LABELS: Record<ConfigurableTabKey, string> = {
   admin: "Admin",
@@ -31,6 +43,7 @@ export const DEFAULT_TAB_LABELS: Record<ConfigurableTabKey, string> = {
   liver: "Liver",
   purchasing: "Purchasing",
   invoicing: "Invoicing",
+  livesellers: "Live Sellers",
 };
 
 export interface TabOverride {
@@ -110,6 +123,7 @@ export function getTabLabel(key: string): string {
 export function isTabHidden(key: string): boolean {
   const k = key as ConfigurableTabKey;
   if (!CONFIGURABLE_TAB_KEYS.includes(k)) return false;
+  if (isOptInTab(k)) return _config.overrides[k]?.visible !== true;
   return _config.overrides[k]?.visible === false;
 }
 

@@ -17,7 +17,7 @@ import { applyMasterlistMapping } from '@/lib/masterlistMapping';
 import { applyTabConfig, getTabLabel, isTabHidden, orderConfigurableKeys, CONFIGURABLE_TAB_KEYS, type ConfigurableTabKey } from '@/lib/tabConfig';
 import { Toaster } from '@/components/ui/sonner';
 import { toast } from 'sonner';
-import { LogOut, Minimize2, Maximize2, Crown, LayoutDashboard, Truck, Calculator, BarChart2, Radio, ShoppingBag, FileText, Settings as SettingsIcon } from 'lucide-react';
+import { LogOut, Minimize2, Maximize2, Crown, LayoutDashboard, Truck, Calculator, BarChart2, Radio, ShoppingBag, FileText, Scale, Settings as SettingsIcon } from 'lucide-react';
 import { getMyContext } from '@/lib/tenancy';
 import type { MyContext } from '@/lib/tenancy-types';
 import GodModePanel from '@/components/godmode/GodModePanel';
@@ -39,18 +39,20 @@ import BossingDashboard from '@/components/bossing/BossingDashboard';
 import LiverDashboard from '@/components/liver/LiverDashboard';
 import InvoicingTab from '@/components/invoicing/InvoicingTab';
 import PurchasingTab from '@/components/purchasing/PurchasingTab';
+import LiveSellersTab from '@/components/liveSellers/LiveSellersTab';
 import DesignSettings from '@/components/settings/DesignSettings';
 import UploadMasterlistFAB from '@/components/UploadMasterlistFAB';
 import PreviewAsUser from '@/components/PreviewAsUser';
 import RateCalculatorWidget from '@/components/RateCalculatorWidget';
-type TabKey = 'admin' | 'dispatch' | 'accounts' | 'bossing' | 'liver' | 'purchasing' | 'invoicing' | 'settings' | 'godmode';
+type TabKey = 'admin' | 'dispatch' | 'accounts' | 'bossing' | 'liver' | 'purchasing' | 'invoicing' | 'livesellers' | 'settings' | 'godmode';
 
 function getVisibleTabs(roles: string[]): Set<TabKey> {
   if (roles.includes('super_admin')) {
-    return new Set<TabKey>(['admin', 'dispatch', 'accounts', 'bossing', 'liver', 'purchasing', 'invoicing', 'settings']);
+    return new Set<TabKey>(['admin', 'dispatch', 'accounts', 'bossing', 'liver', 'purchasing', 'invoicing', 'livesellers', 'settings']);
   }
   const visible = new Set<TabKey>();
-  if (roles.includes('admin')) { visible.add('admin'); visible.add('invoicing'); }
+  if (roles.includes('admin')) { visible.add('admin'); visible.add('invoicing'); visible.add('livesellers'); }
+  if (roles.includes('livesellers')) visible.add('livesellers');
   if (roles.includes('dispatch')) visible.add('dispatch');
   if (roles.includes('accounts')) visible.add('accounts');
   if (roles.includes('bossing')) visible.add('bossing');
@@ -73,7 +75,7 @@ function AppContent() {
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<TabKey>('admin');
   const [searchQueries, setSearchQueries] = useState<Record<TabKey, string>>({
-    admin: '', dispatch: '', accounts: '', bossing: '', liver: '', purchasing: '', invoicing: '', settings: '', godmode: '',
+    admin: '', dispatch: '', accounts: '', bossing: '', liver: '', purchasing: '', invoicing: '', livesellers: '', settings: '', godmode: '',
   });
   const [roles, setRoles] = useState<string[]>([]);
   const [dynamicRoles, setDynamicRoles] = useState<any[] | null>(null);
@@ -150,8 +152,8 @@ function AppContent() {
     const userRoles = getUserRole(user.email, dynamicRoles);
     setRoles(userRoles);
     const visible = getVisibleTabs(userRoles);
-    const priority: TabKey[] = ['admin', 'dispatch', 'accounts', 'bossing', 'liver', 'purchasing', 'invoicing'];
-    const defaultTab = priority.find(t => visible.has(t));
+    const priority: TabKey[] = ['admin', 'dispatch', 'accounts', 'bossing', 'liver', 'purchasing', 'invoicing', 'livesellers'];
+    const defaultTab = priority.find(t => visible.has(t) && !isTabHidden(t));
     if (defaultTab) setActiveTab(defaultTab);
   }, [user?.email, dynamicRoles]);
 
@@ -249,6 +251,7 @@ function AppContent() {
     { key: 'liver', label: getTabLabel('liver'), icon: <Radio className="h-3.5 w-3.5" /> },
     { key: 'purchasing', label: getTabLabel('purchasing'), icon: <ShoppingBag className="h-3.5 w-3.5" /> },
     { key: 'invoicing', label: getTabLabel('invoicing'), icon: <FileText className="h-3.5 w-3.5" /> },
+    { key: 'livesellers', label: getTabLabel('livesellers'), icon: <Scale className="h-3.5 w-3.5" /> },
     { key: 'settings', label: 'Settings', icon: <SettingsIcon className="h-3.5 w-3.5" /> },
   ];
 
@@ -378,6 +381,9 @@ function AppContent() {
       )}
       {activeTab === 'invoicing' && (
         <InvoicingTab records={records} searchQuery={searchQueries.invoicing} onSearchChange={handleSearchChange} onUpdate={handleUpdate} />
+      )}
+      {activeTab === 'livesellers' && !isTabHidden('livesellers') && (
+        <LiveSellersTab canEditSettings={effectiveRoles.includes('super_admin') || effectiveRoles.includes('admin')} />
       )}
       {activeTab === 'settings' && <DesignSettings />}
       {activeTab === 'godmode' && <GodModePanel />}

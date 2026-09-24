@@ -4,7 +4,7 @@
 // No staff emails are hardcoded in source code.
 // ============================================================
 
-  export type UserRole = 'super_admin' | 'admin' | 'dispatch' | 'accounts' | 'bossing' | 'liver' | 'purchasing';
+  export type UserRole = 'super_admin' | 'admin' | 'dispatch' | 'accounts' | 'bossing' | 'liver' | 'purchasing' | 'livesellers';
 
   // No hardcoded super-admins -- add yourself as a row in the Roles sheet
   // (email column + role column = "super_admin") instead. See the warning
@@ -75,6 +75,7 @@
       else if (p === 'bossing' || p === 'boss') roles.push('bossing');
       else if (p === 'liver') roles.push('liver');
       else if (p === 'purchasing') roles.push('purchasing');
+      else if (p === 'livesellers' || p === 'live sellers' || p === 'stock') roles.push('livesellers');
     }
 
     return roles;
@@ -112,6 +113,7 @@
         if (roles.includes('bossing')) assignedRoles.push('bossing');
         if (roles.includes('liver')) assignedRoles.push('liver');
         if (roles.includes('purchasing')) assignedRoles.push('purchasing');
+        if (roles.includes('livesellers')) assignedRoles.push('livesellers');
       }
     }
 
