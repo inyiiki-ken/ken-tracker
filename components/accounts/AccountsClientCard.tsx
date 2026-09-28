@@ -219,7 +219,7 @@ function AccountsClientCard({ minerName, records, allRecords, onUpdate }: Props)
                                     <SelectValue placeholder="Set status..." />
                                   </SelectTrigger>
                                   <SelectContent className="bg-popover border-border">
-                                    {getEffectiveStatuses('accounts', record.status).map(s => (
+                                    {getEffectiveStatuses('accounts').map(s => (
                                       <SelectItem
                                         key={s}
                                         value={s}

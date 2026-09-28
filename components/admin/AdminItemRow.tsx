@@ -658,7 +658,7 @@ function AdminItemRow({ record, onUpdate, onGroupUpdate, onDateGroupUpdate, onDp
                   <SelectItem value="Cancelled" className="text-xs text-destructive font-medium">Cancelled</SelectItem>
                 </>
               ) : (
-                getEffectiveStatuses('admin', record.status).map((s) => {
+                getEffectiveStatuses('admin').map((s) => {
                   const isCancel = /cancel/i.test(s);
                   const lockPullout = dpLocked && /for pullout/i.test(s);
                   return (

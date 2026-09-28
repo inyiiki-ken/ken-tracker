@@ -591,29 +591,21 @@ function DispatchClientCard({ minerName, records, allRecords, onUpdate, userEmai
                   <Select key={`status-${record.id}-${resetKeys[record.id] || 0}`} onValueChange={v => handleStatusChange(record, v)}>
                     <SelectTrigger className="h-7 text-xs w-full bg-background border-border mt-2"><SelectValue placeholder="Set status..." /></SelectTrigger>
                     <SelectContent className="bg-popover border-border">
-                      {givenToShopMode ? (
-                        <>
-                          <SelectItem value="Given to Shop" className="text-xs">Given to Shop</SelectItem>
-                          <SelectItem value="Dispatched" className="text-xs">Dispatched{!dispatchAllowed ? ' (Balance Pending)' : ''}</SelectItem>
-                          <SelectItem value="Delivered" className="text-xs">Delivered{!dispatchAllowed ? ' (Balance Pending)' : ''}</SelectItem>
-                        </>
-                      ) : (
-                        <>
-                          <SelectItem value="Dispatched" className="text-xs">Dispatched{!dispatchAllowed ? ' (Balance Pending)' : ''}</SelectItem>
-                          <SelectItem value="Delivered" className="text-xs">Delivered{!dispatchAllowed ? ' (Balance Pending)' : ''}</SelectItem>
-                        </>
-                      )}
-                      {getEffectiveStatuses('dispatch', effective.status)
-                        .filter((s) => !/^(dispatched|delivered|given to shop)$/i.test(s))
-                        .map((s) => (
+                      {(() => {
+                        // Exactly the Dispatch list from Settings → Dropdown Options
+                        // (not the item's own current status, so removed statuses stay removed).
+                        const list = getEffectiveStatuses('dispatch');
+                        const opts = givenToShopMode && !list.some(x => /^given to shop$/i.test(x)) ? ['Given to Shop', ...list] : list;
+                        return opts.map((s) => (
                           <SelectItem
                             key={s}
                             value={s}
                             className={`text-xs font-medium ${/cancel/i.test(s) ? 'text-destructive' : 'text-foreground'}`}
                           >
-                            {s}
+                            {s}{/^(dispatched|delivered)$/i.test(s) && !dispatchAllowed ? ' (Balance Pending)' : ''}
                           </SelectItem>
-                        ))}
+                        ));
+                      })()}
                     </SelectContent>
                   </Select>
                 )}
