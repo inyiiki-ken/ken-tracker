@@ -1,7 +1,7 @@
 "use client";
 
 import { DatabaseRowType } from '@/types';
-import { calcShippingFee, isPcItem, getQty, clientRateAED, isFreeSf, isPromoSf, calcTotalPaid, getEffectiveCurrency, getPaymentCurrency } from '@/lib/calculations';
+import { roundPrice, calcShippingFee, isPcItem, getQty, clientRateAED, isFreeSf, isPromoSf, calcTotalPaid, getEffectiveCurrency, getPaymentCurrency } from '@/lib/calculations';
 import { getUsdToAed, getCcSurchargeRate } from '@/lib/pricingConfig';
 import { getRatesForDate } from '@/lib/ratesStore';
 import { numberToWords } from '@/lib/numberToWords';
@@ -16,7 +16,7 @@ interface Props {
   ccIncludeShipping?: boolean;
 }
 
-const NOTES = [
+export const DEFAULT_INVOICE_NOTES = [
   'We can hold unpaid items for a maximum of 3 days from the invoice date if details are provided. If no details are provided, the order will be cancelled within 24 hours.',
   'Failure to settle within 3 days may result in additional charges.',
   'All items undergo strict quality checking before dispatch.',
@@ -27,7 +27,7 @@ const NOTES = [
 ];
 
 const n = (v: unknown) => parseFloat(String(v ?? 0)) || 0;
-const rnd = (v: number) => Math.round(v);
+const rnd = (v: number) => roundPrice(v);
 
 /**
  * C2 FIX: Compute item amount in PHP using the same path as calculations.ts.
@@ -55,7 +55,12 @@ function calcPhpItemAmount(r: DatabaseRowType): number {
 
 export default function InvoicePrintContent({ records, currency, ccIncludeShipping = false }: Props) {
   const { settings, invoiceLogo, headerLogo, pageLogos } = useBrand();
-  const BRAND_NAME = `${settings.companyName.toUpperCase()} ${settings.legalSuffix}`;
+  const BRAND_NAME = `${settings.companyName.toUpperCase()} ${settings.legalSuffix || ''}`.trim();
+  // Each customer's own policy notes (Settings → Company Details); blank = built-in list.
+  const customNotes = String(settings.invoiceNotes ?? '').trim();
+  const invoiceNotes = customNotes === '-' ? [] : customNotes
+    ? customNotes.split('\n').map(s => s.trim()).filter(Boolean)
+    : DEFAULT_INVOICE_NOTES;
   const WATERMARK_TEXT = `${settings.companyName.toUpperCase()} OFFICIAL`;
   const first = records[0];
   // Per-page brand logo (if set for this invoice's page), else the default invoice logo.
@@ -101,19 +106,22 @@ export default function InvoicePrintContent({ records, currency, ccIncludeShippi
     // use the raw clientRate directly to avoid AED round-trip snap inflation.
     // Otherwise convert via AED for cross-currency invoices.
     const effectiveCurr = getEffectiveCurrency(r);
-    const displayRate = (currency === effectiveCurr && n(r.clientRate) > 0)
-      ? rnd(n(r.clientRate))
-      : rnd(convertFromAEDForRecord(clientRateAED(r)));
+    // Multiply with the UNROUNDED rate (like the Admin row and Accounts do);
+    // only the rate shown on the invoice is rounded.
+    const rawRate = (currency === effectiveCurr && n(r.clientRate) > 0)
+      ? n(r.clientRate)
+      : convertFromAEDForRecord(clientRateAED(r));
+    const displayRate = rnd(rawRate);
 
     // Amount: rate × grams/qty — always consistent with the displayed Rate column
     // Diamonds are per-piece (rate × qty), matching calcItemPriceAED logic.
     let amount: number;
     if (isScrewType || isPerPc || isDiamond) {
-      amount = rnd(displayRate * qtyValue);
+      amount = rnd(rawRate * qtyValue);
     } else if (isPc || gramsValue === 0) {
-      amount = displayRate;
+      amount = rnd(rawRate);
     } else {
-      amount = rnd(displayRate * gramsValue);
+      amount = rnd(rawRate * gramsValue);
     }
 
     let gramsDisplay = '';
@@ -475,7 +483,7 @@ export default function InvoicePrintContent({ records, currency, ccIncludeShippi
 
         <div style={{ padding: '8px 12px', border: '1px solid #999', marginTop: -1, background: '#fff' }}>
           <div style={{ color: 'red', fontWeight: 700, fontSize: 12, marginBottom: 4 }}>NOTE:</div>
-          {NOTES.map((note, i) => (
+          {invoiceNotes.map((note, i) => (
             <div key={i} style={{ fontSize: 10, marginBottom: 2 }}>{i + 1}. {note}</div>
           ))}
         </div>

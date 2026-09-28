@@ -9,6 +9,7 @@ import { rowToDatabaseRecord, databaseRecordToRow } from "./row-mapper";
 import { DATABASE_HEADERS, DATABASE_HEADER_ALIASES, ROLES_HEADERS, UPLOADS_HEADERS } from "./sheet-config";
 import type { DatabaseRowType } from "@/types";
 import { buildCustomerIdIndex, resolveCustomerIdFor } from "@/lib/customerId";
+import { trimAudit } from "@/lib/auditTrim";
 
 /** Google caps a cell at 50,000 characters. The audit trail is append-only, so
  * without trimming a heavily-edited row eventually fails to save. Keep the most
@@ -22,7 +23,7 @@ function newRowKey(): string {
 function appendAudit(existing: string | undefined, entry: string): string {
   const lines = String(existing ?? "").split("\n").filter(Boolean);
   lines.push(entry);
-  return lines.slice(-AUDIT_MAX_ENTRIES).join("\n");
+  return trimAudit(lines, AUDIT_MAX_ENTRIES).join("\n");
 }
 
 /**
@@ -519,11 +520,11 @@ export async function generateInvoiceNumber(params: {
 const IMPORT_NUMERIC_FIELDS = new Set(["grams", "mc", "goldRate", "supplierRate", "clientRate", "profit", "qty"]);
 
 /** name-key -> existing customerId, from the rows already in the sheet. */
-async function loadCustomerIdIndex(): Promise<Map<string, string>> {
+async function loadCustomerIdIndex(freshRows?: Awaited<ReturnType<typeof getActiveRows>>): Promise<Map<string, string>> {
   // NOTE: deliberately NOT wrapped in a silent catch. If this fails we would
   // mint brand-new ids for customers who already exist, silently recreating the
   // duplicate-id mess. Callers must surface the failure instead.
-  const existing = await getActiveRows("database", 60_000);
+  const existing = freshRows ?? await getActiveRows("database", 60_000);
   return buildCustomerIdIndex(
     existing.map((r) => ({
       minerName: String(r.get(DATABASE_HEADERS.minerName) ?? ""),
@@ -532,12 +533,28 @@ async function loadCustomerIdIndex(): Promise<Map<string, string>> {
   );
 }
 
+/** "September 24, 2026" / "9/24/2026" / "2026-09-24" → "2026-09-24" (for duplicate checks). */
+function dateKey(v: unknown): string {
+  const s = String(v ?? "").trim().replace(/^[a-z]+day,?\s+/i, "");
+  if (!s) return "";
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+  const d = new Date(s);
+  if (Number.isNaN(d.getTime())) return s.toUpperCase();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+const norm = (v: unknown) => String(v ?? "").toUpperCase().replace(/\s+/g, " ").trim();
+function itemKey(liver: unknown, date: unknown, code: unknown, desc: unknown): string {
+  return [norm(liver), dateKey(date), norm(code), norm(desc)].join("|");
+}
+
 export async function importRows(params: {
   rows: Record<string, string>[];
   userEmail?: string;
   /** Batch id shared across all chunks of one upload, so it can be undone. */
   importId?: string;
-}): Promise<{ success: boolean; createdCount: number; errors: string[] }> {
+  /** Import rows even if the same item (liver + date + code + description) is already in the sheet. */
+  allowDuplicates?: boolean;
+}): Promise<{ success: boolean; createdCount: number; errors: string[]; duplicates: number; alreadyImported: number }> {
   const sessionEmail = await requireSession();
   const sheet = await getActiveWorksheet("database");
   const dbHeaders = await activeHeaderSet(sheet);
@@ -551,8 +568,12 @@ export async function importRows(params: {
   // Existing clients -> their customer id, so repeat buyers keep ONE id (which is
   // what makes lifetime history work). Cached read: chunked uploads reuse it.
   let customerIdIndex: Map<string, string>;
+  // Fresh read (not the 60 s cache): the duplicate check and customer ids must
+  // see rows added a moment ago by another batch or another PC.
+  let existingRows: Awaited<ReturnType<typeof getActiveRows>>;
   try {
-    customerIdIndex = await loadCustomerIdIndex();
+    existingRows = await getActiveRows("database", 0);
+    customerIdIndex = await loadCustomerIdIndex(existingRows);
   } catch (err) {
     const why = err instanceof Error ? err.message : "unknown error";
     throw new Error(
@@ -561,8 +582,22 @@ export async function importRows(params: {
   }
 
   const toAdd: Record<string, unknown>[] = [];
+  const existingKeys = new Set<string>();
+  const existingRowKeys = new Set<string>();
+  for (const r of existingRows) {
+    existingKeys.add(itemKey(r.get(DATABASE_HEADERS.liverName), r.get(DATABASE_HEADERS.dateOfLive), r.get(DATABASE_HEADERS.orderId), r.get(DATABASE_HEADERS.itemDescription)));
+    const rk = String(r.get(DATABASE_HEADERS.rowKey) ?? "").trim();
+    if (rk) existingRowKeys.add(rk);
+  }
+  let duplicates = 0;
+  let alreadyImported = 0;
 
   for (const rawRow of params.rows.slice(0, 300)) {
+    // Retry of a batch that already went in (same Row Key) → skip silently.
+    if (rawRow.rowKey && existingRowKeys.has(String(rawRow.rowKey))) { alreadyImported++; continue; }
+    const k = itemKey(rawRow.liverName, rawRow.dateOfLive, rawRow.orderId, rawRow.itemDescription);
+    if (!params.allowDuplicates && existingKeys.has(k)) { duplicates++; continue; }
+    existingKeys.add(k); // also stops the same item twice inside one upload
     try {
       const row: Record<string, unknown> = {};
       for (const [key, val] of Object.entries(rawRow)) {
@@ -602,7 +637,7 @@ export async function importRows(params: {
     invalidateActiveRows();
   }
 
-  return { success: errors.length === 0, createdCount: created, errors };
+  return { success: errors.length === 0, createdCount: created, errors, duplicates, alreadyImported };
 }
 
 // ---------- Database column check / fix (per customer sheet) ----------
@@ -777,20 +812,42 @@ export async function undoLastImport(
     .filter((r) => String(r.get(auditHeader) ?? "").includes(needle))
     .sort((a, b) => b.rowNumber - a.rowNumber);
 
+  // Delete all rows in ONE request (bottom-up ranges), instead of one API call
+  // per row — 100+ single deletes hit Google's write limit and stopped halfway.
+  const ranges: { start: number; end: number }[] = [];
+  for (const r of targets) { // already sorted bottom → top
+    const idx = r.rowNumber - 1;
+    const last = ranges[ranges.length - 1];
+    if (last && last.start === idx + 1) last.start = idx;
+    else ranges.push({ start: idx, end: idx + 1 });
+  }
   let deleted = 0;
-  for (const r of targets) {
+  let error: string | undefined;
+  if (ranges.length) {
     try {
-      await r.delete();
-      deleted++;
-    } catch { /* skip a row that can't be deleted, keep going */ }
+      await withSheetWriteLock(async () => {
+        const doc = await getActiveDoc();
+        await (doc as unknown as { sheetsApi: { post: (u: string, b: unknown) => Promise<unknown> } }).sheetsApi.post(":batchUpdate", {
+          requests: ranges.map((rg) => ({
+            deleteDimension: { range: { sheetId: sheet.sheetId, dimension: "ROWS", startIndex: rg.start, endIndex: rg.end } },
+          })),
+        });
+        await doc.loadInfo();
+      });
+      deleted = targets.length;
+    } catch (err) {
+      error = err instanceof Error ? err.message : "delete failed";
+    }
   }
 
-  // Clear the "last import" marker if we just undid it.
-  if (!params?.importId || params.importId === last?.importId) {
+  // Clear the "last import" marker only when everything is gone, so a failed
+  // undo can simply be pressed again.
+  if (!error && (!params?.importId || params.importId === last?.importId)) {
     try { await deleteConfigMarker("__LAST_IMPORT__"); } catch { /* ignore */ }
   }
   invalidateActiveRows();
 
+  if (error) return { success: false, deleted: 0, fileName: last?.fileName ?? "", error: `Undo failed, nothing was deleted: ${error}. Try again.` };
   return { success: true, deleted, fileName: last?.fileName ?? "" };
 }
 

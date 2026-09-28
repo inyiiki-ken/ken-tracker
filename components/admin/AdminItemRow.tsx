@@ -1,5 +1,6 @@
 "use client";
 
+import { isPulloutStatus } from '@/lib/appConfig';
 import { useState, useEffect, useRef, memo, useCallback } from 'react';
 import { useDebouncedCallback } from 'use-debounce';
 import { AlertCircle, Loader2, Pencil, Copy, Check, Scissors } from 'lucide-react';
@@ -406,7 +407,9 @@ function AdminItemRow({ record, onUpdate, onGroupUpdate, onDateGroupUpdate, onDp
       toast.error('Enter a downpayment amount to enable other status options');
       return;
     }
-    if (newStatus === 'For Pullout') {
+    // Every "going out" status (For Pullout, For COD, For Pick Up… — Settings →
+    // App Settings → Pullout Report includes) needs the delivery details.
+    if (isPulloutStatus(newStatus)) {
       if (!record.modeOfPayment) { toast.error('Mode of Payment is required'); return; }
       if (record.locationOfMiner === 'Local' && !record.regions) { toast.error('Region required for Local miners'); return; }
     }
@@ -660,7 +663,7 @@ function AdminItemRow({ record, onUpdate, onGroupUpdate, onDateGroupUpdate, onDp
               ) : (
                 getEffectiveStatuses('admin').map((s) => {
                   const isCancel = /cancel/i.test(s);
-                  const lockPullout = dpLocked && /for pullout/i.test(s);
+                  const lockPullout = dpLocked && !/cancel/i.test(s) && s !== record.status;
                   return (
                     <SelectItem
                       key={s}

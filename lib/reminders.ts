@@ -65,22 +65,38 @@ export function getReminderRules(): ReminderRule[] {
   return cfg.statusDeadlines.length ? cfg.statusDeadlines.map(ruleFromDeadline) : LEGACY_RULES;
 }
 
-const AUDIT_RE = /^(\d{4}-\d{2}-\d{2}T[^ |]+)\s*\|.*\bstatus\b/i;
+const ISO_AT_START = /^(\d{4}-\d{2}-\d{2}T[^ |]+)\s*\|/;
+
+function lineDate(line: string): Date | null {
+  const m = line.match(ISO_AT_START);
+  if (!m) return null;
+  const d = new Date(m[1]);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
 
 /**
- * When the item got its current status: the latest change-history line that
- * touched "status", else the live date.
+ * When the item got its current status:
+ *   1. the latest change-history line that touched "status";
+ *   2. else when the row was created/imported (its first dated line);
+ *   3. else the live date.
+ * Never earlier than the day the deadlines were switched on.
  */
 export function statusSince(r: DatabaseRowType): Date | null {
   const lines = String(r.auditTrail ?? "").split("\n");
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const m = lines[i].match(AUDIT_RE);
-    if (m) {
-      const d = new Date(m[1]);
-      if (!Number.isNaN(d.getTime())) return d;
-    }
+  let found: Date | null = null;
+  for (let i = lines.length - 1; i >= 0 && !found; i--) {
+    if (/\bstatus\b/i.test(lines[i])) found = lineDate(lines[i]);
   }
-  return parseDateRobust(r.dateOfLive);
+  if (!found) {
+    for (const l of lines) { const d = lineDate(l); if (d) { found = d; break; } }
+  }
+  if (!found) found = parseDateRobust(r.dateOfLive);
+  const start = getAppConfig().deadlinesStartedAt;
+  if (start) {
+    const s = new Date(start);
+    if (!Number.isNaN(s.getTime()) && (!found || found < s)) return s;
+  }
+  return found;
 }
 
 export function hoursInStatus(r: DatabaseRowType, now = Date.now()): number {

@@ -6,7 +6,9 @@ import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Printer, AlertCircle, Copy, Loader2, CreditCard, Download } from 'lucide-react';
 import { DatabaseRowType } from '@/types';
-import { calcShippingFee, isFreeSf, getEffectiveCurrency } from '@/lib/calculations';
+import { calcShippingFee, isFreeSf, getEffectiveCurrency, calcItemPriceAED, roundPrice, isPcItem, getQty } from '@/lib/calculations';
+import { getRatesForDate } from '@/lib/ratesStore';
+import { getUsdToAed } from '@/lib/pricingConfig';
 import { getCcIncludeShipping } from '@/lib/pricingConfig';
 import InvoicePrintContent from '@/components/InvoicePrintContent';
 import { parseDateRobust } from '@/lib/calculations';
@@ -151,9 +153,13 @@ export default function InvoiceModal({ records, onClose }: Props) {
     const invoiceDate = baseRecord?.dateOfLive || new Date().toISOString().split('T')[0];
     const headers = ['Invoice Number', 'Invoice Date', 'Customer Name', 'Item Name', 'Quantity', 'Rate', 'Amount', 'Currency Code'];
     const rows = visibleRecords.map(r => {
-      const qty = r.qty && Number(r.qty) > 0 ? Number(r.qty) : 1;
-      const rate = Number(r.clientRate) || 0;
-      const amount = rate * qty;
+      // Same amount as the printed invoice line, in the chosen currency.
+      const snap = getRatesForDate(r.dateOfLive || '');
+      const aed = calcItemPriceAED(r);
+      const amount = currency === 'PHP' ? roundPrice(aed * snap.phpRate) : currency === 'USD' ? roundPrice(aed / getUsdToAed()) : aed;
+      const grams = Number(r.grams) || 0;
+      const qty = grams > 0 && !isPcItem(r) ? grams : getQty(r);
+      const rate = qty > 0 ? Math.round((amount / qty) * 100) / 100 : amount;
       return [invoiceNum, invoiceDate, minerName, r.itemDescription || '', qty, rate, amount, currency].map(v => `"${String(v).replace(/"/g, '""')}"`).join(',');
     });
     const csv = [headers.join(','), ...rows].join('\n');

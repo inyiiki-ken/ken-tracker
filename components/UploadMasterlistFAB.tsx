@@ -1,5 +1,6 @@
 "use client";
 
+import { roundPrice } from "@/lib/calculations";
 import { useState, useRef, useMemo, useEffect } from 'react';
 import { ProgressBar } from '@/components/ui/motion';
 import { Upload, X, Loader2, CheckCircle, AlertTriangle, ArrowLeft, FileSpreadsheet, Undo2 } from 'lucide-react';
@@ -106,7 +107,7 @@ export default function UploadMasterlistFAB({ onRefresh }: Props) {
           rows.push(...res.rows);
         } else {
           const res = await parseMasterlistFile(f);
-          sheets.push({ sheetName: f.name, page: res.pageName, liverName: res.liverName, liveDate: res.liveDate, globalRate: res.globalRate, rowCount: res.rows.length, start: rows.length, isPhoto: false, warnings: [], subSheets: res.sheets });
+          sheets.push({ sheetName: f.name, page: res.pageName, liverName: res.liverName, liveDate: res.liveDate, globalRate: res.globalRate, rowCount: res.rows.length, start: rows.length, isPhoto: false, warnings: res.skipped.length ? [`${res.skipped.length} row(s) not imported — ${res.skipped.slice(0, 5).join('; ')}${res.skipped.length > 5 ? '…' : ''}`] : [], subSheets: res.sheets });
           rows.push(...res.rows);
         }
       }
@@ -170,44 +171,71 @@ export default function UploadMasterlistFAB({ onRefresh }: Props) {
     return { noPrice, unknownCategories: [...unknownCats].slice(0, 12), unknownSources: [...unknownSrc].slice(0, 12) };
   }, [parsed, dataOpts]);
 
+  // One import id per parsed file, kept across retries: a retry after a failure
+  // resends the same Row Keys and the server skips the ones already saved.
+  const importIdRef = useRef<{ parsed: unknown; id: string } | null>(null);
+  const [allowDuplicates, setAllowDuplicates] = useState(false);
+  const [dupFound, setDupFound] = useState(0);
+
   const doImport = async () => {
     if (!parsed) return;
     setImporting(true);
-    const importId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    if (importIdRef.current?.parsed !== parsed) {
+      importIdRef.current = { parsed, id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}` };
+    }
+    const importId = importIdRef.current.id;
+    const { rows, liverName, pageName, sheets } = parsed;
+    const sheetLabel = sheets.length > 1 ? `${sheets.length} sheets` : `${liverName} / ${pageName}`;
+    const fileName = `${selectedFiles.length > 1 ? `${selectedFiles.length} files` : (selectedFile?.name ?? 'masterlist')} (${sheetLabel})`;
+    let created = 0;
+    let duplicates = 0;
+    let resumed = 0;
+    const allErrors: string[] = [];
     try {
-      const { rows, liverName, pageName, sheets } = parsed;
-      let created = 0;
-      const allErrors: string[] = [];
+      // Remember the batch BEFORE writing, so even a half-finished import can be undone.
+      await recordLastImport({ importId, fileName, count: 0, at: new Date().toISOString(), by: '' }).catch(() => {});
       const BATCH_SIZE = 100; // server appends the whole batch in one request
       for (let i = 0; i < rows.length; i += BATCH_SIZE) {
         setProgress(`Importing ${i + 1}-${Math.min(i + BATCH_SIZE, rows.length)} of ${rows.length}…`);
         setPct(Math.round((i / rows.length) * 100));
-        const result = await importRows({ rows: rows.slice(i, i + BATCH_SIZE) as unknown as Record<string, string>[], importId });
+        const batch = rows.slice(i, i + BATCH_SIZE).map((r, j) => {
+          const { warning: _w, ...rest } = r;
+          void _w;
+          return { ...rest, rowKey: `IMP-${importId}-${i + j}` };
+        });
+        const result = await importRows({ rows: batch as unknown as Record<string, string>[], importId, allowDuplicates });
         created += result.createdCount;
+        duplicates += result.duplicates || 0;
+        resumed += result.alreadyImported || 0;
         allErrors.push(...result.errors);
+        if (created + resumed > 0) {
+          await recordLastImport({ importId, fileName, count: created + resumed, at: new Date().toISOString(), by: '' }).catch(() => {});
+        }
       }
-      const sheetLabel = sheets.length > 1 ? `${sheets.length} sheets` : `${liverName} / ${pageName}`;
-      const fileName = `${selectedFiles.length > 1 ? `${selectedFiles.length} files` : (selectedFile?.name ?? 'masterlist')} (${sheetLabel})`;
       await createUpload({
         masterlistFile: fileName,
         status: allErrors.length ? `Processed ${created} items, ${allErrors.length} errors` : `Processed ${created} items`,
       });
-      // Remember this batch so it can be undone in one click.
-      if (created > 0) {
-        const info: LastImportInfo = { importId, fileName, count: created, at: new Date().toISOString(), by: '' };
-        await recordLastImport(info).catch(() => {});
+      if (created + resumed > 0) {
+        const info: LastImportInfo = { importId, fileName, count: created + resumed, at: new Date().toISOString(), by: '' };
         setLastImport(info);
+      }
+      if (duplicates > 0) {
+        setDupFound(duplicates);
+        toast.warning(`${duplicates} item${duplicates === 1 ? ' was' : 's were'} already in Admin (same liver, date, code and description) — skipped, not imported twice.`);
       }
       if (allErrors.length) {
         toast.warning(`Imported ${created} of ${rows.length}. ${allErrors.length} failed — check console.`);
         console.error('Masterlist import errors:', allErrors);
-      } else {
-        toast.success(`Imported ${created} item(s)!`);
+      } else if (created > 0) {
+        toast.success(`Imported ${created} item(s)!${resumed ? ` (${resumed} were already saved from the earlier try)` : ''}`);
+      } else if (!duplicates) {
+        toast.message('Nothing new to import.');
       }
-      reset();
+      if (!duplicates || created > 0) { reset(); setDupFound(0); setAllowDuplicates(false); importIdRef.current = null; }
       onRefresh();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Import failed');
+      toast.error(`${err instanceof Error ? err.message : 'Import failed'} — ${created} saved so far. Press Import again to continue; nothing will be doubled.`);
     } finally {
       setImporting(false);
       setProgress(null);
@@ -237,7 +265,8 @@ export default function UploadMasterlistFAB({ onRefresh }: Props) {
 
   const hasPhotos = !!parsed?.sheets.some((g) => g.isPhoto);
   // Photos: show every row (so each can be checked/edited). Excel: a sample.
-  const preview = (hasPhotos ? parsed?.rows : parsed?.rows.slice(0, 8)) ?? [];
+  const warnCount = parsed?.rows.filter(r => r.warning).length ?? 0;
+  const preview = (hasPhotos || warnCount > 0 ? parsed?.rows : parsed?.rows.slice(0, 8)) ?? [];
   const chips = parsed?.sheets.flatMap((g) => g.subSheets ?? [g]) ?? [];
 
   return (
@@ -383,13 +412,14 @@ export default function UploadMasterlistFAB({ onRefresh }: Props) {
                 <tbody>
                   {preview.map((r, i) => {
                     const gi = groupOf(i);
-                    const photo = !!parsed.sheets[gi]?.isPhoto;
-                    const bad = parsed.flagged.has(`${r.orderId}@${gi}`);
+                    // Photo rows and rows with a warning can be corrected before importing.
+                    const photo = !!parsed.sheets[gi]?.isPhoto || !!r.warning;
+                    const bad = parsed.flagged.has(`${r.orderId}@${gi}`) || !!r.warning;
                     const cellIn = (field: keyof ParsedMasterlistRow, w: string) => (
                       <Input value={String(r[field] ?? '')} onChange={(e) => editRow(i, { [field]: field === 'grams' || field === 'mc' ? e.target.value : e.target.value.toUpperCase() } as Partial<ParsedMasterlistRow>)} className={`h-6 px-1 text-[11px] ${w}`} />
                     );
                     return (
-                      <tr key={i} className={`border-t border-border/50 ${bad ? 'bg-warning/15' : ''}`}>
+                      <tr key={i} title={r.warning || undefined} className={`border-t border-border/50 ${bad ? 'bg-warning/15' : ''}`}>
                         {hasPhotos && <td className="px-2 py-1 whitespace-nowrap">{photo ? cellIn('orderId', 'w-16') : r.orderId}</td>}
                         <td className="px-2 py-1 truncate max-w-[130px]">{photo ? cellIn('minerName', 'w-28') : r.minerName}</td>
                         <td className="px-2 py-1 truncate max-w-[160px]">{photo ? cellIn('itemDescription', 'w-36') : r.itemDescription}</td>
@@ -399,18 +429,31 @@ export default function UploadMasterlistFAB({ onRefresh }: Props) {
                         <td className="px-2 py-1 text-right">{parseFloat(r.goldRate) > 0 ? r.goldRate : '—'}</td>
                         <td className="px-2 py-1 text-right">{photo ? cellIn('mc', 'w-12 text-right') : (r.mc || '—')}</td>
                         <td className="px-2 py-1 text-right">{r.clientRate}</td>
-                        <td className="px-2 py-1 text-right">{Math.round((parseFloat(r.grams) || 0) * (parseFloat(r.clientRate) || 0)).toLocaleString()}</td>
+                        <td className="px-2 py-1 text-right">{roundPrice((parseFloat(r.grams) || 0) * (parseFloat(r.clientRate) || 0)).toLocaleString()}</td>
                         <td className="px-2 py-1">{r.currency || 'AED'}</td>
                       </tr>
                     );
                   })}
                 </tbody>
               </table>
+              {warnCount > 0 && (
+                <div className="text-[11px] px-2 py-1.5 border-t border-border/50 text-warning space-y-0.5">
+                  <p className="font-semibold">⚠ {warnCount} row(s) need a check (yellow) — hover a row to see why, and fix the white boxes:</p>
+                  {parsed.rows.filter(r => r.warning).slice(0, 6).map((r, k) => <p key={k}>{r.orderId} {r.minerName}: {r.warning}</p>)}
+                </div>
+              )}
               {hasPhotos && <p className="text-[11px] text-muted-foreground px-2 py-1.5 border-t border-border/50">Read from a photo — check each row against the screenshot. Yellow rows didn&apos;t add up. You can edit any white box.</p>}
               {parsed.rows.length > preview.length && (
                 <p className="text-[11px] text-muted-foreground px-2 py-1.5 border-t border-border/50">+ {parsed.rows.length - preview.length} more…</p>
               )}
             </div>
+
+            {dupFound > 0 && (
+              <label className="flex items-start gap-2 text-[11px] rounded-lg border border-warning/40 bg-warning/10 p-2 text-warning">
+                <input type="checkbox" checked={allowDuplicates} onChange={(e) => setAllowDuplicates(e.target.checked)} className="mt-0.5" />
+                <span>{dupFound} item(s) are already in Admin and were skipped. Tick only if they really are NEW items with the same code (then press Import again).</span>
+              </label>
+            )}
 
             {importing && <ProgressBar value={pct} label={progress || 'Importing…'} className="mb-1" />}
 

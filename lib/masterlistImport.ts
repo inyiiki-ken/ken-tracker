@@ -7,6 +7,7 @@ import {
   type ResolvedMasterlistMapping,
 } from "./masterlistMapping";
 import { usesGold, getRatesForDate } from "./ratesStore";
+import { getMakingCharge } from "./pricingConfig";
 
 /**
  * Replaces the old Apps Script processUpload() entirely. Instead of
@@ -54,6 +55,8 @@ export interface ParsedMasterlistRow {
   reviewChasing: string;
   clientAddress: string;
   clientNumber: string;
+  /** Something to double-check before importing (shown highlighted in the preview). */
+  warning?: string;
 }
 
 function regionFromCurrency(currency: string): string {
@@ -94,17 +97,31 @@ function cleanDate(v: string): string {
 /** Read a cell by 0-based col index (or "" if the column isn't mapped/present). */
 function cell(row: unknown[], idx: number): string {
   if (idx < 0 || idx >= row.length) return "";
-  return String(row[idx] ?? "").trim();
+  return String(row[idx] ?? "").replace(/\s+/g, " ").trim();
 }
+
+/** A number from the RAW grid when we have it (exact stored value, not the
+ * formatted text: "17.1" shown for 17.07, "AED 390.00" etc.). */
+function numAt(raw: unknown[][] | undefined, fmtRow: unknown[], i: number, idx: number): number {
+  if (idx < 0) return 0;
+  const rv = raw?.[i]?.[idx];
+  if (typeof rv === "number" && Number.isFinite(rv)) return rv;
+  const fromRaw = rv != null && rv !== "" ? toNum(String(rv).replace(/[^\d.,\-]/g, "")) : 0;
+  if (fromRaw) return fromRaw;
+  return toNum(cell(fmtRow, idx).replace(/[^\d.,\-]/g, ""));
+}
+
+const HEADER_WORDS = /^(code|order id|item description|description|customer name|client name|wt\/?grams|grams|rate|mc|amount)$/i;
 
 /** Parse a single already-extracted sheet grid into masterlist rows + metadata,
  * using the customer's configured column mapping. */
-function parseSheetGrid(data: unknown[][], m: ResolvedMasterlistMapping): {
+function parseSheetGrid(data: unknown[][], m: ResolvedMasterlistMapping, raw?: unknown[][]): {
   rows: ParsedMasterlistRow[];
   liverName: string;
   pageName: string;
   liveDate: string;
   globalRate: number;
+  skipped: string[];
 } {
   let liverName = "Unknown";
   let globalRate = 0;
@@ -133,7 +150,8 @@ function parseSheetGrid(data: unknown[][], m: ResolvedMasterlistMapping): {
 
   // A fixed rate cell (set by the import setup) beats the label search.
   if (m.rateCell) {
-    const v = toNum(String(data[m.rateCell.row]?.[m.rateCell.col] ?? ""));
+    const rc = m.rateCell;
+    const v = numAt(raw, data[rc.row] ?? [], rc.row, rc.col);
     if (v > 0) globalRate = v;
   }
 
@@ -156,41 +174,83 @@ function parseSheetGrid(data: unknown[][], m: ResolvedMasterlistMapping): {
   // Round a rate UP to a whole number when this customer's setup says so (426.25 -> 427).
   const up = (v: number) => (m.roundRateUp && v > 0 ? Math.ceil(v - 1e-9) : v);
 
+  const skipped: string[] = [];
+  let lastMiner = "";
+
   for (let i = m.dataStartIndex; i < data.length; i++) {
     const row = data[i];
     if (!row) continue;
 
     const code = cell(row, m.col.orderId).toUpperCase();
-    const minerName = cell(row, m.col.minerName).toUpperCase();
+    let minerName = cell(row, m.col.minerName).toUpperCase();
     const itemDescription = cell(row, m.col.itemDescription).toUpperCase();
-    if (!code || !minerName || !itemDescription) continue;
+    // A repeated header row (e.g. a second table on the same sheet) is not an item.
+    if (HEADER_WORDS.test(code) || HEADER_WORDS.test(itemDescription)) continue;
+    // Merged/blank customer cell under the previous item = same customer.
+    if (!minerName && code && itemDescription && lastMiner) minerName = lastMiner;
+    const gramsN = numAt(raw, row, i, m.col.grams);
+    if (!code || !minerName || !itemDescription) {
+      // Only report rows that look like real items, not totals/blank lines.
+      if ((code || itemDescription) && !/^(total|grand total|sub ?total)/i.test(code || itemDescription)) {
+        skipped.push(`row ${i + 1}${code ? ` (${code})` : ""}: missing ${!code ? "code" : !minerName ? "customer" : "description"}`);
+      }
+      continue;
+    }
+    lastMiner = minerName;
 
     const currency = cell(row, m.col.currency).toUpperCase();
-    const mcForCat = toNum(cell(row, m.col.mc));
-    const category = cell(row, m.col.category) || categoryForMc(m.mcCategories, mcForCat) || m.defaultCategory;
+    const mcCell = numAt(raw, row, i, m.col.mc);
     const source = cell(row, m.col.source);
-    const qty = String(parseInt(cell(row, m.col.qty), 10) || 1);
+    const qty = String(Math.round(numAt(raw, row, i, m.col.qty)) || 1);
     const tog = cell(row, m.col.tog) || m.defaultTog;
-    const grams = String(parseFloat(cell(row, m.col.grams)) || 0);
+    const grams = String(Math.round(gramsN * 1000) / 1000);
+    const fileAmount = numAt(raw, row, i, m.col.amount);
 
-    const mc = toNum(cell(row, m.col.mc));
-    const rowGold = toNum(cell(row, m.col.goldRate));
-    const goldRate = up(rowGold > 0 ? rowGold : fallbackGold);
+    const rowGold = numAt(raw, row, i, m.col.goldRate);
+    let goldRate = up(rowGold > 0 ? rowGold : fallbackGold);
+    let mc = mcCell;
+    let category = cell(row, m.col.category) || categoryForMc(m.mcCategories, mcCell) || m.defaultCategory;
+    const warnings: string[] = [];
 
     let clientRate: number;
     if (m.priceMode === "rate_plus_mc") {
       // e.g. Crown: selling rate per gram = gold rate + MC (AMOUNT = WT x (RATE + MC)).
-      const base = up(toNum(cell(row, m.col.clientRate))) || goldRate;
-      clientRate = base > 0 ? base + mc : 0;
-      if (!clientRate) {
-        const amt = toNum(cell(row, m.col.amount));
-        const g = toNum(grams);
-        clientRate = amt > 0 && g > 0 ? amt / g : amt;
+      const rowRate = up(numAt(raw, row, i, m.col.clientRate));
+      // Row's own rate, else the sheet's RATE cell (not yet the daily rate).
+      const base = rowRate || (rowGold > 0 ? goldRate : 0) || up(globalRate);
+      if (base > 0) {
+        if (!mc && fileAmount > 0 && gramsN > 0) {
+          // MC blank: work it out from the file's AMOUNT.
+          const derived = Math.round((fileAmount / gramsN - base) * 100) / 100;
+          if (derived >= 0) mc = Math.round(derived);
+          category = category || categoryForMc(m.mcCategories, mc) || m.defaultCategory;
+        }
+        if (!mc) mc = getMakingCharge(category);
+        clientRate = base + mc;
+      } else if (fileAmount > 0 && gramsN > 0) {
+        // No rate on the row: trust the file's AMOUNT before any daily rate.
+        clientRate = fileAmount / gramsN;
+        warnings.push("no rate — price taken from AMOUNT");
+      } else if (fallbackGold > 0) {
+        if (!mc) mc = getMakingCharge(category);
+        clientRate = up(fallbackGold) + mc;
+        goldRate = up(fallbackGold);
+        warnings.push("no rate — used today's gold rate");
+      } else {
+        clientRate = 0;
       }
     } else {
-      clientRate = parseFloat(cell(row, m.col.clientRate));
-      if (isNaN(clientRate) || clientRate === 0) clientRate = toNum(cell(row, m.col.amount));
+      clientRate = numAt(raw, row, i, m.col.clientRate);
+      if (!clientRate) clientRate = fileAmount;
       else clientRate = up(clientRate);
+    }
+
+    if (!(gramsN > 0) && !/per pc|diamond|screw/i.test(category)) warnings.push("grams missing");
+    if (!clientRate) warnings.push("no price");
+    // The sheet's own AMOUNT must match grams × rate (±1).
+    if (fileAmount > 0 && gramsN > 0 && clientRate > 0) {
+      const calc = Math.round(Number((gramsN * clientRate).toFixed(6)));
+      if (Math.abs(calc - fileAmount) > 1) warnings.push(`AMOUNT in file ${Math.round(fileAmount)} ≠ ${calc}`);
     }
 
     const remarks = cell(row, m.col.remarks);
@@ -219,10 +279,11 @@ function parseSheetGrid(data: unknown[][], m: ResolvedMasterlistMapping): {
       reviewChasing: "", // set inside the app, not from the masterlist
       clientAddress,
       clientNumber,
+      ...(warnings.length ? { warning: warnings.join("; ") } : {}),
     });
   }
 
-  return { rows, liverName, pageName, liveDate, globalRate };
+  return { rows, liverName, pageName, liveDate, globalRate, skipped };
 }
 
 /** Parse an already-built grid (e.g. from a photo) with the customer's layout. */
@@ -249,6 +310,7 @@ export async function parseMasterlistFile(file: File, mappingOverride?: Masterli
   liveDate: string;
   globalRate: number;
   sheets: ParsedSheetSummary[];
+  skipped: string[];
 }> {
   // Loaded on demand — keeps the ~1MB spreadsheet library out of the main bundle.
   const XLSX = await import("xlsx");
@@ -260,6 +322,7 @@ export async function parseMasterlistFile(file: File, mappingOverride?: Masterli
 
   const rows: ParsedMasterlistRow[] = [];
   const sheets: ParsedSheetSummary[] = [];
+  const skipped: string[] = [];
 
   for (const sheetName of workbook.SheetNames) {
     if (isNonMasterlistSheet(sheetName)) continue;
@@ -267,9 +330,12 @@ export async function parseMasterlistFile(file: File, mappingOverride?: Masterli
     const ws = workbook.Sheets[sheetName];
     if (!ws) continue;
     const data: unknown[][] = XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, defval: "" });
+    // Same grid with the exact stored numbers (display formats can round 17.07 → 17.1).
+    const rawData: unknown[][] = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: "" });
     if (data.length <= resolved.dataStartIndex) continue; // no data rows for this layout
 
-    const parsed = parseSheetGrid(data, resolved);
+    const parsed = parseSheetGrid(data, resolved, rawData);
+    skipped.push(...parsed.skipped.map((x) => `${sheetName}: ${x}`));
     if (parsed.rows.length === 0) continue;
 
     rows.push(...parsed.rows);
@@ -293,5 +359,6 @@ export async function parseMasterlistFile(file: File, mappingOverride?: Masterli
     liveDate: first?.liveDate ?? "",
     globalRate: first?.globalRate ?? 0,
     sheets,
+    skipped,
   };
 }

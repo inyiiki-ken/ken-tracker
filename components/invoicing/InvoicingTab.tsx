@@ -11,7 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Badge } from '@/components/ui/badge';
 import { TabProps, DatabaseRowType } from '@/types';
 import InvoiceModal from '@/components/InvoiceModal';
-import { calcRemainingBalance } from '@/lib/calculations';
+import { calcRemainingBalance, calcGroupBalance } from '@/lib/calculations';
 import { formatDate } from '@/lib/formatters';
 import { toast } from 'sonner';
 import TabHeader from '@/components/TabHeader';
@@ -248,7 +248,7 @@ function InvoiceRow({ invoiceNum, records, onUpdate }: InvoiceRowProps) {
   const displayNum = invoiceNum === '__no_invoice__' ? '—' : invoiceNum;
   const dates = records.map(r => r.dateOfLive).filter(Boolean) as string[];
   const firstDate = dates.length > 0 ? formatDate(dates[0]) : '—';
-  const totalBalance = records.reduce((s, r) => s + calcRemainingBalance(r), 0);
+  const totalBalance = calcGroupBalance(records);
   const totalItems = records.length;
   const mop = records[0]?.modeOfPayment || '';
   const isPaid = totalBalance <= 0;
@@ -352,7 +352,7 @@ function CustomerCard({ minerName, invoiceGroups, onUpdate }: CustomerCardProps)
   const totalInvoices = invoiceGroups.size;
   const allRecords = useMemo(() => [...invoiceGroups.values()].flat(), [invoiceGroups]);
   const totalItems = allRecords.length;
-  const totalBalance = allRecords.reduce((s, r) => s + calcRemainingBalance(r), 0);
+  const totalBalance = [...invoiceGroups.values()].reduce((s, g) => s + calcGroupBalance(g), 0);
   const isPaid = totalBalance <= 0;
 
   return (

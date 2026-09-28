@@ -12,7 +12,7 @@ import DispatchClientCard from './DispatchClientCard';
 import PulloutReport from './PulloutReport';
 import RemindersDialog from '@/components/RemindersDialog';
 import { computeOverdue } from '@/lib/reminders';
-import { getPulloutStatuses } from '@/lib/appConfig';
+import { getPulloutStatuses, isPulloutStatus } from '@/lib/appConfig';
 import { parseDateRobust } from '@/lib/calculations';
 
 function agingHours(dateStr?: string): number {
@@ -36,7 +36,13 @@ function AgingLabel({ dateStr, warnAfterHours }: { dateStr?: string; warnAfterHo
 }
 
 /** Normalize legacy 'Dispatch' status to 'For Pullout' for filtering/grouping only — never write back */
-const ns = (s: string) => s === 'Dispatch' ? 'For Pullout' : s;
+/** Trimmed status; every "going out" status (Settings → Pullout Report includes:
+ * For Pullout, For COD, For Pick Up…) shares the first queue. */
+const ns = (raw: string) => {
+  const s = String(raw || '').trim();
+  if (s === 'Dispatch' || isPulloutStatus(s)) return 'For Pullout';
+  return s;
+};
 
 /** One row in the work-queue list. */
 function QueueButton({
@@ -66,7 +72,7 @@ function QueueButton({
 
 export default function DispatchBoard({ records, searchQuery, onSearchChange, onUpdate, userEmail, clientMilestones }: TabProps) {
   const [showReport, setShowReport] = useState(false);
-  const [showReminders, setShowReminders] = useState(true);
+  const [showReminders, setShowReminders] = useState(() => computeOverdue(records).length > 0);
 
   const { forPullout, onHold, paymentVerif, dispatched, delivered, cancelled } = useMemo(() => {
     const filtered = records.filter(r => {
@@ -103,6 +109,8 @@ export default function DispatchBoard({ records, searchQuery, onSearchChange, on
     for (const r of records) {
       const st = ns(r.status || '').trim();
       if (!st || BUILT_IN.has(st)) continue;
+      const mos = (r.modeOfSale || '').toLowerCase().trim();
+      if (mos === 'in-store' || mos === 'walk-in' || mos === 'walk in') continue;
       counts.set(st, (counts.get(st) ?? 0) + 1);
     }
     return [...counts.entries()]
@@ -113,10 +121,15 @@ export default function DispatchBoard({ records, searchQuery, onSearchChange, on
   const extraGroups = useMemo(() => {
     const out = new Map<string, ReturnType<typeof groupByPageDateMiner>>();
     for (const { status } of extraQueues) {
-      out.set(status, groupByPageDateMiner(applySearch(records.filter(r => ns(r.status || '') === status), searchQuery)));
+      out.set(status, groupByPageDateMiner(applySearch(records.filter(r => {
+        const mos = (r.modeOfSale || '').toLowerCase().trim();
+        return ns(r.status || '') === status && !(mos === 'in-store' || mos === 'walk-in' || mos === 'walk in');
+      }), searchQuery)));
     }
     return out;
   }, [records, extraQueues, searchQuery]);
+
+  const pulloutLabel = getPulloutStatuses().filter(x => x !== 'Dispatch').join(' / ') || 'For Pullout';
 
   // Which queue the right-hand pane is showing.
   const [queue, setQueue] = useState<string>('For Pullout');
@@ -125,7 +138,7 @@ export default function DispatchBoard({ records, searchQuery, onSearchChange, on
     key: string; label: string; group: Map<string, Map<string, Map<string, DatabaseRowType[]>>>;
     icon: React.ReactNode; urgent?: boolean; warnAfter?: number;
   }[] = [
-    { key: 'For Pullout', label: 'For Pullout', group: forPullout, icon: <Package className="h-4 w-4" />, urgent: true },
+    { key: 'For Pullout', label: pulloutLabel, group: forPullout, icon: <Package className="h-4 w-4" />, urgent: true },
     { key: 'Paid/DP but Item Hold', label: 'Paid/DP but On Hold', group: onHold, icon: <PauseCircle className="h-4 w-4" />, warnAfter: 72 },
     { key: 'Payment for Verification', label: 'Payment for Verification', group: paymentVerif, icon: <ShieldCheck className="h-4 w-4" />, warnAfter: 24 },
     { key: 'Dispatched', label: 'Dispatched', group: dispatched, icon: <Truck className="h-4 w-4" /> },

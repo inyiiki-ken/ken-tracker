@@ -23,7 +23,7 @@ function LayawayAgingBadge({ dateStr }: { dateStr?: string }) {
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { DatabaseRowType } from '@/types';
-import { calcRemainingBalance, calcShippingFee, calcCCFee, calcItemPrice, calcDueDate, getQty, parseDateRobust } from '@/lib/calculations';
+import { calcGroupBalance, calcRemainingBalance, calcShippingFee, calcCCFee, calcItemPrice, calcDueDate, getQty, parseDateRobust } from '@/lib/calculations';
 import { getEffectiveStatuses } from '@/lib/statusRegistry';
 import { formatDateObj, formatDate } from '@/lib/formatters';
 import StatusBadge from '@/components/StatusBadge';
@@ -84,7 +84,8 @@ function AccountsClientCard({ minerName, records, allRecords, onUpdate }: Props)
   const first = records[0];
   const dueDate = formatDateObj(calcDueDate(first?.dateOfLive));
   const { isCompact } = useCompactMode();
-  const totalRemaining = records.reduce((sum, r) => sum + Math.max(0, calcRemainingBalance(r)), 0);
+  // Same way the invoice adds it up (shipping once, card fee on the total).
+  const totalRemaining = Math.max(0, calcGroupBalance(records.filter(r => !/^(cancelled|returned item)$/i.test(String(r.status || '').trim()))));
 
   // Group records by Date → Liver → Status
   const grouped = useMemo(() => {

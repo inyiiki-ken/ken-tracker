@@ -3,6 +3,8 @@ import { parseISO, isValid, parse } from 'date-fns';
 import { getRatesForDate, RateSnapshot, usesGold } from '@/lib/ratesStore';
 import { parseBillingModifiers, getTotalChargesAED, getTotalDiscountsAED } from '@/lib/billingModifiers';
 import { getTimezoneOffsetMs } from '@/lib/businessConfig';
+import { getMakingCharge } from '@/lib/pricingConfig';
+import { getMasterlistMapping } from '@/lib/masterlistMapping';
 import { getUsdToAed, getPerPcFallback, getB1t1Multiplier, getCcSurchargeRate, getShippingFeeForRegion, getShippingFeeInternational, getShippingFeeMeetUp } from '@/lib/pricingConfig';
 import { isUnitMode } from '@/lib/businessConfig';
 
@@ -12,7 +14,11 @@ export function parseNum(x: unknown): number {
   return Number.isFinite(v) ? v : 0;
 }
 const n = parseNum;
-export function roundPrice(v: number): number { return Math.round(v); }
+/** Half-up to whole units, immune to float noise (2.30 × 445 = 1023.4999… → 1024). */
+export function roundPrice(v: number): number {
+  const x = Number(v) || 0;
+  return Math.sign(x) * Math.round(Math.abs(Number(x.toFixed(6))));
+}
 
 export function parseDateRobust(dateStr?: string): Date | null {
   if (!dateStr) return null;
@@ -259,13 +265,22 @@ export function calcItemCostAED(record: DatabaseRowType): number {
   // Gold-rate customers only: a gold item with no gold rate on the row falls back
   // to that day's Daily/Sticky gold rate. Silver-only customers (the default)
   // never reach this, so their numbers are unchanged.
+  // Rate + MC customers (e.g. Crown): gold rate + MC is the SELLING price, so it
+  // can't also be the cost. Use the supplier rate when there is one.
+  if (getMasterlistMapping().priceMode === 'rate_plus_mc' && supplierRate > 0) {
+    if (isPcItem(record)) return roundPrice(supplierRate);
+    return roundPrice(supplierRate * grams);
+  }
+
   const goldRate = rowGoldRate > 0 ? rowGoldRate
     : (usesGold() && snap.goldRate > 0 && !category.includes('silver') ? snap.goldRate : 0);
 
   if (goldRate > 0) {
-    // FORCE MC TO 16/21/25 IF EMPTY OR ZERO
+    // Empty MC → the customer's MC for this category (Settings → Pricing),
+    // falling back to the old fixed 16/21/25 only if none is set.
     const parsedMc = n(record.mc);
-    const effectiveMc = parsedMc > 0 ? parsedMc : (category.includes('special price ef') ? 25 : category.includes('special price') ? 21 : 16);
+    const configuredMc = getMakingCharge(record.category || '');
+    const effectiveMc = parsedMc > 0 ? parsedMc : configuredMc > 0 ? configuredMc : (category.includes('special price ef') ? 25 : category.includes('special price') ? 21 : 16);
     if (isPcItem(record)) return roundPrice(goldRate + effectiveMc);
     return roundPrice((goldRate + effectiveMc) * grams);
   }
@@ -474,4 +489,51 @@ export function calcItemPricePHP(record: DatabaseRowType): number {
 
   const aedRate = resolveBaseRateAED(record);
   return aedRate * snap.phpRate;
+}
+// ── Customer-level balance (matches the invoice) ─────────────────────────────
+// The invoice charges shipping ONCE per customer and the card surcharge on the
+// card items' total; per-item balances charged shipping on every item. Totals
+// and "cleared" checks must use these group functions so Accounts, Bossing and
+// the invoice all agree.
+
+function netChargeAED(r: DatabaseRowType): number {
+  const mods = parseBillingModifiers(r.additionalCharges);
+  const snap = getRatesForDate(r.dateOfLive || '');
+  return getTotalChargesAED(mods, snap.phpRate) - getTotalDiscountsAED(mods, snap.phpRate);
+}
+
+/** Balance owed for ONE customer's items, computed the way the invoice does. */
+export function calcGroupBalance(records: DatabaseRowType[]): number {
+  if (!records.length) return 0;
+  const itemsTotal = records.reduce((s, r) => s + calcItemPriceAED(r), 0);
+  const ccItems = records.filter(r => r.modeOfPayment === 'Credit Card').reduce((s, r) => s + calcItemPriceAED(r), 0);
+  const promo = records.find(r => isPromoSf(r));
+  const anyFree = !promo && records.some(r => isFreeSf(r));
+  const shipping = anyFree ? 0 : calcShippingFee(promo || records[0]);
+  const cc = roundPrice(ccItems * getCcSurchargeRate());
+  const charges = roundPrice(records.reduce((s, r) => s + netChargeAED(r), 0));
+  const paid = records.reduce((s, r) => s + calcTotalPaid(r), 0);
+  return roundPrice(itemsTotal + shipping + cc + charges - paid);
+}
+
+export function customerKey(r: DatabaseRowType): string {
+  return String(r.customerId || r.minerName || '').trim().toUpperCase().replace(/\s+/g, ' ') || `#${r.id}`;
+}
+
+/** Group records by customer. */
+export function groupByCustomer(records: DatabaseRowType[]): Map<string, DatabaseRowType[]> {
+  const m = new Map<string, DatabaseRowType[]>();
+  for (const r of records) {
+    const k = customerKey(r);
+    const g = m.get(k);
+    if (g) g.push(r); else m.set(k, [r]);
+  }
+  return m;
+}
+
+/** Total still owed across many customers (each customer counted like its invoice). */
+export function sumOutstanding(records: DatabaseRowType[]): number {
+  let total = 0;
+  for (const g of groupByCustomer(records).values()) total += Math.max(0, calcGroupBalance(g));
+  return total;
 }

@@ -43,6 +43,11 @@ export interface AppConfig {
   statusDeadlines: StatusDeadline[];
   /** Statuses listed in the Pullout Report. Empty = For Pullout (+ legacy Dispatch). */
   pulloutStatuses: string[];
+  /**
+   * When the deadlines were first switched on. Nothing counts as overdue from
+   * before this moment, so going live never floods Reminders with old orders.
+   */
+  deadlinesStartedAt: string;
 }
 
 export interface StatusDeadline {
@@ -62,6 +67,7 @@ export const DEFAULT_APP_CONFIG: AppConfig = {
   saleStatuses: [],
   statusDeadlines: [],
   pulloutStatuses: [],
+  deadlinesStartedAt: "",
 };
 
 /** Field keys that can be hidden from the UI (shown as toggles in the editor). */
@@ -124,6 +130,7 @@ function normalize(p: Partial<AppConfig> | null | undefined): AppConfig {
     requirePaymentForPullout: p?.requirePaymentForPullout !== false,
     saleStatuses: cleanList(p?.saleStatuses),
     pulloutStatuses: cleanList(p?.pulloutStatuses),
+    deadlinesStartedAt: typeof p?.deadlinesStartedAt === "string" ? p.deadlinesStartedAt : "",
     statusDeadlines: Array.isArray(p?.statusDeadlines)
       ? p!.statusDeadlines
           .map((d) => ({ status: String(d?.status ?? "").trim(), days: Number(d?.days) || 0 }))
@@ -143,8 +150,10 @@ export function setAppConfig(config: AppConfig): void {
   } catch { /* ignore */ }
 }
 
+/** Apply the customer's saved config; "" (nothing saved) = defaults, so another
+ * customer's cached settings can never carry over. */
 export function applyAppConfig(json: string): void {
-  if (!json) return;
+  if (!json) { setAppConfig({ ...DEFAULT_APP_CONFIG }); return; }
   try { setAppConfig(normalize(JSON.parse(json))); } catch { /* ignore */ }
 }
 
@@ -176,4 +185,16 @@ export function getSaleStatuses(): string[] {
 /** Statuses shown in the Pullout Report. */
 export function getPulloutStatuses(): string[] {
   return _cfg.pulloutStatuses.length ? _cfg.pulloutStatuses : DEFAULT_PULLOUT_STATUSES;
+}
+
+/** A status that sends the item out (For Pullout / For COD / For Pick Up…). */
+export function isPulloutStatus(status: string): boolean {
+  const s = String(status || "").trim().toLowerCase();
+  return !!s && getPulloutStatuses().some((x) => x.toLowerCase() === s);
+}
+
+/** A status that counts as sold (liver sales, Bossing). */
+export function isSaleStatus(status?: string): boolean {
+  const s = String(status || "").trim().toLowerCase();
+  return !!s && getSaleStatuses().some((x) => x.toLowerCase() === s);
 }

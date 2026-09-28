@@ -75,6 +75,7 @@ const STOCK_H = {
   description: "Description",
   note: "Note",
   addedBy: "Added By",
+  deleted: "Deleted",
 } as const;
 
 const TAB = { sessions: "Live_Sessions", items: "Live_Items", stock: "Live_Stock" } as const;
@@ -98,9 +99,25 @@ async function getTab(key: keyof typeof TAB): Promise<GoogleSpreadsheetWorksheet
   const ckey = `${doc.spreadsheetId}:${title}`;
   const p = inflight.get(ckey);
   if (p) return p;
-  const created = doc.addSheet({ title, headerValues: headers }).finally(() => inflight.delete(ckey));
+  const created = doc.addSheet({ title, headerValues: headers })
+    .catch(async (err) => {
+      // Created a moment ago from another PC/server: reload the tab list and use it.
+      if (/already exists/i.test(String(err?.message ?? err))) {
+        await doc.loadInfo();
+        const t = doc.sheetsByTitle[title];
+        if (t) return t;
+      }
+      throw err;
+    })
+    .finally(() => inflight.delete(ckey));
   inflight.set(ckey, created);
   return created;
+}
+
+async function addRowRaw(ws: GoogleSpreadsheetWorksheet, values: Record<string, string>) {
+  // raw: text is stored exactly as typed (a description starting with "=" or
+  // "3/4" must not turn into a formula or a date).
+  await ws.addRow(values, { raw: true });
 }
 
 function num(v: unknown): number {
@@ -132,8 +149,10 @@ export async function getLiveData(_params?: Record<string, never>): Promise<Live
   ]);
   const [srows, irows, krows] = await Promise.all([sws.getRows(), iws.getRows(), kws.getRows()]);
 
+  // Rows are never physically removed (removing shifts every row below and can
+  // make another person's save land on the wrong row) — they are marked Deleted.
   const sessions: LiveSession[] = srows
-    .filter((r) => str(r.get(SESSION_H.id)))
+    .filter((r) => str(r.get(SESSION_H.id)) && str(r.get(SESSION_H.status)) !== "Deleted")
     .map((r) => {
       const back = str(r.get(SESSION_H.weightBack));
       const status = str(r.get(SESSION_H.status)) === "Out" ? "Out" : "Returned";
@@ -150,7 +169,7 @@ export async function getLiveData(_params?: Record<string, never>): Promise<Live
     });
 
   const items: LiveItem[] = irows
-    .filter((r) => str(r.get(ITEM_H.id)))
+    .filter((r) => str(r.get(ITEM_H.id)) && str(r.get(ITEM_H.status)) !== "Deleted")
     .map((r) => {
       const st = str(r.get(ITEM_H.status));
       const status: LiveItemStatus = st === "Sold" ? "Sold" : st === "Cancelled" ? "Cancelled" : "On hold";
@@ -176,7 +195,7 @@ export async function getLiveData(_params?: Record<string, never>): Promise<Live
     });
 
   const stock: LiveStockEntry[] = krows
-    .filter((r) => str(r.get(STOCK_H.id)) || str(r.get(STOCK_H.grams)))
+    .filter((r) => (str(r.get(STOCK_H.id)) || str(r.get(STOCK_H.grams))) && !str(r.get(STOCK_H.deleted)))
     .map((r, idx) => ({
       id: str(r.get(STOCK_H.id)) || `ROW-${idx}`,
       date: isoDate(r.get(STOCK_H.date)),
@@ -233,6 +252,31 @@ function itemRow(
   };
 }
 
+/** Masterlist items already on hold / sold — the same Admin item can't be taken twice. */
+async function assertRecordKeysFree(items: LiveItemInput[]): Promise<void> {
+  const keys = items.map((i) => str(i.recordKey)).filter(Boolean);
+  if (!keys.length) return;
+  const iws = await getTab("items");
+  const rows = await iws.getRows();
+  const used = new Map<string, string>();
+  for (const r of rows) {
+    const st = str(r.get(ITEM_H.status));
+    if (st === "Cancelled" || st === "Deleted") continue;
+    const rk = str(r.get(ITEM_H.recordKey));
+    if (rk) used.set(rk, `${str(r.get(ITEM_H.description))} (${str(r.get(ITEM_H.seller))})`);
+  }
+  const clash = keys.filter((k) => used.has(k));
+  if (new Set(keys).size !== keys.length) throw new Error("The same masterlist item is listed twice.");
+  if (clash.length) throw new Error(`Already taken: ${clash.slice(0, 3).map((k) => used.get(k)).join(", ")}. Refresh and pick again.`);
+}
+
+async function openSessionFor(seller: string): Promise<string | null> {
+  const sws = await getTab("sessions");
+  const rows = await sws.getRows();
+  const r = rows.find((x) => str(x.get(SESSION_H.status)) === "Out" && str(x.get(SESSION_H.seller)).toUpperCase() === seller);
+  return r ? str(r.get(SESSION_H.id)) : null;
+}
+
 /** Weigh stock OUT to a seller (before the live). */
 export async function startLiveSession(params: { date: string; seller: string; weightOut: number; notes?: string }): Promise<{ id: string }> {
   await requireRole(ROLES);
@@ -240,9 +284,10 @@ export async function startLiveSession(params: { date: string; seller: string; w
   const seller = str(params.seller).toUpperCase();
   if (!seller) throw new Error("Seller is required.");
   if (!(num(params.weightOut) > 0)) throw new Error("Weight out must be more than 0.");
+  if (await openSessionFor(seller)) throw new Error(`${seller} already has stock out. Use "Add more" on her card instead of a new weigh-out.`);
   const ws = await getTab("sessions");
   const id = newLiveId("LS");
-  await ws.addRow({
+  await addRowRaw(ws, {
     [SESSION_H.id]: id,
     [SESSION_H.date]: isoDate(params.date) || todayISO(),
     [SESSION_H.seller]: seller,
@@ -269,6 +314,8 @@ export async function finishLiveSession(params: {
   weightBack: number;
   notes?: string;
   items: LiveItemInput[];
+  /** Weight out the screen showed — if someone added/gave grams since, stop. */
+  expectedWeightOut?: number;
 }): Promise<{ id: string; added: number }> {
   await requireRole(ROLES);
   const who = (await getSessionEmail().catch(() => null)) || "";
@@ -278,15 +325,26 @@ export async function finishLiveSession(params: {
   const back = round2(num(params.weightBack));
   if (!(out > 0)) throw new Error("Weight out must be more than 0.");
   if (back < 0) throw new Error("Weight back can't be negative.");
+  if (back > out + 0.1) throw new Error("Weight back is more than weight out. Check the scale.");
   const date = isoDate(params.date) || todayISO();
+  const valid = (params.items || []).filter((it) => str(it.description) || num(it.grams) > 0);
+  await assertRecordKeysFree(valid);
 
   const sws = await getTab("sessions");
   let id = str(params.sessionId);
+  if (!id && (await openSessionFor(seller))) {
+    throw new Error(`${seller} still has stock out. Use "Weigh back" on her card so it isn't counted twice.`);
+  }
   if (id) {
     const rows = await sws.getRows();
     const row = rows.find((r) => str(r.get(SESSION_H.id)) === id);
     if (!row) throw new Error("That weigh-out was not found. Refresh and try again.");
     if (str(row.get(SESSION_H.status)) !== "Out") throw new Error("This live was already weighed back.");
+    const current = num(row.get(SESSION_H.weightOut));
+    if (params.expectedWeightOut !== undefined && Math.abs(current - num(params.expectedWeightOut)) > 0.001 && Math.abs(current - out) > 0.001) {
+      throw new Error(`Weight out changed to ${round2(current)} g meanwhile (someone added or gave grams). Close and open Weigh back again.`);
+    }
+    if (Math.abs(current - out) > 0.001) pushLog(row, round2(out - current), "Corrected at weigh back");
     row.set(SESSION_H.date, date);
     row.set(SESSION_H.seller, seller);
     row.set(SESSION_H.weightOut, String(out));
@@ -295,10 +353,10 @@ export async function finishLiveSession(params: {
     if (params.notes !== undefined) row.set(SESSION_H.notes, str(params.notes));
     row.set(SESSION_H.updatedBy, who);
     row.set(SESSION_H.updatedAt, stamp());
-    await row.save();
+    await row.save({ raw: true });
   } else {
     id = newLiveId("LS");
-    await sws.addRow({
+    await addRowRaw(sws, {
       [SESSION_H.id]: id,
       [SESSION_H.date]: date,
       [SESSION_H.seller]: seller,
@@ -312,10 +370,9 @@ export async function finishLiveSession(params: {
     });
   }
 
-  const valid = (params.items || []).filter((it) => str(it.description) || num(it.grams) > 0);
   if (valid.length) {
     const iws = await getTab("items");
-    await iws.addRows(valid.map((it) => itemRow(it, { sessionId: id, seller, liveDate: date }, who)));
+    await iws.addRows(valid.map((it) => itemRow(it, { sessionId: id, seller, liveDate: date }, who)), { raw: true });
   }
   return { id, added: valid.length };
 }
@@ -330,14 +387,28 @@ export async function deleteLiveSession(params: { sessionId: string }): Promise<
   const rows = await sws.getRows();
   const row = rows.find((r) => str(r.get(SESSION_H.id)) === params.sessionId);
   if (!row) return { success: true, removedItems: 0 };
+  const who = (await getSessionEmail().catch(() => null)) || "";
+  const seller = str(row.get(SESSION_H.seller)).toUpperCase();
   const iws = await getTab("items");
   const irows = await iws.getRows();
-  const linked = irows.filter((r) => str(r.get(ITEM_H.sessionId)) === params.sessionId);
+  const linked = irows.filter((r) => str(r.get(ITEM_H.sessionId)) === params.sessionId && str(r.get(ITEM_H.status)) !== "Deleted");
   if (linked.some((r) => str(r.get(ITEM_H.status)) === "Sold")) {
     throw new Error("Some items from this live are already sold. Undo those pullouts first.");
   }
-  for (const r of linked.sort((a, b) => b.rowNumber - a.rowNumber)) await r.delete();
-  await row.delete();
+  const movedAway = linked.filter((r) => str(r.get(ITEM_H.seller)).toUpperCase() !== seller);
+  if (movedAway.length) {
+    throw new Error(`${movedAway.length} item(s) from this live were moved to another seller (${[...new Set(movedAway.map((r) => str(r.get(ITEM_H.seller))))].join(", ")}). Move them back or delete them first.`);
+  }
+  for (const r of linked) {
+    r.set(ITEM_H.status, "Deleted");
+    r.set(ITEM_H.updatedBy, who);
+    r.set(ITEM_H.updatedAt, stamp());
+    await r.save({ raw: true });
+  }
+  row.set(SESSION_H.status, "Deleted");
+  row.set(SESSION_H.updatedBy, who);
+  row.set(SESSION_H.updatedAt, stamp());
+  await row.save({ raw: true });
   return { success: true, removedItems: linked.length };
 }
 
@@ -349,6 +420,7 @@ export async function updateLiveSession(params: {
   weightOut?: number;
   weightBack?: number | null;
   notes?: string;
+  expectedWeightOut?: number;
 }): Promise<{ success: boolean }> {
   await requireRole(ROLES);
   const who = (await getSessionEmail().catch(() => null)) || "";
@@ -357,7 +429,11 @@ export async function updateLiveSession(params: {
   const row = rows.find((r) => str(r.get(SESSION_H.id)) === params.sessionId);
   if (!row) throw new Error("That weigh-out was not found. Refresh and try again.");
   const status = str(row.get(SESSION_H.status));
-  const out = params.weightOut !== undefined ? round2(num(params.weightOut)) : num(row.get(SESSION_H.weightOut));
+  const currentOut = num(row.get(SESSION_H.weightOut));
+  if (params.expectedWeightOut !== undefined && Math.abs(currentOut - num(params.expectedWeightOut)) > 0.001) {
+    throw new Error(`Weight out changed to ${round2(currentOut)} g meanwhile. Close and open Edit again.`);
+  }
+  const out = params.weightOut !== undefined ? round2(num(params.weightOut)) : currentOut;
   if (!(out > 0)) throw new Error("Weight out must be more than 0.");
   if (status !== "Out" && params.weightBack !== undefined && params.weightBack !== null) {
     const back = round2(num(params.weightBack));
@@ -376,7 +452,7 @@ export async function updateLiveSession(params: {
   row.set(SESSION_H.seller, newSeller);
   row.set(SESSION_H.updatedBy, who);
   row.set(SESSION_H.updatedAt, stamp());
-  await row.save();
+  await row.save({ raw: true });
   // Wrong seller picked: carry this live's items over too.
   if (newSeller !== oldSeller) {
     const iws = await getTab("items");
@@ -386,7 +462,7 @@ export async function updateLiveSession(params: {
         r.set(ITEM_H.seller, newSeller);
         r.set(ITEM_H.updatedBy, who);
         r.set(ITEM_H.updatedAt, stamp());
-        await r.save();
+        await r.save({ raw: true });
       }
     }
   }
@@ -399,11 +475,15 @@ export async function deleteLiveItems(params: { ids: string[] }): Promise<{ dele
   const ids = new Set(params.ids || []);
   const iws = await getTab("items");
   const rows = await iws.getRows();
-  const targets = rows
-    .filter((r) => ids.has(str(r.get(ITEM_H.id))))
-    .sort((a, b) => b.rowNumber - a.rowNumber);
+  const who = (await getSessionEmail().catch(() => null)) || "";
+  const targets = rows.filter((r) => ids.has(str(r.get(ITEM_H.id))) && str(r.get(ITEM_H.status)) !== "Deleted");
   if (targets.some((r) => str(r.get(ITEM_H.status)) === "Sold")) throw new Error("A sold item can't be deleted. Undo the pullout first.");
-  for (const r of targets) await r.delete();
+  for (const r of targets) {
+    r.set(ITEM_H.status, "Deleted");
+    r.set(ITEM_H.updatedBy, who);
+    r.set(ITEM_H.updatedAt, stamp());
+    await r.save({ raw: true });
+  }
   return { deleted: targets.length };
 }
 
@@ -415,6 +495,7 @@ export async function addLiveItems(params: { seller: string; liveDate: string; i
   if (!seller) throw new Error("Seller is required.");
   const valid = (params.items || []).filter((it) => str(it.description) || num(it.grams) > 0);
   if (!valid.length) return { added: 0 };
+  await assertRecordKeysFree(valid);
   const iws = await getTab("items");
   // With a sessionId the items belong to a live that was already weighed back
   // (listed later) — its weight already left the shop, so stock isn't taken twice.
@@ -425,7 +506,7 @@ export async function addLiveItems(params: { seller: string; liveDate: string; i
     if (!srow) throw new Error("That live was not found. Refresh and try again.");
     sessionId = params.sessionId;
   }
-  await iws.addRows(valid.map((it) => itemRow(it, { sessionId, seller, liveDate: isoDate(params.liveDate) || todayISO() }, who)));
+  await iws.addRows(valid.map((it) => itemRow(it, { sessionId, seller, liveDate: isoDate(params.liveDate) || todayISO() }, who)), { raw: true });
   return { added: valid.length };
 }
 
@@ -447,8 +528,29 @@ export async function updateLiveItems(params: {
   if (!ids.size) return { updated: 0 };
   const iws = await getTab("items");
   const rows = await iws.getRows();
-  const targets = rows.filter((r) => ids.has(str(r.get(ITEM_H.id))));
+  const targets = rows.filter((r) => ids.has(str(r.get(ITEM_H.id))) && str(r.get(ITEM_H.status)) !== "Deleted");
   const today = todayISO();
+  if (params.action === "pullout") {
+    const inv = str(params.invoiceNo);
+    if (!inv) throw new Error("Invoice number is required.");
+    // An invoice number belongs to ONE pullout — never merge two invoices.
+    const clash = rows.find((r) => str(r.get(ITEM_H.invoiceNo)).toUpperCase() === inv.toUpperCase() && !ids.has(str(r.get(ITEM_H.id))) && str(r.get(ITEM_H.status)) !== "Deleted");
+    if (clash) throw new Error(`Invoice ${inv} is already used (by ${str(clash.get(ITEM_H.seller))}). Use another number.`);
+    for (const id of ids) {
+      const v = params.paid?.[id];
+      if (v !== undefined && (!Number.isFinite(Number(v)) || Number(v) < 0)) throw new Error("Paid amount can't be empty or negative.");
+    }
+  }
+  if (params.action === "restore") {
+    // Re-holding a cancelled masterlist item that was picked again meanwhile would hold it twice.
+    for (const r of targets) {
+      const rk = str(r.get(ITEM_H.recordKey));
+      if (!rk || str(r.get(ITEM_H.status)) !== "Cancelled") continue;
+      const other = rows.find((x) => x !== r && str(x.get(ITEM_H.recordKey)) === rk && ["On hold", "Sold", ""].includes(str(x.get(ITEM_H.status))));
+      if (other) throw new Error(`"${str(r.get(ITEM_H.description))}" is already on hold for ${str(other.get(ITEM_H.seller))} — can't restore it twice.`);
+    }
+  }
+  let changed = 0;
   for (const r of targets) {
     const id = str(r.get(ITEM_H.id));
     const status = str(r.get(ITEM_H.status)) || "On hold";
@@ -465,6 +567,12 @@ export async function updateLiveItems(params: {
       r.set(ITEM_H.status, "Cancelled");
       r.set(ITEM_H.cancelledDate, today);
     } else if (params.action === "restore") {
+      if (status !== "Sold" && status !== "Cancelled") continue;
+      // Keep what was undone in the notes (invoice no., paid, date).
+      if (status === "Sold") {
+        const prevNotes = str(r.get(ITEM_H.notes));
+        r.set(ITEM_H.notes, [prevNotes, `Pullout undone ${today} (was ${str(r.get(ITEM_H.invoiceNo))}, paid ${str(r.get(ITEM_H.paidAmount))}, ${str(r.get(ITEM_H.pulloutDate))})`].filter(Boolean).join(" · "));
+      }
       r.set(ITEM_H.status, "On hold");
       r.set(ITEM_H.pulloutDate, "");
       r.set(ITEM_H.paidAmount, "");
@@ -485,9 +593,10 @@ export async function updateLiveItems(params: {
     }
     r.set(ITEM_H.updatedBy, who);
     r.set(ITEM_H.updatedAt, stamp());
-    await r.save();
+    await r.save({ raw: true });
+    changed++;
   }
-  return { updated: targets.length };
+  return { updated: changed };
 }
 
 // ── Stock ──────────────────────────────────────────────────────────────────
@@ -498,7 +607,7 @@ export async function addLiveStock(params: { date: string; grams: number; pcs?: 
   const grams = round2(num(params.grams));
   if (!grams) throw new Error("Enter the grams.");
   const ws = await getTab("stock");
-  await ws.addRow({
+  await addRowRaw(ws, {
     [STOCK_H.id]: newLiveId("ST"),
     [STOCK_H.date]: isoDate(params.date) || todayISO(),
     [STOCK_H.grams]: String(grams),
@@ -515,7 +624,11 @@ export async function deleteLiveStock(params: { id: string }): Promise<{ success
   const ws = await getTab("stock");
   const rows = await ws.getRows();
   const row = rows.find((r) => str(r.get(STOCK_H.id)) === params.id);
-  if (row) await row.delete();
+  if (row) {
+    const who = (await getSessionEmail().catch(() => null)) || "";
+    row.set(STOCK_H.deleted, `${stamp()} ${who}`.trim());
+    await row.save({ raw: true });
+  }
   return { success: true };
 }
 
@@ -550,7 +663,7 @@ export async function addToLiveSession(params: { sessionId: string; grams: numbe
   row.set(SESSION_H.weightOut, String(total));
   row.set(SESSION_H.updatedBy, who);
   row.set(SESSION_H.updatedAt, stamp());
-  await row.save();
+  await row.save({ raw: true });
   return { weightOut: total };
 }
 
@@ -581,7 +694,7 @@ export async function transferLiveWeight(params: { fromSessionId: string; toSell
   from.set(SESSION_H.weightOut, String(round2(fromOut - grams)));
   from.set(SESSION_H.updatedBy, who);
   from.set(SESSION_H.updatedAt, stamp());
-  await from.save();
+  await from.save({ raw: true });
 
   const target = rows.find((r) => str(r.get(SESSION_H.status)) === "Out" && str(r.get(SESSION_H.seller)).toUpperCase() === to);
   const logNote = `From ${fromSeller}${note ? ` — ${note}` : ""}`;
@@ -590,9 +703,9 @@ export async function transferLiveWeight(params: { fromSessionId: string; toSell
     target.set(SESSION_H.weightOut, String(round2(num(target.get(SESSION_H.weightOut)) + grams)));
     target.set(SESSION_H.updatedBy, who);
     target.set(SESSION_H.updatedAt, stamp());
-    await target.save();
+    await target.save({ raw: true });
   } else {
-    await ws.addRow({
+    await addRowRaw(ws, {
       [SESSION_H.id]: newLiveId("LS"),
       [SESSION_H.date]: isoDate(params.date) || isoDate(from.get(SESSION_H.date)) || todayISO(),
       [SESSION_H.seller]: to,
@@ -628,7 +741,7 @@ export async function moveLiveItems(params: { ids: string[]; toSeller: string })
     r.set(ITEM_H.notes, [prev, `Moved from ${from} on ${todayISO()}`].filter(Boolean).join(" · "));
     r.set(ITEM_H.updatedBy, who);
     r.set(ITEM_H.updatedAt, stamp());
-    await r.save();
+    await r.save({ raw: true });
     moved++;
   }
   return { moved };

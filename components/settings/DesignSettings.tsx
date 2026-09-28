@@ -5,6 +5,7 @@ import { Loader2, Upload, X, Palette, Type, Image as ImageIcon, Save } from "luc
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { toast } from "sonner";
 import { getBrandSettings, saveBrandSettings, saveBrandLogo } from "@/lib/api";
 import { useBrand } from "@/components/BrandThemeLoader";
@@ -12,6 +13,7 @@ import ConnectionCheck from "@/components/settings/ConnectionCheck";
 import PricingSettings from "@/components/settings/PricingSettings";
 import TabSettings from "@/components/settings/TabSettings";
 import { saveAllSections } from "@/lib/settingsSave";
+import { DEFAULT_INVOICE_NOTES } from "@/components/InvoicePrintContent";
 import BusinessTypeSettings from "@/components/settings/BusinessTypeSettings";
 import TerminologySettings from "@/components/settings/TerminologySettings";
 import PageLogosSettings from "@/components/settings/PageLogosSettings";
@@ -40,20 +42,27 @@ export default function DesignSettings() {
   const [invoiceLogoPreview, setInvoiceLogoPreview] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  // What's saved in the sheet. Null = couldn't load it — then never overwrite it
+  // with blank defaults.
+  const [savedBrand, setSavedBrand] = useState<string | null>(null);
   const headerFileRef = useRef<HTMLInputElement>(null);
   const invoiceFileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     getBrandSettings()
       .then((res) => {
+        let loaded = DEFAULT_BRAND_SETTINGS;
         if (res.config) {
           try {
-            setSettings({ ...DEFAULT_BRAND_SETTINGS, ...JSON.parse(res.config) });
+            loaded = { ...DEFAULT_BRAND_SETTINGS, ...JSON.parse(res.config) };
           } catch {
             /* keep defaults */
           }
         }
+        setSettings(loaded);
+        setSavedBrand(JSON.stringify(loaded));
       })
+      .catch(() => toast.error("Couldn't load Company Details — they won't be saved until the page is reloaded."))
       .finally(() => setLoading(false));
   }, []);
 
@@ -66,12 +75,23 @@ export default function DesignSettings() {
   const handleSaveText = async () => {
     setSaving(true);
     try {
-      await saveBrandSettings({ config: JSON.stringify(settings) });
-      refreshGlobalBrand();
+      const names: string[] = [];
+      // Company details only when they loaded correctly and actually changed.
+      if (savedBrand !== null && JSON.stringify(settings) !== savedBrand) {
+        try {
+          await saveBrandSettings({ config: JSON.stringify(settings) });
+          setSavedBrand(JSON.stringify(settings));
+          refreshGlobalBrand();
+          names.push("Company Details & Theme");
+        } catch (err) {
+          toast.error(`Company Details NOT saved: ${err instanceof Error ? err.message : "error"}`);
+        }
+      }
       const res = await saveAllSections();
       for (const f of res.failed) toast.error(`${f.label} NOT saved: ${f.error}`);
-      const names = ["Company Details & Theme", ...res.saved];
-      toast.success(`Saved: ${names.join(", ")}.`);
+      names.push(...res.saved);
+      if (!names.length && !res.failed.length) { toast.message("Nothing changed."); return; }
+      if (names.length) toast.success(`Saved: ${names.join(", ")}.`);
       if (res.needReload && !res.failed.length) {
         toast.message("Reloading to apply…");
         setTimeout(() => window.location.reload(), 900);
@@ -168,6 +188,23 @@ export default function DesignSettings() {
               onChange={(e) => setSettings((s) => ({ ...s, invoiceContact: e.target.value }))}
               placeholder="e.g. +971 50 123 4567 (blank = hidden on invoices)"
             />
+          </div>
+          <div className="sm:col-span-2">
+            <Label className="text-xs text-muted-foreground">Invoice notes / policies (one per line)</Label>
+            <Textarea
+              rows={5}
+              value={settings.invoiceNotes ?? ""}
+              onChange={(e) => setSettings((s) => ({ ...s, invoiceNotes: e.target.value }))}
+              placeholder={"Leave blank to use the standard notes. Type - to print no notes.\n" + DEFAULT_INVOICE_NOTES.slice(0, 2).join("\n")}
+              className="text-xs"
+            />
+            <button
+              type="button"
+              className="text-[11px] text-primary hover:underline mt-1"
+              onClick={() => setSettings((s) => ({ ...s, invoiceNotes: DEFAULT_INVOICE_NOTES.join("\n") }))}
+            >
+              Start from the standard notes
+            </button>
           </div>
         </div>
       </section>

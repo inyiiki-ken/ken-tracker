@@ -61,18 +61,37 @@ export async function getSpreadsheet(): Promise<GoogleSpreadsheet> {
  * data access is keyed on the tenant's sheetId rather than a single env var.
  * The service account must be shared (Editor) on the target sheet.
  */
-const docCacheById = new Map<string, GoogleSpreadsheet>();
+const docCacheById = new Map<string, { doc: GoogleSpreadsheet; at: number }>();
+// Re-read the sheet's tab list + sizes regularly. Every PC running the desktop
+// app (and every Vercel instance) has its own copy: without a refresh, rows or
+// tabs added from another PC stay invisible (getRows only reads up to the
+// row count known at load time).
+const DOC_INFO_TTL_MS = 30_000;
 
 export async function getSpreadsheetById(sheetId: string): Promise<GoogleSpreadsheet> {
   const id = sheetId.trim();
   if (!id) throw new Error("Sheet id is empty.");
   const cached = docCacheById.get(id);
-  if (cached) return cached;
+  if (cached) {
+    if (Date.now() - cached.at > DOC_INFO_TTL_MS) {
+      try {
+        await cached.doc.loadInfo();
+        cached.at = Date.now();
+      } catch { /* keep the previous info; try again next time */ }
+    }
+    return cached.doc;
+  }
 
   const doc = new GoogleSpreadsheet(id, getAuth());
   await doc.loadInfo();
-  docCacheById.set(id, doc);
+  docCacheById.set(id, { doc, at: Date.now() });
   return doc;
+}
+
+/** Force a fresh tab list (e.g. after "sheet already exists"). */
+export async function refreshSpreadsheetInfo(sheetId: string): Promise<void> {
+  const c = docCacheById.get(sheetId.trim());
+  if (c) { await c.doc.loadInfo(); c.at = Date.now(); }
 }
 
 /** Fetch a specific tab by its stable gid (preferred over title -- titles can

@@ -2,8 +2,10 @@
 
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useAuth } from '@/lib/auth';
-import { getRecords, getRoles, getRatesConfig, getPricingConfig, getTabConfig, getBusinessConfig, getLabelConfig, getAppConfig, getMasterlistMapping, getOptionsConfig, getCustomToggles, updateRecord, bulkUpdateRecords } from '@/lib/api';
+import { getMyRoles, getRecords, getRoles, getRatesConfig, getPricingConfig, getTabConfig, getBusinessConfig, getLabelConfig, getAppConfig, getMasterlistMapping, getOptionsConfig, getCustomToggles, updateRecord, bulkUpdateRecords } from '@/lib/api';
 import { applyPricingConfig } from '@/lib/pricingConfig';
+import { trimAudit } from '@/lib/auditTrim';
+import { setDevAccess } from '@/lib/devAccess';
 import { applyBusinessConfig } from '@/lib/businessConfig';
 import { applyLabelConfig } from '@/lib/labelConfig';
 import { applyAppConfig } from '@/lib/appConfig';
@@ -82,6 +84,13 @@ function AppContent() {
   const [previewEmail, setPreviewEmail] = useState<string | null>(null);
   const [devContext, setDevContext] = useState<MyContext | null>(null);
   const [devReady, setDevReady] = useState(false);
+  // Roles the SERVER gives this user (developer ⇒ super_admin). Backup for when
+  // the God Mode probe fails, so the developer is never shown "Access denied".
+  const [serverRoles, setServerRoles] = useState<string[]>([]);
+  useEffect(() => {
+    if (!user) return;
+    getMyRoles({}).then(setServerRoles).catch(() => {});
+  }, [user]);
   // Bumped after the per-tenant tab config loads, to re-render the nav with the
   // customer's labels/visibility.
   const [tabConfigVersion, setTabConfigVersion] = useState(0);
@@ -96,12 +105,12 @@ function AppContent() {
         getRoles({}).catch(() => null),
         getRatesConfig({}).catch(() => ({ config: '' })),
         getPricingConfig({}).catch(() => ({ config: '' })),
-        getTabConfig({}).catch(() => ({ config: '' })),
+        getTabConfig({}).catch(() => null),
         getBusinessConfig({}).catch(() => ({ config: '' })),
         getLabelConfig({}).catch(() => ({ config: '' })),
-        getAppConfig({}).catch(() => ({ config: '' })),
+        getAppConfig({}).catch(() => null),
         getMasterlistMapping({}).catch(() => ({ config: '' })),
-        getOptionsConfig({}).catch(() => ({ config: '' })),
+        getOptionsConfig({}).catch(() => null),
         getCustomToggles({}).catch(() => ({ config: '' })),
       ]);
       setRecords(recordsRes as DatabaseRowType[]);
@@ -113,11 +122,12 @@ function AppContent() {
       if (pricingRes?.config) applyPricingConfig(pricingRes.config);
       applyBusinessConfig(bizRes?.config || '');
       applyLabelConfig(labelRes?.config || '');
-      applyAppConfig(appRes?.config || '');
+      // Only when the read worked: a failed read keeps what's already loaded.
+      if (appRes) applyAppConfig(appRes.config || '');
       applyMasterlistMapping(mlmRes?.config || '');
-      applyOptionsConfig(optRes?.config || '');
+      if (optRes) applyOptionsConfig(optRes.config || '');
       applyCustomToggles(tglRes?.config || '');
-      applyTabConfig(tabRes?.config || '');
+      if (tabRes) applyTabConfig(tabRes.config || '');
       setTabConfigVersion(v => v + 1);
     } catch (err) {
       console.error('Failed to load data:', err);
@@ -162,8 +172,15 @@ function AppContent() {
     // Mirror the server's change-history line locally, so reminders count a new
     // status from now without waiting for a refresh.
     const before = recordsRef.current.find(r => r.id === rowId);
+    // Re-picking the SAME status isn't a change — don't restart its deadline clock.
+    if (fields.status !== undefined && before && fields.status === before.status) {
+      const { status: _same, ...rest } = fields;
+      void _same;
+      fields = rest;
+      if (Object.keys(fields).length === 0) return;
+    }
     const localAudit = fields.status !== undefined && fields.status !== before?.status
-      ? [...String(before?.auditTrail ?? '').split('\n').filter(Boolean), `${new Date().toISOString()} | ${user?.email || 'unknown'} | Updated: ${Object.keys(fields).join(', ')}`].slice(-20).join('\n')
+      ? trimAudit([...String(before?.auditTrail ?? '').split('\n').filter(Boolean), `${new Date().toISOString()} | ${user?.email || 'unknown'} | Updated: ${Object.keys(fields).join(', ')}`], 20).join('\n')
       : undefined;
     setRecords(prev => prev.map(r => r.id === rowId ? { ...r, ...fields, ...(localAudit ? { auditTrail: localAudit } : {}) } : r));
     try {
@@ -198,7 +215,7 @@ function AppContent() {
         if (fields.status !== undefined && fields.status !== existing?.status && fields.auditTrail === undefined) {
           const lines = String(existing?.auditTrail ?? '').split('\n').filter(Boolean);
           lines.push(`${stamp} | ${user?.email || 'unknown'} | Updated: status (bulk)`);
-          fields = { ...fields, auditTrail: lines.slice(-20).join('\n') };
+          fields = { ...fields, auditTrail: trimAudit(lines, 20).join('\n') };
         }
         return { ...u, fields, rowKey: existing?.rowKey };
       });
@@ -221,6 +238,18 @@ function AppContent() {
 
   const clientMilestones = useMemo(() => computeClientMilestones(records), [records]);
 
+  // Share "developer / previewing" with every component (rates editor etc.).
+  useEffect(() => {
+    const dev = !!devContext?.isDeveloper;
+    const canPrev = dev || getUserRole(user?.email || '', dynamicRoles).includes('super_admin');
+    const prev = canPrev && !!previewEmail;
+    setDevAccess({
+      isDeveloper: dev,
+      previewing: prev,
+      previewRoles: prev ? getUserRole(previewEmail!, dynamicRoles) : [],
+    });
+  }, [devContext, previewEmail, dynamicRoles, user?.email]);
+
   // Each user's "My Sales" is locked to their OWN liver name (the "name" column
   // in the Roles tab), so a liver only ever sees their own sales — never other
   // livers'. When previewing, we lock to the previewed user's name instead.
@@ -242,8 +271,8 @@ function AppContent() {
   // Developers (God Mode) always get in, even if their email isn't in a
   // customer's Roles sheet. Wait for the dev-context probe before denying so a
   // developer never briefly sees Access Denied.
-  const developerFlag = devContext?.isDeveloper ?? false;
-  if (!developerFlag && roles.length === 0) {
+  const developerFlag = (devContext?.isDeveloper ?? false) || serverRoles.includes('super_admin');
+  if (!developerFlag && roles.length === 0 && serverRoles.length === 0) {
     if (!devReady) return <LoadingSkeleton />;
     return <AccessDenied email={user.email} />;
   }
@@ -276,9 +305,12 @@ function AppContent() {
   const isDeveloper = devContext?.isDeveloper ?? false;
   // Role-permitted AND not hidden by the customer's tab config. Settings stays
   // available so the config itself can always be edited.
-  const visibleTabs = allTabs.filter(
-    t => visibleTabKeys.has(t.key) && (t.key === 'settings' || !isTabHidden(t.key))
-  );
+  // The developer sees every tab, even ones switched off for this customer
+  // (marked "hidden"), so nothing is ever out of reach.
+  const devSeesAll = isDeveloper && !previewing;
+  const visibleTabs = allTabs
+    .filter(t => visibleTabKeys.has(t.key) && (t.key === 'settings' || devSeesAll || !isTabHidden(t.key)))
+    .map(t => (devSeesAll && t.key !== 'settings' && isTabHidden(t.key) ? { ...t, label: `${t.label} (hidden)` } : t));
   if (isDeveloper && !previewing) {
     visibleTabs.push({ key: 'godmode', label: 'God Mode', icon: <Crown className="h-3.5 w-3.5" /> });
   }
@@ -391,7 +423,12 @@ function AppContent() {
       {activeTab === 'bossing' && (
         <BossingDashboard records={records} searchQuery={searchQueries.bossing} onSearchChange={handleSearchChange} onUpdate={handleUpdate} />
       )}
-      {activeTab === 'liver' && (
+      {activeTab === 'liver' && !lockedLiverName && !effectiveRoles.some(r => r === 'super_admin' || r === 'admin' || r === 'bossing' || r === 'accounts') && (
+        <div className="px-4 py-16 text-center text-sm text-muted-foreground">
+          Your liver name isn&apos;t set yet. Ask the admin to put your name in the <b>Roles</b> sheet (column &quot;name&quot;), exactly as it appears in the masterlist.
+        </div>
+      )}
+      {activeTab === 'liver' && (lockedLiverName || effectiveRoles.some(r => r === 'super_admin' || r === 'admin' || r === 'bossing' || r === 'accounts')) && (
         <LiverDashboard records={records} searchQuery={searchQueries.liver} onSearchChange={handleSearchChange} onUpdate={handleUpdate} lockedLiverName={lockedLiverName} />
       )}
       {activeTab === 'purchasing' && (
@@ -400,7 +437,7 @@ function AppContent() {
       {activeTab === 'invoicing' && (
         <InvoicingTab records={records} searchQuery={searchQueries.invoicing} onSearchChange={handleSearchChange} onUpdate={handleUpdate} />
       )}
-      {activeTab === 'livesellers' && !isTabHidden('livesellers') && (
+      {activeTab === 'livesellers' && (devSeesAll || !isTabHidden('livesellers')) && (
         <LiveSellersTab records={records} onRecordsChanged={() => fetchData(true)} canEditSettings={effectiveRoles.includes('super_admin') || effectiveRoles.includes('admin')} />
       )}
       {activeTab === 'settings' && <DesignSettings />}

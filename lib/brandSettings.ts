@@ -31,6 +31,8 @@ export interface BrandSettings {
   invoiceAddress?: string;
   /** WhatsApp / contact number printed on invoices. Empty = line hidden. */
   invoiceContact?: string;
+  /** Invoice footer notes, one per line. Blank = the built-in notes. "-" = no notes. */
+  invoiceNotes?: string;
   /** Overall look: "modern" (clean, Apple-style) or "classic" (original). */
   uiStyle?: "modern" | "classic";
 }

@@ -1,5 +1,6 @@
 "use client";
 
+import { getEffectiveStatuses } from '@/lib/statusRegistry';
 import { useState } from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
@@ -16,16 +17,6 @@ interface Props {
   onClose: () => void;
   onComplete: () => void;
 }
-
-const SPLIT_STATUS_OPTIONS = [
-  'Dispatched',
-  'For Pullout',
-  'Dispatch',
-  'Delivered',
-  'Given to Shop',
-  'Paid/DP but Item Hold',
-  'Cancelled',
-];
 
 export default function SplitItemDialog({ record, onClose, onComplete }: Props) {
   const originalGrams = parseFloat(String(record.grams ?? '0')) || 0;
@@ -135,7 +126,7 @@ export default function SplitItemDialog({ record, onClose, onComplete }: Props) 
               <SelectValue />
             </SelectTrigger>
             <SelectContent className="bg-popover border-border">
-              {SPLIT_STATUS_OPTIONS.map(s => (
+              {getEffectiveStatuses('dispatch').map(s => (
                 <SelectItem key={s} value={s} className="text-xs">{s}</SelectItem>
               ))}
             </SelectContent>

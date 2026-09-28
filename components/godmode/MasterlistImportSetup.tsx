@@ -1,5 +1,6 @@
 "use client";
 
+import { roundPrice } from "@/lib/calculations";
 import { useRef, useState } from "react";
 import { Upload, Loader2, Check, TableProperties, Save, RotateCcw, Eye } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -21,7 +22,7 @@ import { parseMasterlistFile, type ParsedMasterlistRow } from "@/lib/masterlistI
 import { getPricing } from "@/lib/pricingConfig";
 
 /** Round half-up to a whole number: .0–.4 stays, .5–.9 goes up. */
-const round0 = (v: number) => Math.round(v);
+const round0 = (v: number) => roundPrice(v);
 
 /**
  * Developer tool (God Mode): teach the app the ACTIVE customer's own masterlist

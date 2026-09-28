@@ -100,7 +100,9 @@ export default function OptionsSettings() {
     const cfg: OptionsConfig = {};
     const saved = getLocalOptions();
     for (const def of OPTION_LISTS) {
-      if (STATUS_TAB[def.key] && !touched.has(def.key) && !saved[def.key]?.length) continue;
+      // Only lists someone edited (or saved before) — untouched lists keep
+      // following the data, so new pages/sources still appear later.
+      if (!touched.has(def.key) && !saved[def.key]?.length) continue;
       cfg[def.key] = lists[def.key] ?? [];
     }
     setOptionsConfig(cfg);
@@ -176,7 +178,7 @@ export default function OptionsSettings() {
                 </span>
               ))}
               {(lists[def.key] ?? []).length === 0 && (
-                <span className="text-[11px] text-muted-foreground">No values — staff will see an empty list.</span>
+                <span className="text-[11px] text-muted-foreground">No values — the built-in default list will be used.</span>
               )}
             </div>
             <div className="flex items-center gap-2">

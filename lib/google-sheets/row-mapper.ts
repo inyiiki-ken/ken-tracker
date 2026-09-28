@@ -58,7 +58,7 @@ export function rowToDatabaseRecord(
     clientRate: toNumber(get("clientRate")),
     profit: get("profit") ?? "",
     modeOfSale: get("modeOfSale") ?? "",
-    status: get("status") ?? "",
+    status: String(get("status") ?? "").trim(),
     modeOfPayment: get("modeOfPayment") ?? "",
     downpayment: get("downpayment") ?? "",
     la1MonthPayment: get("la1MonthPayment") ?? "",

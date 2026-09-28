@@ -47,7 +47,10 @@ export default function EditSessionDialog({
   const save = async () => {
     setBusy(true);
     try {
+      if (returned && back.trim() === "") throw new Error("Enter the weight back.");
+      if (!(parseFloat(out) > 0)) throw new Error("Weight out must be more than 0.");
       await updateLiveSession({
+        expectedWeightOut: session.weightOut,
         sessionId: session.id,
         date,
         seller,

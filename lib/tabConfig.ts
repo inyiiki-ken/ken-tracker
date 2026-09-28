@@ -101,7 +101,7 @@ export function setTabConfig(config: TabConfig): void {
 }
 
 export function applyTabConfig(json: string): void {
-  if (!json) return;
+  if (!json) { setTabConfig({ overrides: {} }); return; }
   try {
     setTabConfig(normalize(JSON.parse(json)));
   } catch { /* ignore */ }

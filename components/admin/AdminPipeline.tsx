@@ -75,8 +75,9 @@ export default function AdminPipeline({ records, searchQuery, onSearchChange, on
   const pageGroups = useMemo(() => {
     const searched = applySearch(records, searchQuery);
     const activeAdminRecords = searched.filter(r => {
-      const status = r.status || '';
-      if (status === 'Pending' || status === 'Waiting for Details' || WFDP_GROUP.includes(status)) return true;
+      const status = String(r.status || '').trim();
+      // A blank status (typed straight into the sheet) = Waiting for Details.
+      if (!status || status === 'Pending' || status === 'Waiting for Details' || WFDP_GROUP.includes(status)) return true;
 
       if (status === 'Payment for Verification') return true;
       if (status === 'Delivered') {

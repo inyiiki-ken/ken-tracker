@@ -142,7 +142,8 @@ export interface LiveData {
 
 /** Half-up rounding to whole currency units (0-4 down, 5-9 up). */
 export function roundAmount(v: number): number {
-  return Math.floor(v + 0.5 + 1e-9);
+  const x = Number(v) || 0;
+  return Math.sign(x) * Math.round(Math.abs(Number(x.toFixed(6))));
 }
 
 export function round2(v: number): number {
@@ -154,7 +155,13 @@ export function rateFor(list: LivePriceList, type: string): number {
   return t ? t.rate : 0;
 }
 
-export function todayISO(d = new Date()): string {
+export function todayISO(d?: Date): string {
+  // "Today" = the shop's day (Dubai), also when this runs on a UTC server.
+  if (!d) {
+    try {
+      return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Dubai", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
+    } catch { d = new Date(); }
+  }
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, "0");
   const day = String(d.getDate()).padStart(2, "0");
@@ -275,9 +282,15 @@ export interface TypeMovement {
 
 export function computeTypeMovement(data: LiveData, fromISO: string): TypeMovement[] {
   const names = new Set(data.priceList.types.map((t) => t.name));
-  for (const i of data.items) if (i.type) names.add(i.type);
+  // One row per type, whatever the spelling/case ("21K", "21k ", …).
+  const canon = new Map<string, string>();
+  for (const n of names) canon.set(n.trim().toLowerCase(), n);
+  for (const i of data.items) {
+    const k = i.type.trim().toLowerCase();
+    if (k && !canon.has(k)) { canon.set(k, i.type.trim()); names.add(i.type.trim()); }
+  }
   const rows: TypeMovement[] = [...names].map((type) => {
-    const sold = data.items.filter((i) => i.status === "Sold" && i.type === type);
+    const sold = data.items.filter((i) => i.status === "Sold" && i.type.trim().toLowerCase() === type.trim().toLowerCase());
     const period = sold.filter((i) => inPeriod(i.pulloutDate, fromISO));
     const last = sold.reduce((m, i) => (i.pulloutDate > m ? i.pulloutDate : m), "");
     return {

@@ -1,5 +1,6 @@
 "use client";
 
+import { isSaleStatus, getAppConfig } from '@/lib/appConfig';
 import { useMemo, useState } from 'react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -9,7 +10,7 @@ import { Calendar as CalendarComponent } from '@/components/ui/calendar';
 import { TabProps, DatabaseRowType } from '@/types';
 import { applySearch, groupByPageDateMiner, formatDate } from '@/lib/formatters';
 import CollapsibleGroup from '@/components/CollapsibleGroup';
-import { calcRemainingBalance, parseDateRobust } from '@/lib/calculations';
+import { calcRemainingBalance, parseDateRobust, calcGroupBalance, groupByCustomer, customerKey, sumOutstanding } from '@/lib/calculations';
 import { startOfWeek, startOfMonth, subMonths } from 'date-fns';
 import TabHeader from '@/components/TabHeader';
 import AccountsClientCard from './AccountsClientCard';
@@ -26,9 +27,13 @@ const ACCOUNTS_STATUSES = [
 ];
 
 function isAccountsRelevant(r: DatabaseRowType): boolean {
-  const status = r.status || '';
+  const status = String(r.status || '').trim();
   if (status === 'Cancelled' || status === 'Returned Item') return false;
-  if (ACCOUNTS_STATUSES.includes(status)) return true;
+  if (ACCOUNTS_STATUSES.includes(status) || status === 'Picked Up') return true;
+  // This customer's sale statuses and deadline statuses (e.g. Reseller, For COD)
+  // still carry money to collect.
+  if (isSaleStatus(status)) return true;
+  if (getAppConfig().statusDeadlines.some(d => d.status.toLowerCase() === status.toLowerCase())) return true;
   return false;
 }
 
@@ -115,8 +120,7 @@ const countItems = (g: Map<string, Map<string, Map<string, DatabaseRowType[]>>>)
     s + Array.from(dm.values()).reduce((ss, mm) =>
       ss + Array.from(mm.values()).reduce((sss, v) => sss + v.length, 0), 0), 0);
 
-const sumBalance = (records: DatabaseRowType[]) =>
-  records.reduce((s, r) => s + Math.max(0, calcRemainingBalance(r)), 0);
+const sumBalance = (records: DatabaseRowType[]) => sumOutstanding(records);
 
 // ─── Main Component ───────────────────────────────────────────────────────────
 export default function AccountsTracking({ records, searchQuery, onSearchChange, onUpdate, userFirstName, userEmail, onRefresh }: TabProps) {
@@ -168,11 +172,14 @@ export default function AccountsTracking({ records, searchQuery, onSearchChange,
     const searched = applySearch(filteredRecords, searchQuery);
     const active: DatabaseRowType[] = [];
     const cleared: DatabaseRowType[] = [];
+    // Paid-up is decided per CUSTOMER (like the invoice), not per item.
+    const groupBal = new Map<string, number>();
+    for (const [k, g] of groupByCustomer(searched)) groupBal.set(k, calcGroupBalance(g));
 
     searched.forEach(r => {
       const remStatus = (r.remittanceStatus || '').toLowerCase().trim();
       const remittanceConfirmed = remStatus.includes('secured') || remStatus.includes('received');
-      const balanceZero = calcRemainingBalance(r) <= 0;
+      const balanceZero = (groupBal.get(customerKey(r)) ?? calcRemainingBalance(r)) <= 0;
       const isPendingRemittance = remStatus === '' || remStatus === 'pending' || remStatus === 'n/a';
       const isCleared = remittanceConfirmed || (balanceZero && !isPendingRemittance);
       if (isCleared) cleared.push(r);

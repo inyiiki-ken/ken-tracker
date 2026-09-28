@@ -1,5 +1,6 @@
 "use client";
 
+import { getRequirePaymentForPullout, isPulloutStatus } from '@/lib/appConfig';
 import { useState, memo, useMemo, useEffect } from 'react';
 import { useCompactMode } from '@/lib/compactMode';
 import { ChevronDown, FileText, MapPin, Upload, History, Copy, Check, AlertTriangle, Loader2, Layers } from 'lucide-react';
@@ -7,7 +8,7 @@ import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { toast } from 'sonner';
 import { DatabaseRowType } from '@/types';
-import { isOverdue, calcItemPriceAED, calcRemainingBalance, calcTotalPaid } from '@/lib/calculations';
+import { isOverdue, calcItemPriceAED, calcTotalPaid, calcGroupBalance } from '@/lib/calculations';
 import { formatDate, MOP_OPTIONS, REGION_OPTIONS, getLocationFromRegion } from '@/lib/formatters';
 import { getEffectiveStatuses } from '@/lib/statusRegistry';
 import { getOptions } from '@/lib/optionsConfig';
@@ -67,7 +68,7 @@ function AdminClientCard({ minerName, records, allRecords, onUpdate, onBulkUpdat
     if (activeRecords.length === 0) return null;
     const totalValue = activeRecords.reduce((s, r) => s + calcItemPriceAED(r), 0);
     const totalPaid = activeRecords.reduce((s, r) => s + calcTotalPaid(r), 0);
-    const totalOwed = activeRecords.reduce((s, r) => s + Math.max(0, calcRemainingBalance(r)), 0);
+    const totalOwed = Math.max(0, calcGroupBalance(activeRecords));
     return { totalValue: Math.round(totalValue), totalPaid: Math.round(totalPaid), totalOwed: Math.round(totalOwed) };
   }, [records]);
 
@@ -117,6 +118,38 @@ function AdminClientCard({ minerName, records, allRecords, onUpdate, onBulkUpdat
       toast.success(`Set ${label} on all ${records.length} items.`);
     } catch {
       toast.error(`Could not set ${label} on all items — please try again.`);
+    } finally {
+      setBulkApplying(null);
+    }
+  };
+
+  /** Bulk status with the same checks as changing one item. */
+  const bulkApplyStatus = async (status: string) => {
+    if (/cancel/i.test(status) && !window.confirm(`Cancel ALL ${records.length} items of ${minerName}?`)) return;
+    const skipped: string[] = [];
+    const ok = records.filter((r) => {
+      if (r.status === status) return false;
+      const dp = String(r.downpayment || '').trim();
+      const hasDp = dp === 'acknowledged' || dp.toUpperCase() === 'EID' || parseFloat(dp) > 0 || (dp.toUpperCase().startsWith('CHARGE:') && parseFloat(dp.split(':')[2] || '0') > 0);
+      if (!/cancel/i.test(status) && getRequirePaymentForPullout() && r.status === 'Waiting for Downpayment' && !hasDp) {
+        skipped.push(`${r.itemDescription || r.orderId || '#' + r.id} (no downpayment)`); return false;
+      }
+      if (isPulloutStatus(status)) {
+        if (!r.modeOfPayment) { skipped.push(`${r.itemDescription || '#' + r.id} (no Mode of Payment)`); return false; }
+        if (r.locationOfMiner === 'Local' && !r.regions) { skipped.push(`${r.itemDescription || '#' + r.id} (no Region)`); return false; }
+      }
+      return true;
+    });
+    if (skipped.length) toast.error(`Skipped ${skipped.length}: ${skipped.slice(0, 4).join(', ')}${skipped.length > 4 ? '…' : ''}`);
+    if (!ok.length) return;
+    if (bulkApplying) return;
+    setBulkApplying('status');
+    try {
+      if (onBulkUpdate) await onBulkUpdate(ok.map((r) => ({ rowId: r.id, fields: { status } })));
+      else for (const r of ok) await onUpdate(r.id, { status });
+      toast.success(`Set status "${status}" on ${ok.length} item${ok.length === 1 ? '' : 's'}.`);
+    } catch {
+      toast.error('Could not set the status on all items — please try again.');
     } finally {
       setBulkApplying(null);
     }
@@ -247,7 +280,7 @@ function AdminClientCard({ minerName, records, allRecords, onUpdate, onBulkUpdat
             </p>
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
               <BulkSelect label="Status" options={getEffectiveStatuses('admin')} disabled={!!bulkApplying}
-                onPick={(v) => bulkApplyAll({ status: v }, 'status')} />
+                onPick={(v) => bulkApplyStatus(v)} />
               <BulkSelect label="Mode of Payment" options={getOptions('modeOfPayment')} disabled={!!bulkApplying}
                 onPick={(v) => bulkApplyAll({ modeOfPayment: v }, 'mode of payment')} />
               <BulkSelect label="Region" options={getOptions('region')} disabled={!!bulkApplying}

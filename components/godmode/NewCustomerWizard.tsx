@@ -1,5 +1,6 @@
 "use client";
 
+import { getMyContext } from "@/lib/tenancy";
 import { useEffect, useState } from "react";
 import { Loader2, CheckCircle2, AlertTriangle, Copy, Download, PlugZap, UserPlus } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -79,13 +80,15 @@ export default function NewCustomerWizard({ multiTenant, onRegistered }: { multi
     }
   };
 
-  const generateEnv = () => {
+  const generateEnv = async () => {
     const robot = parseRobot();
     if (!robot) return toast.error("Paste the robot's JSON key (the file you downloaded from Google Cloud).");
     if (!sheetLink.trim()) return toast.error("Paste the customer's sheet link.");
     if (!nextauthSecret || !oauthClientId || !oauthClientSecret) return toast.error("Fill the shared keys (NEXTAUTH_SECRET + OAuth).");
     const sheetId = parseSheetId(sheetLink);
     const keyOneLine = robot.key.replace(/\r?\n/g, "\\n");
+    // The developer must keep full access (God Mode) on this customer's install.
+    const devEmail = await getMyContext().then((c) => c.email || "").catch(() => "");
     const env = [
       `# ${displayName || "Customer"} — desktop config (Profile A)`,
       `GOOGLE_SERVICE_ACCOUNT_EMAIL=${robot.email}`,
@@ -94,6 +97,7 @@ export default function NewCustomerWizard({ multiTenant, onRegistered }: { multi
       `NEXTAUTH_SECRET=${nextauthSecret}`,
       `GOOGLE_OAUTH_CLIENT_ID=${oauthClientId}`,
       `GOOGLE_OAUTH_CLIENT_SECRET=${oauthClientSecret}`,
+      ...(devEmail ? [`DEVELOPER_EMAILS=${devEmail}`] : []),
       "",
     ].join("\n");
     setEnvText(env);

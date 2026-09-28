@@ -1,5 +1,6 @@
 "use client";
 
+import { getMasterlistMapping } from '@/lib/masterlistMapping';
 import { useState, useEffect, useMemo } from 'react';
 import { Loader2, Plus, Minus } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -127,8 +128,23 @@ export default function FinancialsForm({ record, onUpdate }: Props) {
     return encodeBillingModifiers(mods);
   };
 
+  // Rate + MC customers (e.g. Crown): changing the gold rate or MC here must
+  // change the selling rate too, otherwise price/balance/invoice stay old.
+  const repricedClientRate = (): number | undefined => {
+    if (getMasterlistMapping().priceMode !== 'rate_plus_mc') return undefined;
+    const oldGr = Number(record.goldRate) || 0;
+    const oldMc = parseFloat(String(record.mc ?? '')) || 0;
+    let gr = parseFloat(form.goldRate) || oldGr;
+    const mc = parseFloat(String(form.mc ?? '')) || 0;
+    if (gr === oldGr && mc === oldMc) return undefined; // nothing changed
+    if (!gr) return undefined;
+    if (getMasterlistMapping().roundRateUp) gr = Math.ceil(gr - 1e-9);
+    return gr + mc;
+  };
+
   const buildPreview = (): DatabaseRowType => ({
     ...record,
+    ...(repricedClientRate() !== undefined ? { clientRate: repricedClientRate() } : {}),
     goldRate: parseFloat(form.goldRate) || record.goldRate,
     supplierRate: form.supplierRate,
     mc: form.mc,
@@ -189,8 +205,10 @@ export default function FinancialsForm({ record, onUpdate }: Props) {
       const computedProfit = calcProfitAED(previewRecord).toFixed(2);
       const encodedCharges = buildAdditionalCharges();
 
+      const newClientRate = repricedClientRate();
       await onUpdate(record.id, {
         dateOfLive: record.dateOfLive,
+        ...(newClientRate !== undefined ? { clientRate: newClientRate } : {}),
         goldRate: parseFloat(form.goldRate) || record.goldRate,
         supplierRate: form.supplierRate,
         mc: form.mc,

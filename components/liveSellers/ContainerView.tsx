@@ -107,9 +107,13 @@ export default function ContainerView({ seller, data, onBack, onChanged, onAddIt
   const doPullout = async () => {
     setBusy(true);
     try {
+      if (!invoiceNo.trim()) throw new Error("Enter the invoice number.");
+      const blank = sel.find((i) => String(paid[i.id] ?? "").trim() === "" || !(parseFloat(paid[i.id]) >= 0));
+      if (blank) throw new Error(`Enter the amount paid for "${blank.description || "item"}" (0 if free).`);
       const paidN = Object.fromEntries(sel.map((i) => [i.id, parseFloat(paid[i.id]) || 0]));
-      await updateLiveItems({ action: "pullout", ids: sel.map((i) => i.id), pulloutDate: pullDate, invoiceNo: invoiceNo.trim(), paid: paidN });
-      toast.success(`${sel.length} item${sel.length === 1 ? "" : "s"} sold · invoice ${invoiceNo}`);
+      const res = await updateLiveItems({ action: "pullout", ids: sel.map((i) => i.id), pulloutDate: pullDate, invoiceNo: invoiceNo.trim(), paid: paidN });
+      if (res.updated < sel.length) toast.warning(`${sel.length - res.updated} item(s) were already changed by someone else — refreshed.`);
+      toast.success(`${res.updated} item${res.updated === 1 ? "" : "s"} sold · invoice ${invoiceNo}`);
       setLastInvoice(invoiceNo.trim());
       setSelected(new Set());
       setPullOpen(false);
@@ -340,7 +344,7 @@ export default function ContainerView({ seller, data, onBack, onChanged, onAddIt
                   <Button size="sm" variant="outline" onClick={() => print("final", inv.items, inv.no.startsWith("(") ? undefined : inv.no, inv.date)}>
                     <Printer className="h-3.5 w-3.5" />
                   </Button>
-                  <Button size="sm" variant="ghost" onClick={() => restore(inv.items.map((i) => i.id), "Invoice items")} disabled={busy} title="Undo pullout (back on hold)">
+                  <Button size="sm" variant="ghost" onClick={() => { if (window.confirm(`Undo invoice ${inv.no}? Its ${inv.items.length} item(s) go back ON HOLD (the invoice number and paid amount are kept in the item notes).`)) restore(inv.items.map((i) => i.id), "Invoice items"); }} disabled={busy} title="Undo pullout (back on hold)">
                     <Undo2 className="h-3.5 w-3.5" />
                   </Button>
                 </div>

@@ -99,6 +99,10 @@ export default function AppConfigSettings() {
       saleStatuses: same(saleStatuses, DEFAULT_SALE_STATUSES) ? [] : saleStatuses,
       pulloutStatuses: same(pulloutStatuses, DEFAULT_PULLOUT_STATUSES) ? [] : pulloutStatuses,
       statusDeadlines,
+      // First time deadlines are switched on = the start of counting.
+      deadlinesStartedAt: statusDeadlines.length
+        ? (getLocalAppConfig().deadlinesStartedAt || new Date().toISOString())
+        : "",
     });
     await saveAppConfig({ config: serializeAppConfig() });
     setSavedSnap(snapshot());

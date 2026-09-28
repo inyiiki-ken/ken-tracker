@@ -23,6 +23,7 @@ import { getOptions } from '@/lib/optionsConfig';
 import { todayLocalISO } from '@/lib/businessConfig';
 import { isFieldHidden } from '@/lib/appConfig';
 import { getMakingCharge, getPerPcRate, getPerPcFallback } from '@/lib/pricingConfig';
+import { getMasterlistMapping } from '@/lib/masterlistMapping';
 import { getFieldLabel } from '@/lib/labelConfig';
 import { getEffectiveStatuses } from '@/lib/statusRegistry';
 
@@ -137,6 +138,17 @@ export default function AddClientModal({ onClose, userFirstName, userEmail, onRe
     return gr > 0 || mc > 0 ? (gr + mc).toFixed(2) : '';
   }, [form.goldRate, form.mc]);
   const supplierRate = isManualSupplierRate ? form.supplierRateOverride : autoSupplierRate;
+  // Customers priced as gold rate + MC (e.g. Crown): the selling rate is rate + MC
+  // unless typed by hand, so a manually added item is never priced at 0.
+  const ratePlusMc = getMasterlistMapping().priceMode === 'rate_plus_mc';
+  const autoClientRate = useMemo(() => {
+    if (!ratePlusMc) return '';
+    let gr = parseFloat(form.goldRate) || 0;
+    if (!gr) return '';
+    if (getMasterlistMapping().roundRateUp) gr = Math.ceil(gr - 1e-9);
+    return String(gr + (parseFloat(form.mc) || 0));
+  }, [ratePlusMc, form.goldRate, form.mc]);
+  const effectiveClientRate = form.clientRate || autoClientRate;
 
   // Per-PC supplier price comes from the tenant pricing config (by T.O.G).
   const getPerPcSupplierRate = (tog: string, category: string) => {
@@ -200,6 +212,10 @@ export default function AddClientModal({ onClose, userFirstName, userEmail, onRe
       toast.error('Cannot save: This Order ID/Barcode already exists in the system.');
       return;
     }
+    if ((parseFloat(form.grams) || 0) > 0 && !effectiveClientRate && !/silver|per pc|diamond|screw/i.test(form.category || '')) {
+      toast.error('Enter the selling rate (or the gold rate) — otherwise this item is priced at 0.');
+      return;
+    }
 
     setSaving(true);
     
@@ -215,7 +231,7 @@ export default function AddClientModal({ onClose, userFirstName, userEmail, onRe
         category: form.category,
         mc: form.mc,
         grams: form.grams ? parseFloat(form.grams) : undefined,
-        clientRate: form.clientRate ? parseFloat(form.clientRate) : undefined,
+        clientRate: effectiveClientRate ? parseFloat(effectiveClientRate) : undefined,
         goldRate: form.goldRate ? parseFloat(form.goldRate) : undefined,
         supplierRate: (isManualSupplierRate ? form.supplierRateOverride : supplierRate) || undefined,
         currency: form.currency,
@@ -246,7 +262,7 @@ export default function AddClientModal({ onClose, userFirstName, userEmail, onRe
           orderId: finalOrderId,
           mc: form.mc ? parseFloat(form.mc) : undefined,
           grams: form.grams ? parseFloat(form.grams) : undefined,
-          clientRate: form.clientRate ? parseFloat(form.clientRate) : undefined,
+          clientRate: effectiveClientRate ? parseFloat(effectiveClientRate) : undefined,
           goldRate: form.goldRate ? parseFloat(form.goldRate) : undefined,
           supplierRate: (isManualSupplierRate ? form.supplierRateOverride : supplierRate) || undefined,
           pureWeight: undefined,
@@ -405,7 +421,7 @@ export default function AddClientModal({ onClose, userFirstName, userEmail, onRe
             </div>
             <div>
               <Label className="text-xs text-muted-foreground">{getFieldLabel('clientRate')}</Label>
-              <Input type="number" value={form.clientRate} onChange={e => set('clientRate', e.target.value)} className="h-8 text-xs mt-0.5 bg-background border-border" placeholder="0.00" />
+              <Input type="number" value={form.clientRate} onChange={e => set('clientRate', e.target.value)} className="h-8 text-xs mt-0.5 bg-background border-border" placeholder={autoClientRate ? `${autoClientRate} (rate + MC)` : '0.00'} />
             </div>
             <div>
               <Label className="text-xs text-muted-foreground">

@@ -39,8 +39,10 @@ export function suggestCustomer(name: string, known: Map<string, number>): strin
       const limit = n.length >= 8 ? 2 : 1;
       if (d <= limit) score = d;
     }
-    // Only suggest a name that is used at least as often as the typed one.
+    // Only suggest a name that is used at least as often as the typed one, and
+    // never between two established customers (ANA vs ANNA are both real).
     if (score === Infinity || count < selfCount) continue;
+    if (selfCount >= 2 && score >= 1) continue;
     if (!best || score < best.score || (score === best.score && count > (known.get(best.name) ?? 0))) best = { name: k, score };
   }
   return best ? best.name : null;
@@ -61,8 +63,9 @@ export function buildDictionary(descriptions: string[]): Set<string> {
   for (const d of descriptions) {
     for (const w of norm(d).split(/[^A-Z]+/)) if (w.length >= 3) counts.set(w, (counts.get(w) ?? 0) + 1);
   }
-  const dict = new Set(JEWELLERY_WORDS);
-  for (const [w, c] of counts) if (c >= 3) dict.add(w);
+  // Singular and plural are both correct (RING / RINGS, BEAD / BEADS).
+  const dict = new Set(JEWELLERY_WORDS.flatMap((w) => [w, w.endsWith("S") ? w.slice(0, -1) : w + "S"]));
+  for (const [w, c] of counts) if (c >= 3) { dict.add(w); dict.add(w + "S"); }
   return dict;
 }
 

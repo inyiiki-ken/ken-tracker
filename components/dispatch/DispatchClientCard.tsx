@@ -12,7 +12,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { toast } from 'sonner';
 import { DatabaseRowType } from '@/types';
 import { useCompactMode } from '@/lib/compactMode';
-import { calcShippingFee, isFreeSf, isPromoSf, getPromoSf, getQty } from '@/lib/calculations';
+import { calcShippingFee, isFreeSf, isPromoSf, getPromoSf, getQty, calcTotalPaid, calcItemPriceAED, calcCCFee, roundPrice } from '@/lib/calculations';
 import { getEffectiveStatuses } from '@/lib/statusRegistry';
 import { getOptions } from '@/lib/optionsConfig';
 import StatusBadge from '@/components/StatusBadge';
@@ -89,12 +89,12 @@ function getDeliverySummary(records: DatabaseRowType[]): string {
   return `🔴 MIXED: ${unique.join(', ')}`;
 }
 
+/** COD collects on delivery; everything else must be fully paid (downpayment,
+ * layaway and amount received all count — compared with the item's full price). */
 function canDispatch(record: DatabaseRowType): boolean {
   const isCOD = (record.modeOfPayment || '').toUpperCase().includes('COD');
   if (isCOD) return true;
-  const amountReceived = parseFloat(String(record.amountReceived || '0').replace(/,/g, '')) || 0;
-  const clientRate = parseFloat(String(record.clientRate || '0').replace(/,/g, '')) || 0;
-  return amountReceived >= clientRate;
+  return calcTotalPaid(record) + 0.5 >= calcItemPriceAED(record) + calcCCFee(record);
 }
 
 // ─── Item Edit Row ────────────────────────────────────────────────────────────
@@ -540,7 +540,7 @@ function DispatchClientCard({ minerName, records, allRecords, onUpdate, userEmai
                     <Badge variant="destructive" className="text-[10px] px-1.5 py-0 h-5 flex items-center gap-1">
                       <AlertTriangle className="h-2.5 w-2.5" /> Balance Pending
                     </Badge>
-                    <span className="text-[10px] text-muted-foreground">Received: {effective.amountReceived || 0} / {effective.clientRate || 0}</span>
+                    <span className="text-[10px] text-muted-foreground">Paid: AED {roundPrice(calcTotalPaid(effective)).toLocaleString('en-US')} / {roundPrice(calcItemPriceAED(effective) + calcCCFee(effective)).toLocaleString('en-US')}</span>
                   </div>
                 )}
 

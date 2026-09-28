@@ -8,7 +8,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Loader2, Plus, Trash2, CheckCircle2, AlertTriangle, ListChecks, Wand2 } from "lucide-react";
 import { toast } from "sonner";
 import { startLiveSession, finishLiveSession, addLiveItems, bulkUpdateRecords } from "@/lib/api";
-import { calcItemPriceAED } from "@/lib/calculations";
+import { calcItemPriceAED, isPcItem } from "@/lib/calculations";
+import { generateCustomerId } from "@/lib/customerId";
 import { suggestCustomer, fixSpelling, buildDictionary } from "@/lib/nameFix";
 import { rateFor, roundAmount, round2, todayISO, type LivePriceList, type LiveSession } from "@/lib/liveSellers";
 import { Field, g, money } from "./parts";
@@ -128,6 +129,11 @@ export default function LiveDayDialog({ open, mode, onClose, onSaved, priceList,
   };
   /** Grams corrected on a masterlist row: re-price it the same way Admin does. */
   const setGrams = (r: Row, v: string) => {
+    // Per-piece items keep their price; grams are just the weight.
+    if (r.record && (isPcItem(r.record) || /per pc|screw|diamond/i.test(r.record.category || ''))) {
+      setRow(r.key, { grams: v });
+      return;
+    }
     if (r.record) {
       const price = calcItemPriceAED({ ...r.record, grams: parseFloat(v) || 0 });
       setRow(r.key, { grams: v, amount: String(price), amountEdited: true });
@@ -187,7 +193,7 @@ export default function LiveDayDialog({ open, mode, onClose, onSaved, priceList,
           fields.itemDescription = r.description.trim().toUpperCase();
           notes.push(`description "${r.orig!.description}" → "${fields.itemDescription}"`);
         }
-        if (changed.includes("grams")) {
+        if (changed.includes("grams") && !(isPcItem(rec) || /per pc|screw|diamond/i.test(rec.category || ''))) {
           fields.grams = r.gramsN;
           notes.push(`grams ${r.orig!.grams} → ${r.gramsN}`);
         }
@@ -196,7 +202,8 @@ export default function LiveDayDialog({ open, mode, onClose, onSaved, priceList,
           fields.minerName = to;
           // Link to the existing customer so their history stays together.
           const same = records.find((x) => String(x.minerName ?? "").toUpperCase().trim() === to && x.customerId);
-          if (same?.customerId) fields.customerId = same.customerId;
+          // Existing customer → their id; a brand-new name → a fresh id, never the old customer's.
+          fields.customerId = same?.customerId || generateCustomerId();
           notes.push(`customer "${r.orig!.customer}" → "${to}"`);
         }
         const lines = String(rec.auditTrail ?? "").split("\n").filter(Boolean);
@@ -225,7 +232,7 @@ export default function LiveDayDialog({ open, mode, onClose, onSaved, priceList,
         if (backN === null) throw new Error("Enter the weight that came back.");
         if (backN > outN + TOLERANCE) throw new Error("Weight back is more than weight out. Check the scale.");
         const items = filled.map(itemPayload);
-        const res = await finishLiveSession({ sessionId: session?.id, date, seller: who, weightOut: outN, weightBack: backN, notes, items });
+        const res = await finishLiveSession({ sessionId: session?.id, date, seller: who, weightOut: outN, weightBack: backN, notes, items, expectedWeightOut: session?.weightOut });
         toast.success(`${res.added} item${res.added === 1 ? "" : "s"} on hold for ${who}.`);
       } else {
         if (!filled.length) throw new Error("Add at least one item.");

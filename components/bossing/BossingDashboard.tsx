@@ -1,5 +1,6 @@
 "use client";
 
+import { isSaleStatus } from '@/lib/appConfig';
 import { useMemo, useState } from 'react';
 import { Calendar, ChevronDown, Printer, History, TrendingUp, Download } from 'lucide-react';
 import { toast } from 'sonner';
@@ -13,7 +14,7 @@ import { Label } from '@/components/ui/label';
 import { TabProps, DatabaseRowType } from '@/types';
 import {
   calcProfitAED,
-  calcRemainingBalance,
+  sumOutstanding,
   parseDateRobust,
   calcItemPriceAED,
   calcItemCostAED,
@@ -79,7 +80,8 @@ const RANGES: { key: DateRange; label: string }[] = [
 
 /** For Delivered/Given to Shop items, attribute the sale to the delivery date (not live date). */
 function getSaleDate(r: DatabaseRowType): string | undefined {
-  if ((r.status === 'Delivered' || r.status === 'Given to Shop') && r.deliveredDate) {
+  if (isSaleStatus(r.status) && /dispatch/i.test(r.status || '') && r.dispatchDate) return r.dispatchDate;
+  if (isSaleStatus(r.status) && r.deliveredDate) {
     return r.deliveredDate;
   }
   return r.dateOfLive;
@@ -144,12 +146,13 @@ export default function BossingDashboard({ records, searchQuery, onSearchChange 
 
   const kpis = useMemo(() => {
     const activeRecords = filtered.filter(r => !DEAD_STATUSES.has(r.status || ''));
-    const deliveredRecords = filtered.filter(r => r.status === 'Delivered' || r.status === 'Given to Shop');
+    // "Sold" = the customer's sale statuses (Settings → App Settings), e.g. Crown counts Dispatched.
+    const deliveredRecords = filtered.filter(r => isSaleStatus(r.status));
 
     const totalProfit = activeRecords.reduce((sum, r) => sum + calcProfitAED(r), 0);
     const confirmedProfit = deliveredRecords.reduce((sum, r) => sum + calcProfitAED(r), 0);
     const totalSold = deliveredRecords.length;
-    const outstanding = activeRecords.reduce((sum, r) => sum + Math.max(0, calcRemainingBalance(r)), 0);
+    const outstanding = sumOutstanding(activeRecords);
 
     const goldGrams = activeRecords.filter(r => getMetal(r) === 'Gold').reduce((s, r) => s + calcGrams(r), 0);
     const silverGrams = activeRecords.filter(r => getMetal(r) === 'Silver').reduce((s, r) => s + calcGrams(r), 0);

@@ -123,7 +123,7 @@ export function setOptionsConfig(cfg: OptionsConfig): void {
 }
 
 export function applyOptionsConfig(json: string): void {
-  if (!json) return;
+  if (!json) { setOptionsConfig({}); return; }
   try { setOptionsConfig(normalize(JSON.parse(json))); } catch { /* ignore */ }
 }
 

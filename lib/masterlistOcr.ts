@@ -324,6 +324,11 @@ export async function parseMasterlistImage(file: File, mapping?: MasterlistMappi
   const codes = fixCodes(raw.map((r) => r.code));
   const flagged: number[] = [];
 
+  // A gold/silver rate shown without decimals ("390") gets a decimal point
+  // inserted by readNumber (3.90). No rate is that small — undo it.
+  for (const r of raw) {
+    if (r.nums[1] > 0 && r.nums[1] < 10 && r.nums[1] * 100 >= 15) r.nums[1] = Math.round(r.nums[1] * 100);
+  }
   // Numbers in sheet order: grams, rate, MC, amount (MC may be absent).
   const rateMode = (() => {
     const counts = new Map<number, number>();
