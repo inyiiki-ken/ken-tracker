@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
 import { getPricingConfig, savePricingConfig } from "@/lib/api";
+import { useSectionSaver } from "@/lib/settingsSave";
 import {
   DEFAULT_PRICING,
   getPricing,
@@ -26,6 +27,7 @@ export default function PricingSettings() {
   const [cfg, setCfg] = useState<PricingConfig>(getPricing());
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [savedSnap, setSavedSnap] = useState(() => JSON.stringify(getPricing()));
 
   useEffect(() => {
     getPricingConfig()
@@ -33,6 +35,7 @@ export default function PricingSettings() {
         if (res.config) {
           applyPricingConfig(res.config);
           setCfg(getPricing());
+          setSavedSnap(JSON.stringify(getPricing()));
         }
       })
       .catch(() => { /* keep defaults */ })
@@ -49,11 +52,18 @@ export default function PricingSettings() {
   const setPerPc = (tog: string, v: string) =>
     setCfg((c) => ({ ...c, perPcRates: { ...c.perPcRates, [tog]: num(v) } }));
 
+  const persist = async () => {
+    setPricing(cfg); // update in-memory + cache so calcs use it immediately
+    await savePricingConfig({ config: serializePricingConfig() });
+    setSavedSnap(JSON.stringify(getPricing()));
+  };
+  const dirty = JSON.stringify(cfg) !== savedSnap;
+  useSectionSaver("pricing", { label: "Pricing & Rates", isDirty: () => JSON.stringify(cfg) !== savedSnap, save: persist });
+
   const save = async () => {
     setSaving(true);
     try {
-      setPricing(cfg); // update in-memory + cache so calcs use it immediately
-      await savePricingConfig({ config: serializePricingConfig() });
+      await persist();
       toast.success("Pricing saved.");
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to save pricing");
@@ -170,7 +180,7 @@ export default function PricingSettings() {
       <div className="flex justify-end">
         <Button size="sm" onClick={save} disabled={saving} className="font-cinzel uppercase tracking-widest">
           {saving ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Save className="h-4 w-4 mr-2" />}
-          Save pricing
+          {dirty ? "Save pricing (unsaved changes)" : "Save pricing"}
         </Button>
       </div>
     </section>

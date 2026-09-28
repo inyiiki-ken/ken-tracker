@@ -4,7 +4,7 @@ import { getSpreadsheetById } from "./client";
 import { getActiveDoc, getActiveWorksheet, getActiveRows, invalidateActiveRows } from "./tenant-context";
 import { readConfig, writeConfig, readConfigByPrefix, deleteConfigMarker, readConfigChunks, writeConfigChunks, clearConfigChunks } from "./config-store";
 import { parseSheetId } from "./sheetId";
-import { requireSession, requireRole } from "./authz";
+import { requireSession, requireRole, getSessionRoles } from "./authz";
 import { rowToDatabaseRecord, databaseRecordToRow } from "./row-mapper";
 import { DATABASE_HEADERS, DATABASE_HEADER_ALIASES, ROLES_HEADERS, UPLOADS_HEADERS } from "./sheet-config";
 import type { DatabaseRowType } from "@/types";
@@ -1232,4 +1232,10 @@ export async function getRoles(_params?: Record<string, never>): Promise<Record<
     name: r.get(ROLES_HEADERS.name) ?? "",
     whatsappNumber: r.get(ROLES_HEADERS.whatsappNumber) ?? "",
   }));
+}
+
+
+/** The signed-in user's roles for the active customer (developer ⇒ super_admin). */
+export async function getMyRoles(_params?: Record<string, never>): Promise<string[]> {
+  try { return await getSessionRoles(); } catch { return []; }
 }

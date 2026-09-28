@@ -22,6 +22,7 @@ export {
   getRewardInventory,
   updateRewardInventory,
   getRoles,
+  getMyRoles,
   saveRatesConfig,
   getRatesConfig,
   getBrandSettings,

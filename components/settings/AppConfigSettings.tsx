@@ -20,6 +20,7 @@ import {
   type StatusDeadline,
 } from "@/lib/appConfig";
 import { getAllKnownOptions } from "@/lib/optionsConfig";
+import { useSectionSaver } from "@/lib/settingsSave";
 import { DEFAULT_ADMIN_STATUSES, DEFAULT_ACCOUNTS_STATUSES } from "@/lib/statusRegistry";
 import { getMotionEnabled, setMotionEnabled } from "@/lib/motionPref";
 
@@ -74,30 +75,40 @@ export default function AppConfigSettings() {
   const toggleHidden = (key: string) =>
     setHidden((h) => (h.includes(key) ? h.filter((k) => k !== key) : [...h, key]));
 
+  const snapshot = () => JSON.stringify({ aliases, hidden, statuses, statusByTab, requirePullout, saleStatuses, pulloutStatuses, deadlines });
+  const [savedSnap, setSavedSnap] = useState("");
+  useEffect(() => { if (!loading && !savedSnap) setSavedSnap(snapshot()); }, [loading]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const persist = async () => {
+    const statusOptionsByTab: Record<string, string[]> = {};
+    for (const t of STATUS_TABS) {
+      const list = (statusByTab[t.key] ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+      if (list.length) statusOptionsByTab[t.key] = list;
+    }
+    const same = (a: string[], b: string[]) => a.length === b.length && a.every((x, i) => x === b[i]);
+    const statusDeadlines: StatusDeadline[] = deadlines
+      .map((d) => ({ status: d.status.trim(), days: parseInt(d.days, 10) || 0 }))
+      .filter((d) => d.status && d.days > 0);
+    setAppConfig({
+      columnAliases: aliases,
+      hiddenFields: hidden,
+      statusOptions: statuses,
+      statusOptionsByTab,
+      requirePaymentForPullout: requirePullout,
+      // Store only when changed from the default, so defaults can still evolve.
+      saleStatuses: same(saleStatuses, DEFAULT_SALE_STATUSES) ? [] : saleStatuses,
+      pulloutStatuses: same(pulloutStatuses, DEFAULT_PULLOUT_STATUSES) ? [] : pulloutStatuses,
+      statusDeadlines,
+    });
+    await saveAppConfig({ config: serializeAppConfig() });
+    setSavedSnap(snapshot());
+  };
+  useSectionSaver("appconfig", { label: "App Settings", isDirty: () => !loading && !!savedSnap && snapshot() !== savedSnap, save: persist, reloads: true });
+
   const save = async () => {
     setSaving(true);
     try {
-      const statusOptionsByTab: Record<string, string[]> = {};
-      for (const t of STATUS_TABS) {
-        const list = (statusByTab[t.key] ?? "").split(",").map((s) => s.trim()).filter(Boolean);
-        if (list.length) statusOptionsByTab[t.key] = list;
-      }
-      const same = (a: string[], b: string[]) => a.length === b.length && a.every((x, i) => x === b[i]);
-      const statusDeadlines: StatusDeadline[] = deadlines
-        .map((d) => ({ status: d.status.trim(), days: parseInt(d.days, 10) || 0 }))
-        .filter((d) => d.status && d.days > 0);
-      setAppConfig({
-        columnAliases: aliases,
-        hiddenFields: hidden,
-        statusOptions: statuses,
-        statusOptionsByTab,
-        requirePaymentForPullout: requirePullout,
-        // Store only when changed from the default, so defaults can still evolve.
-        saleStatuses: same(saleStatuses, DEFAULT_SALE_STATUSES) ? [] : saleStatuses,
-        pulloutStatuses: same(pulloutStatuses, DEFAULT_PULLOUT_STATUSES) ? [] : pulloutStatuses,
-        statusDeadlines,
-      });
-      await saveAppConfig({ config: serializeAppConfig() });
+      await persist();
       toast.success("App settings saved. Reloading…");
       setTimeout(() => window.location.reload(), 700);
     } catch (err) {

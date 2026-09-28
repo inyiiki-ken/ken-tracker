@@ -11,6 +11,7 @@ import { useBrand } from "@/components/BrandThemeLoader";
 import ConnectionCheck from "@/components/settings/ConnectionCheck";
 import PricingSettings from "@/components/settings/PricingSettings";
 import TabSettings from "@/components/settings/TabSettings";
+import { saveAllSections } from "@/lib/settingsSave";
 import BusinessTypeSettings from "@/components/settings/BusinessTypeSettings";
 import TerminologySettings from "@/components/settings/TerminologySettings";
 import PageLogosSettings from "@/components/settings/PageLogosSettings";
@@ -61,12 +62,20 @@ export default function DesignSettings() {
     if (!loading) applyBrandSettingsToDom(settings);
   }, [settings, loading]);
 
+  /** Saves Company Details & Theme AND every other section with unsaved changes. */
   const handleSaveText = async () => {
     setSaving(true);
     try {
       await saveBrandSettings({ config: JSON.stringify(settings) });
-      toast.success("Design settings saved for everyone.");
       refreshGlobalBrand();
+      const res = await saveAllSections();
+      for (const f of res.failed) toast.error(`${f.label} NOT saved: ${f.error}`);
+      const names = ["Company Details & Theme", ...res.saved];
+      toast.success(`Saved: ${names.join(", ")}.`);
+      if (res.needReload && !res.failed.length) {
+        toast.message("Reloading to apply…");
+        setTimeout(() => window.location.reload(), 900);
+      }
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to save");
     } finally {
@@ -337,7 +346,7 @@ export default function DesignSettings() {
       <div className="sticky bottom-4 flex justify-end">
         <Button onClick={handleSaveText} disabled={saving} className="font-cinzel uppercase tracking-widest">
           {saving ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Save className="h-4 w-4 mr-2" />}
-          Save Company Details &amp; Theme
+          Save all settings
         </Button>
       </div>
     </div>

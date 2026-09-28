@@ -1,12 +1,12 @@
 "use client";
 
 import { useState, useEffect } from 'react';
+import { useIsSuperAdmin } from '@/lib/useIsSuperAdmin';
 import { ChevronDown, Settings2, Lock, LockOpen, ShieldAlert, Pin, RefreshCw } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { toast } from 'sonner';
-import { useAuth } from '@/lib/auth';
 import {
   getRatesForDate,
   saveRatesForDate,
@@ -22,7 +22,6 @@ import {
   setRateMetal,
   type RateMetal,
 } from '@/lib/ratesStore';
-import { SUPER_ADMIN_EMAILS } from '@/config/roles';
 import { saveRatesConfig } from '@/lib/api';
 
 async function persistRatesToBackend() {
@@ -30,6 +29,8 @@ async function persistRatesToBackend() {
     await saveRatesConfig({ config: serializeRatesConfig() });
   } catch (e) {
     console.error('Failed to persist rates to backend:', e);
+    // Say so — otherwise the change looks saved but comes back after a refresh.
+    toast.error(`Rates were NOT saved to the sheet: ${e instanceof Error ? e.message : 'error'}`);
   }
 }
 
@@ -38,10 +39,7 @@ interface Props {
 }
 
 export default function DailyRatesEditor({ date }: Props) {
-  const { user } = useAuth();
-  const isSuperAdmin = user?.email
-    ? SUPER_ADMIN_EMAILS.map(e => e.toLowerCase()).includes(user.email.toLowerCase())
-    : false;
+  const isSuperAdmin = useIsSuperAdmin();
 
   const [open, setOpen] = useState(false);
   const [selectedRateDate, setSelectedRateDate] = useState(date || new Date().toISOString().split('T')[0]);

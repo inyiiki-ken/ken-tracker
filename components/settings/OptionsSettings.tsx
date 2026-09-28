@@ -8,6 +8,7 @@ import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
 import { getOptionsConfig, saveOptionsConfig } from "@/lib/api";
 import { getEffectiveStatuses } from "@/lib/statusRegistry";
+import { useSectionSaver } from "@/lib/settingsSave";
 
 const STATUS_TAB: Partial<Record<OptionKey, "admin" | "dispatch" | "accounts">> = {
   statusAdmin: "admin",
@@ -39,6 +40,7 @@ export default function OptionsSettings() {
   // never freezes a tab's statuses by accident.
   const [touched, setTouched] = useState<Set<string>>(new Set());
   const touch = (key: string) => setTouched((t) => new Set(t).add(key));
+  const [savedSnap, setSavedSnap] = useState("");
 
   useEffect(() => {
     getOptionsConfig({})
@@ -55,6 +57,7 @@ export default function OptionsSettings() {
             : tab ? getEffectiveStatuses(tab) : getSuggestedOptions(def.key);
         }
         setLists(init);
+        setSavedSnap(JSON.stringify(init));
         setLoading(false);
       });
   }, []);
@@ -93,17 +96,24 @@ export default function OptionsSettings() {
     touch(key);
   };
 
+  const persist = async () => {
+    const cfg: OptionsConfig = {};
+    const saved = getLocalOptions();
+    for (const def of OPTION_LISTS) {
+      if (STATUS_TAB[def.key] && !touched.has(def.key) && !saved[def.key]?.length) continue;
+      cfg[def.key] = lists[def.key] ?? [];
+    }
+    setOptionsConfig(cfg);
+    await saveOptionsConfig({ config: serializeOptionsConfig() });
+    setSavedSnap(JSON.stringify(lists));
+  };
+  const dirty = !loading && JSON.stringify(lists) !== savedSnap;
+  useSectionSaver("options", { label: "Dropdown Options", isDirty: () => !loading && JSON.stringify(lists) !== savedSnap, save: persist, reloads: true });
+
   const save = async () => {
     setSaving(true);
     try {
-      const cfg: OptionsConfig = {};
-      const saved = getLocalOptions();
-      for (const def of OPTION_LISTS) {
-        if (STATUS_TAB[def.key] && !touched.has(def.key) && !saved[def.key]?.length) continue;
-        cfg[def.key] = lists[def.key] ?? [];
-      }
-      setOptionsConfig(cfg);
-      await saveOptionsConfig({ config: serializeOptionsConfig() });
+      await persist();
       toast.success("Options saved. Reloading…");
       setTimeout(() => window.location.reload(), 700);
     } catch (err) {
@@ -194,7 +204,7 @@ export default function OptionsSettings() {
       <div className="sticky bottom-2 flex justify-end">
         <Button size="sm" onClick={save} disabled={saving} className="font-cinzel uppercase tracking-widest">
           {saving ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Save className="h-4 w-4 mr-2" />}
-          Save options
+          {dirty ? "Save options (unsaved changes)" : "Save options"}
         </Button>
       </div>
     </section>

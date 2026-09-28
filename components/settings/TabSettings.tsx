@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
 import { getTabConfig, saveTabConfig } from "@/lib/api";
+import { useSectionSaver } from "@/lib/settingsSave";
 import {
   CONFIGURABLE_TAB_KEYS,
   isOptInTab,
@@ -71,11 +72,20 @@ export default function TabSettings() {
     return { overrides, order };
   };
 
+  const snapshot = () => JSON.stringify({ order, visible, labels });
+  const [savedSnap, setSavedSnap] = useState("");
+  useEffect(() => { if (!loading && !savedSnap) setSavedSnap(snapshot()); }, [loading]); // eslint-disable-line react-hooks/exhaustive-deps
+  const persist = async () => {
+    setTabConfig(buildConfig());
+    await saveTabConfig({ config: serializeTabConfig() });
+    setSavedSnap(snapshot());
+  };
+  useSectionSaver("tabs", { label: "Tabs", isDirty: () => !loading && !!savedSnap && snapshot() !== savedSnap, save: persist, reloads: true });
+
   const save = async () => {
     setSaving(true);
     try {
-      setTabConfig(buildConfig());
-      await saveTabConfig({ config: serializeTabConfig() });
+      await persist();
       toast.success("Tabs saved. Reloading to apply…");
       setTimeout(() => window.location.reload(), 600);
     } catch (err) {

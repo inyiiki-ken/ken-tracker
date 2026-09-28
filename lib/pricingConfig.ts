@@ -104,8 +104,10 @@ function mergeConfig(partial: Partial<PricingConfig> | null | undefined): Pricin
   const p = partial ?? {};
   return {
     usdToAed: typeof p.usdToAed === "number" && p.usdToAed > 0 ? p.usdToAed : DEFAULT_PRICING.usdToAed,
-    makingCharges: { ...DEFAULT_PRICING.makingCharges, ...(p.makingCharges ?? {}) },
-    perPcRates: { ...DEFAULT_PRICING.perPcRates, ...(p.perPcRates ?? {}) },
+    // Saved list wins exactly, so a removed entry stays removed.
+    makingCharges: p.makingCharges && typeof p.makingCharges === "object" ? { ...p.makingCharges } : { ...DEFAULT_PRICING.makingCharges },
+    // Saved list wins exactly, so a removed entry stays removed.
+    perPcRates: p.perPcRates && typeof p.perPcRates === "object" ? { ...p.perPcRates } : { ...DEFAULT_PRICING.perPcRates },
     perPcFallback:
       typeof p.perPcFallback === "number" && p.perPcFallback > 0 ? p.perPcFallback : DEFAULT_PRICING.perPcFallback,
     b1t1Multiplier:
@@ -113,7 +115,8 @@ function mergeConfig(partial: Partial<PricingConfig> | null | undefined): Pricin
     ccSurchargePct:
       typeof p.ccSurchargePct === "number" && p.ccSurchargePct >= 0 ? p.ccSurchargePct : DEFAULT_PRICING.ccSurchargePct,
     ccIncludeShipping: typeof p.ccIncludeShipping === "boolean" ? p.ccIncludeShipping : DEFAULT_PRICING.ccIncludeShipping,
-    shippingFees: { ...DEFAULT_PRICING.shippingFees, ...(p.shippingFees ?? {}) },
+    // Saved list wins exactly, so a removed entry stays removed.
+    shippingFees: p.shippingFees && typeof p.shippingFees === "object" ? { ...p.shippingFees } : { ...DEFAULT_PRICING.shippingFees },
     shippingFeeDefault:
       typeof p.shippingFeeDefault === "number" && p.shippingFeeDefault >= 0 ? p.shippingFeeDefault : DEFAULT_PRICING.shippingFeeDefault,
     shippingFeeInternational:
