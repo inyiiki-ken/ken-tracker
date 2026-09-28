@@ -118,6 +118,8 @@ export interface LiveItem {
   notes: string;
   /** Row Key of the masterlist (Admin) record this item came from, if any. */
   recordKey: string;
+  /** End customer (from the masterlist), if known. */
+  customer: string;
 }
 
 export interface LiveStockEntry {

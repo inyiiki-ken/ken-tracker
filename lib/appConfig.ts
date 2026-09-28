@@ -29,7 +29,29 @@ export interface AppConfig {
    * staff pick For Pullout freely.
    */
   requirePaymentForPullout: boolean;
+  /**
+   * Statuses that count as a SALE for the liver (My Sales). Empty = the default
+   * (Delivered, Given to Shop). e.g. Crown counts "Dispatched" because delivery
+   * can't be tracked.
+   */
+  saleStatuses: string[];
+  /**
+   * Deadlines: an item left in `status` longer than `days` shows in Reminders
+   * (Dispatch + the liver's own tab) and in the pullout report as "needs to be
+   * cancelled". Empty = the built-in reminders (For Pullout 1 day, Dispatched 2 days).
+   */
+  statusDeadlines: StatusDeadline[];
+  /** Statuses listed in the Pullout Report. Empty = For Pullout (+ legacy Dispatch). */
+  pulloutStatuses: string[];
 }
+
+export interface StatusDeadline {
+  status: string;
+  days: number;
+}
+
+export const DEFAULT_SALE_STATUSES = ["Delivered", "Given to Shop"];
+export const DEFAULT_PULLOUT_STATUSES = ["For Pullout", "Dispatch"];
 
 export const DEFAULT_APP_CONFIG: AppConfig = {
   columnAliases: {},
@@ -37,6 +59,9 @@ export const DEFAULT_APP_CONFIG: AppConfig = {
   statusOptions: [],
   statusOptionsByTab: {},
   requirePaymentForPullout: true,
+  saleStatuses: [],
+  statusDeadlines: [],
+  pulloutStatuses: [],
 };
 
 /** Field keys that can be hidden from the UI (shown as toggles in the editor). */
@@ -73,6 +98,10 @@ function loadFromCache(): AppConfig {
   return { ...DEFAULT_APP_CONFIG };
 }
 
+function cleanList(v: unknown): string[] {
+  return Array.isArray(v) ? v.map(String).map((s) => s.trim()).filter(Boolean) : [];
+}
+
 function normalize(p: Partial<AppConfig> | null | undefined): AppConfig {
   const columnAliases: Record<string, string[]> = {};
   if (p?.columnAliases && typeof p.columnAliases === "object") {
@@ -93,6 +122,13 @@ function normalize(p: Partial<AppConfig> | null | undefined): AppConfig {
     statusOptionsByTab,
     // default true unless explicitly turned off
     requirePaymentForPullout: p?.requirePaymentForPullout !== false,
+    saleStatuses: cleanList(p?.saleStatuses),
+    pulloutStatuses: cleanList(p?.pulloutStatuses),
+    statusDeadlines: Array.isArray(p?.statusDeadlines)
+      ? p!.statusDeadlines
+          .map((d) => ({ status: String(d?.status ?? "").trim(), days: Number(d?.days) || 0 }))
+          .filter((d) => d.status && d.days > 0)
+      : [],
   };
 }
 
@@ -130,4 +166,14 @@ export function getStatusOptions(defaults: string[]): string[] {
 /** Whether "For Pullout" is locked until a downpayment/EID is on file. */
 export function getRequirePaymentForPullout(): boolean {
   return _cfg.requirePaymentForPullout;
+}
+
+/** Statuses that count as a sale for the liver. */
+export function getSaleStatuses(): string[] {
+  return _cfg.saleStatuses.length ? _cfg.saleStatuses : DEFAULT_SALE_STATUSES;
+}
+
+/** Statuses shown in the Pullout Report. */
+export function getPulloutStatuses(): string[] {
+  return _cfg.pulloutStatuses.length ? _cfg.pulloutStatuses : DEFAULT_PULLOUT_STATUSES;
 }

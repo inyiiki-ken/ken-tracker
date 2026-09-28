@@ -16,71 +16,17 @@
  */
 
 import { getAppConfig } from "@/lib/appConfig";
+import { getOptionsConfig } from "@/lib/optionsConfig";
+import { DEFAULT_STATUSES, DEFAULT_ADMIN_STATUSES, DEFAULT_ACCOUNTS_STATUSES, DEFAULT_DISPATCH_STATUSES } from "@/lib/statusDefaults";
+export { DEFAULT_STATUSES, DEFAULT_ADMIN_STATUSES, DEFAULT_ACCOUNTS_STATUSES, DEFAULT_DISPATCH_STATUSES };
 import type { DatabaseRowType } from "@/types";
 
-/** Comprehensive default lifecycle, in a sensible order. */
-export const DEFAULT_STATUSES: string[] = [
-  "Pending",
-  "Waiting for Details",
-  "Waiting for Downpayment",
-  "Paid/DP but Item Hold",
-  "Payment for Verification",
-  "Pending for Tabby",
-  "Pending for Tamara",
-  "For Pullout",
-  "Dispatched",
-  "Picked Up",
-  "Given to Shop",
-  "Delivered",
-  "Reseller",
-  "Returned Item",
-  "Walk-in",
-  "In-Store",
-  "Cancelled",
-];
 
 /** Which dropdown is asking — each team gets its own relevant statuses. */
 export type StatusContext = "admin" | "dispatch" | "accounts" | "all";
 
-/** Admin / intake team: order-taking + payment phase (NOT courier/delivery). */
-export const DEFAULT_ADMIN_STATUSES: string[] = [
-  "Pending",
-  "Waiting for Details",
-  "Waiting for Downpayment",
-  "Paid/DP but Item Hold",
-  "Payment for Verification",
-  "Pending for Tabby",
-  "Pending for Tamara",
-  "For Pullout",
-  "Reseller",
-  "Cancelled",
-];
 
-/** Accounts team: payment verification + holds, plus a few fulfillment states. */
-export const DEFAULT_ACCOUNTS_STATUSES: string[] = [
-  "Payment for Verification",
-  "Paid/DP but Item Hold",
-  "Waiting for Downpayment",
-  "Pending for Tabby",
-  "Pending for Tamara",
-  "Dispatched",
-  "Delivered",
-  "Given to Shop",
-  "Cancelled",
-];
 
-/** Dispatch team: fulfillment phase — couriers (from data) are added on top. */
-export const DEFAULT_DISPATCH_STATUSES: string[] = [
-  "For Pullout",
-  "Dispatched",
-  "Picked Up",
-  "Given to Shop",
-  "Delivered",
-  "Returned Item",
-  "Paid/DP but Item Hold",
-  "Payment for Verification",
-  "Cancelled",
-];
 
 // Statuses discovered from the loaded data, in first-seen order.
 let _known: string[] = [];
@@ -128,7 +74,11 @@ function dedupe(list: string[]): string[] {
  */
 export function getEffectiveStatuses(context: StatusContext = "all", current?: string): string[] {
   const cfg = getAppConfig();
-  const override = cfg.statusOptionsByTab?.[context];
+  // Settings → Dropdown Options (per tab) wins exactly; then the older per-tab
+  // App Settings list; then the built-in default.
+  const optKey = context === "admin" ? "statusAdmin" : context === "dispatch" ? "statusDispatch" : context === "accounts" ? "statusAccounts" : null;
+  const fromOptions = optKey ? getOptionsConfig()[optKey] : undefined;
+  const override = fromOptions && fromOptions.length ? fromOptions : cfg.statusOptionsByTab?.[context];
 
   let base: string[];
   if (override && override.length > 0) {

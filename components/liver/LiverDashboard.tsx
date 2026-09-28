@@ -13,6 +13,16 @@ import TabHeader from '@/components/TabHeader';
 import { StatCard } from '@/components/ui/dash';
 import StatusBadge from '@/components/StatusBadge';
 import { startOfWeek, startOfMonth } from 'date-fns';
+import { AlertTriangle } from 'lucide-react';
+import { getSaleStatuses } from '@/lib/appConfig';
+import { computeOverdue } from '@/lib/reminders';
+import RemindersDialog from '@/components/RemindersDialog';
+
+/** Statuses that count as a sale for this customer (Settings → App Settings). */
+function isSale(r: DatabaseRowType): boolean {
+  const s = String(r.status || '').trim().toLowerCase();
+  return getSaleStatuses().some(x => x.toLowerCase() === s);
+}
 
 const ACTIVE_STATUSES = [
   'Delivered', 'Given to Shop',
@@ -136,7 +146,7 @@ function DeliveredBreakdown({ breakdownByDate, filtered }: {
   filtered: DatabaseRowType[];
 }) {
   const [show, setShow] = useState(false);
-  const delivered = filtered.filter(r => r.status === 'Delivered' || r.status === 'Given to Shop');
+  const delivered = filtered.filter(isSale);
   if (breakdownByDate.length === 0) return null;
 
   return (
@@ -145,7 +155,7 @@ function DeliveredBreakdown({ breakdownByDate, filtered }: {
         onClick={() => setShow(v => !v)}
         className="w-full flex items-center gap-2 px-4 py-3 text-left focus:outline-none hover:bg-secondary/20 transition-colors"
       >
-        <span className="text-xs font-cinzel font-bold text-primary/80 uppercase tracking-wide">Delivered Breakdown by Date</span>
+        <span className="text-xs font-cinzel font-bold text-primary/80 uppercase tracking-wide">Sold Breakdown by Date</span>
         <div className="h-px flex-1 bg-border/40" />
         <span className="text-[10px] text-muted-foreground">{breakdownByDate.length} dates</span>
         <ChevronDown className={`h-4 w-4 text-muted-foreground transition-transform ${show ? 'rotate-180' : ''}`} />
@@ -222,6 +232,8 @@ export default function LiverDashboard({ records, searchQuery, onSearchChange, l
   const [customEnd, setCustomEnd] = useState('');
   const [materialFilter, setMaterialFilter] = useState<MaterialFilter>('all');
   const [copiedId, setCopiedId] = useState<number | null>(null);
+  const [showReminders, setShowReminders] = useState(false);
+  const [remindersSeenFor, setRemindersSeenFor] = useState('');
 
   const copyRow = useCallback((r: DatabaseRowType) => {
     const text = [r.minerName, r.itemDescription, r.grams ? `${r.grams}g` : ''].filter(Boolean).join(' · ');
@@ -254,7 +266,8 @@ export default function LiverDashboard({ records, searchQuery, onSearchChange, l
     if (!selectedLiver) return [];
     return records.filter(r =>
       r.liverName?.toUpperCase().trim() === selectedLiver &&
-      ACTIVE_STATUSES.includes(r.status || '')
+      // Every item with a status (Reseller, For COD, couriers… included), not a fixed list.
+      (ACTIVE_STATUSES.includes(r.status || '') || !!String(r.status || '').trim())
     );
   }, [records, selectedLiver]);
 
@@ -293,9 +306,19 @@ export default function LiverDashboard({ records, searchQuery, onSearchChange, l
     return base;
   }, [byLiver, range, customStart, customEnd, materialFilter]);
 
+  // Her own overdue items (status deadlines) — pops up once when she opens the tab.
+  const myOverdue = useMemo(() => computeOverdue(byLiver), [byLiver]);
+  const overdueCount = myOverdue.reduce((n, sec) => n + sec.items.length, 0);
+  useEffect(() => {
+    if (selectedLiver && overdueCount > 0 && remindersSeenFor !== selectedLiver) {
+      setShowReminders(true);
+      setRemindersSeenFor(selectedLiver);
+    }
+  }, [selectedLiver, overdueCount, remindersSeenFor]);
+
   const totalItems = filtered.length;
   const totalGrams = calcGrams(filtered);
-  const deliveredCount = filtered.filter(r => r.status === 'Delivered' || r.status === 'Given to Shop').length;
+  const deliveredCount = filtered.filter(isSale).length;
 
   const byStatus = useMemo(() => {
     const map = new Map<string, DatabaseRowType[]>();
@@ -315,7 +338,7 @@ export default function LiverDashboard({ records, searchQuery, onSearchChange, l
   }, [filtered]);
 
   const breakdownByDate = useMemo(() => {
-    const deliveredRecords = filtered.filter(r => r.status === 'Delivered' || r.status === 'Given to Shop');
+    const deliveredRecords = filtered.filter(isSale);
     const map = new Map<string, DatabaseRowType[]>();
     for (const r of deliveredRecords) {
       const key = r.dateOfLive || 'Unknown';
@@ -350,6 +373,17 @@ export default function LiverDashboard({ records, searchQuery, onSearchChange, l
               </SelectContent>
             </Select>
           </div>
+        )}
+
+        {selectedLiver && overdueCount > 0 && (
+          <button
+            onClick={() => setShowReminders(true)}
+            className="w-full flex items-center gap-2 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-left text-xs text-destructive"
+          >
+            <AlertTriangle className="h-4 w-4 shrink-0" />
+            <span className="flex-1"><b>{overdueCount} item{overdueCount !== 1 ? 's' : ''}</b> past the deadline — follow up or they&apos;ll be cancelled.</span>
+            <span className="underline">View</span>
+          </button>
         )}
 
         {selectedLiver && (
@@ -412,7 +446,7 @@ export default function LiverDashboard({ records, searchQuery, onSearchChange, l
                 accent="primary"
                 label="Total Items"
                 value={totalItems}
-                sub={`${deliveredCount} delivered`}
+                sub={`${deliveredCount} sold`}
               />
               <StatCard
                 icon={<Weight className="h-3.5 w-3.5" />}
@@ -456,6 +490,15 @@ export default function LiverDashboard({ records, searchQuery, onSearchChange, l
               </div>
             )}
           </>
+        )}
+
+        {showReminders && (
+          <RemindersDialog
+            records={byLiver}
+            title={`Reminders — ${selectedLiver}`}
+            intro="Your items that passed their deadline. Follow up with the client, or they need to be cancelled."
+            onClose={() => setShowReminders(false)}
+          />
         )}
 
         {!selectedLiver && (

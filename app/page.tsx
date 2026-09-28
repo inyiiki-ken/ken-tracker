@@ -86,9 +86,10 @@ function AppContent() {
   // customer's labels/visibility.
   const [tabConfigVersion, setTabConfigVersion] = useState(0);
 
-  const fetchData = useCallback(async () => {
+  const fetchData = useCallback(async (quiet?: unknown) => {
     if (!user) return;
-    setLoading(true);
+    // quiet === true: refresh data in the background without the loading screen.
+    if (quiet !== true) setLoading(true);
     try {
       const [recordsRes, rolesRes, ratesRes, pricingRes, tabRes, bizRes, labelRes, appRes, mlmRes, optRes, tglRes] = await Promise.all([
         getRecords({ tailOnly: false }),
@@ -158,7 +159,13 @@ function AppContent() {
   }, [user?.email, dynamicRoles]);
 
   const handleUpdate = useCallback(async (rowId: number, fields: Partial<DatabaseRowType>) => {
-    setRecords(prev => prev.map(r => r.id === rowId ? { ...r, ...fields } : r));
+    // Mirror the server's change-history line locally, so reminders count a new
+    // status from now without waiting for a refresh.
+    const before = recordsRef.current.find(r => r.id === rowId);
+    const localAudit = fields.status !== undefined && fields.status !== before?.status
+      ? [...String(before?.auditTrail ?? '').split('\n').filter(Boolean), `${new Date().toISOString()} | ${user?.email || 'unknown'} | Updated: ${Object.keys(fields).join(', ')}`].slice(-20).join('\n')
+      : undefined;
+    setRecords(prev => prev.map(r => r.id === rowId ? { ...r, ...fields, ...(localAudit ? { auditTrail: localAudit } : {}) } : r));
     try {
       // Read from the ref so this callback keeps a STABLE identity — otherwise
       // every edit re-renders every memoized card.
@@ -172,7 +179,7 @@ function AppContent() {
       toast.error(err instanceof Error ? err.message : 'Update failed');
       fetchData();
     }
-  }, [fetchData]);
+  }, [fetchData, user?.email]);
 
   /** Batched update: optimistic local state for every row, then ONE server call. */
   const handleBulkUpdate = useCallback(async (updates: { rowId: number; fields: Partial<DatabaseRowType> }[]) => {
@@ -182,10 +189,21 @@ function AppContent() {
     try {
       // Attach each row's stable key so the write can't land on the wrong row
       // if the sheet was sorted/edited since these records were loaded.
-      const keyed = updates.map(u => ({
-        ...u,
-        rowKey: recordsRef.current.find(r => r.id === u.rowId)?.rowKey,
-      }));
+      const stamp = new Date().toISOString();
+      const keyed = updates.map(u => {
+        const existing = recordsRef.current.find(r => r.id === u.rowId);
+        let fields = u.fields;
+        // Record status changes in the change history too, so status deadlines
+        // (For COD 3 days, Reseller 3 weeks…) count from the day it was set.
+        if (fields.status !== undefined && fields.status !== existing?.status && fields.auditTrail === undefined) {
+          const lines = String(existing?.auditTrail ?? '').split('\n').filter(Boolean);
+          lines.push(`${stamp} | ${user?.email || 'unknown'} | Updated: status (bulk)`);
+          fields = { ...fields, auditTrail: lines.slice(-20).join('\n') };
+        }
+        return { ...u, fields, rowKey: existing?.rowKey };
+      });
+      const audited = new Map(keyed.filter(k => k.fields.auditTrail !== undefined).map(k => [k.rowId, k.fields.auditTrail]));
+      if (audited.size) setRecords(prev => prev.map(r => (audited.has(r.id) ? { ...r, auditTrail: audited.get(r.id) } : r)));
       // Server caps each request; chunk so very large selections still work.
       const CHUNK = 200;
       for (let i = 0; i < keyed.length; i += CHUNK) {
@@ -195,7 +213,7 @@ function AppContent() {
       toast.error(err instanceof Error ? err.message : 'Bulk update failed');
       fetchData();
     }
-  }, [fetchData]);
+  }, [fetchData, user?.email]);
 
   const handleSearchChange = useCallback((query: string) => {
     setSearchQueries(prev => ({ ...prev, [activeTab]: query }));
@@ -383,7 +401,7 @@ function AppContent() {
         <InvoicingTab records={records} searchQuery={searchQueries.invoicing} onSearchChange={handleSearchChange} onUpdate={handleUpdate} />
       )}
       {activeTab === 'livesellers' && !isTabHidden('livesellers') && (
-        <LiveSellersTab records={records} canEditSettings={effectiveRoles.includes('super_admin') || effectiveRoles.includes('admin')} />
+        <LiveSellersTab records={records} onRecordsChanged={() => fetchData(true)} canEditSettings={effectiveRoles.includes('super_admin') || effectiveRoles.includes('admin')} />
       )}
       {activeTab === 'settings' && <DesignSettings />}
       {activeTab === 'godmode' && <GodModePanel />}

@@ -7,6 +7,13 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
 import { getOptionsConfig, saveOptionsConfig } from "@/lib/api";
+import { getEffectiveStatuses } from "@/lib/statusRegistry";
+
+const STATUS_TAB: Partial<Record<OptionKey, "admin" | "dispatch" | "accounts">> = {
+  statusAdmin: "admin",
+  statusDispatch: "dispatch",
+  statusAccounts: "accounts",
+};
 import {
   OPTION_LISTS,
   applyOptionsConfig,
@@ -14,6 +21,7 @@ import {
   setOptionsConfig,
   serializeOptionsConfig,
   getSuggestedOptions,
+  getAllKnownOptions,
   type OptionKey,
   type OptionsConfig,
 } from "@/lib/optionsConfig";
@@ -27,6 +35,10 @@ export default function OptionsSettings() {
   const [newValue, setNewValue] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  // Status lists are only saved once someone edits them, so saving another list
+  // never freezes a tab's statuses by accident.
+  const [touched, setTouched] = useState<Set<string>>(new Set());
+  const touch = (key: string) => setTouched((t) => new Set(t).add(key));
 
   useEffect(() => {
     getOptionsConfig({})
@@ -37,7 +49,10 @@ export default function OptionsSettings() {
         const init: Record<string, string[]> = {};
         for (const def of OPTION_LISTS) {
           // Show the saved list, or prefill with what's in use + defaults.
-          init[def.key] = saved[def.key]?.length ? [...saved[def.key]!] : getSuggestedOptions(def.key);
+          const tab = STATUS_TAB[def.key];
+          init[def.key] = saved[def.key]?.length
+            ? [...saved[def.key]!]
+            : tab ? getEffectiveStatuses(tab) : getSuggestedOptions(def.key);
         }
         setLists(init);
         setLoading(false);
@@ -53,19 +68,40 @@ export default function OptionsSettings() {
       return { ...l, [key]: [...cur, v] };
     });
     setNewValue((n) => ({ ...n, [key]: "" }));
+    touch(key);
   };
 
-  const remove = (key: OptionKey, val: string) =>
+  const remove = (key: OptionKey, val: string) => {
     setLists((l) => ({ ...l, [key]: (l[key] ?? []).filter((x) => x !== val) }));
+    touch(key);
+  };
 
-  const resetToSuggested = (key: OptionKey) =>
+  const resetToSuggested = (key: OptionKey) => {
     setLists((l) => ({ ...l, [key]: getSuggestedOptions(key) }));
+    touch(key);
+  };
+
+  const move = (key: OptionKey, val: string, dir: -1 | 1) => {
+    setLists((l) => {
+      const cur = [...(l[key] ?? [])];
+      const i = cur.indexOf(val);
+      const j = i + dir;
+      if (i < 0 || j < 0 || j >= cur.length) return l;
+      [cur[i], cur[j]] = [cur[j], cur[i]];
+      return { ...l, [key]: cur };
+    });
+    touch(key);
+  };
 
   const save = async () => {
     setSaving(true);
     try {
       const cfg: OptionsConfig = {};
-      for (const def of OPTION_LISTS) cfg[def.key] = lists[def.key] ?? [];
+      const saved = getLocalOptions();
+      for (const def of OPTION_LISTS) {
+        if (STATUS_TAB[def.key] && !touched.has(def.key) && !saved[def.key]?.length) continue;
+        cfg[def.key] = lists[def.key] ?? [];
+      }
       setOptionsConfig(cfg);
       await saveOptionsConfig({ config: serializeOptionsConfig() });
       toast.success("Options saved. Reloading…");
@@ -100,7 +136,12 @@ export default function OptionsSettings() {
         {OPTION_LISTS.map((def) => (
           <div key={def.key} className="rounded-md border border-border/60 p-3">
             <div className="flex items-center justify-between mb-1.5">
-              <Label className="text-xs text-primary font-semibold">{def.label}</Label>
+              <div>
+                <Label className="text-xs text-primary font-semibold">{def.label}</Label>
+                {STATUS_TAB[def.key] && (
+                  <p className="text-[10px] text-muted-foreground">The statuses staff can choose in the {STATUS_TAB[def.key]} tab, in this order. Pick from the list or type a new one.</p>
+                )}
+              </div>
               <button
                 onClick={() => resetToSuggested(def.key)}
                 className="text-[10px] text-muted-foreground hover:text-foreground flex items-center gap-1"
@@ -112,7 +153,13 @@ export default function OptionsSettings() {
             <div className="flex flex-wrap gap-1.5 mb-2">
               {(lists[def.key] ?? []).map((v) => (
                 <span key={v} className="text-xs px-2 py-0.5 rounded-full bg-muted text-foreground flex items-center gap-1">
+                  {STATUS_TAB[def.key] && (
+                    <button onClick={() => move(def.key, v, -1)} className="text-muted-foreground hover:text-foreground" title="Move left">‹</button>
+                  )}
                   {v}
+                  {STATUS_TAB[def.key] && (
+                    <button onClick={() => move(def.key, v, 1)} className="text-muted-foreground hover:text-foreground" title="Move right">›</button>
+                  )}
                   <button onClick={() => remove(def.key, v)} className="text-muted-foreground hover:text-destructive">
                     <X className="h-3 w-3" />
                   </button>
@@ -123,7 +170,13 @@ export default function OptionsSettings() {
               )}
             </div>
             <div className="flex items-center gap-2">
+              <datalist id={`opt-${def.key}`}>
+                {getAllKnownOptions(def.key)
+                  .filter((o) => !(lists[def.key] ?? []).some((x) => x.toLowerCase() === o.toLowerCase()))
+                  .map((o) => <option key={o} value={o} />)}
+              </datalist>
               <Input
+                list={`opt-${def.key}`}
                 value={newValue[def.key] ?? ""}
                 onChange={(e) => setNewValue((n) => ({ ...n, [def.key]: e.target.value }))}
                 onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); add(def.key); } }}

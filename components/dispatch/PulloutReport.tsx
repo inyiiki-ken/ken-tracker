@@ -7,6 +7,8 @@ import { Printer, ClipboardList, DollarSign } from 'lucide-react';
 import { DatabaseRowType } from '@/types';
 import { formatDate } from '@/lib/formatters';
 import { calcProfitAED, calcItemPriceAED, calcItemCostAED, getQty } from '@/lib/calculations';
+import { getPulloutStatuses } from '@/lib/appConfig';
+import { computeToCancel, hoursInStatus } from '@/lib/reminders';
 
 interface Props {
   records: DatabaseRowType[];
@@ -64,7 +66,26 @@ const SHARED_STYLES = `
 
 export default function PulloutReport({ records, onClose }: Props) {
   const [activePreview, setActivePreview] = useState<'dispatch' | 'financial' | null>(null);
-  const forPullout = records.filter(r => r.status === 'For Pullout' || r.status === 'Dispatch');
+  const pulloutSet = new Set(getPulloutStatuses().map(s => s.toLowerCase()));
+  const forPullout = records.filter(r => pulloutSet.has(String(r.status || '').trim().toLowerCase()));
+  // Items past their status deadline (Settings → App Settings → Status deadlines).
+  const toCancel = computeToCancel(records);
+  const toCancelCount = toCancel.reduce((n, s) => n + s.items.length, 0);
+  const cancelHtml = () => {
+    if (!toCancelCount) return '';
+    let h = `<div class="source-block" style="border-color:#dc2626"><div class="source-header" style="background:#dc2626">
+      <span class="source-title">⚠ NEEDS TO BE CANCELLED — past deadline</span>
+      <div class="source-math"><span>Items: ${toCancelCount}</span></div></div><div class="source-body">`;
+    for (const sec of toCancel) {
+      h += `<div class="client-block"><div class="client-header"><span>${sec.rule.status} — over ${sec.rule.days} day${sec.rule.days === 1 ? '' : 's'}</span><span class="client-meta">${sec.items.length} item${sec.items.length !== 1 ? 's' : ''}</span></div>
+        <table><thead><tr><th style="width:28px">Done</th><th>Order ID</th><th>Client</th><th>Item Description</th><th class="r">Grams</th><th>Liver</th><th class="r">Days</th></tr></thead><tbody>`;
+      for (const r of sec.items) {
+        h += `<tr><td style="text-align:center"><div class="check-box"></div></td><td class="order-id">${r.orderId || `#${r.id}`}</td><td>${r.minerName || '—'}</td><td>${r.itemDescription || '—'}</td><td class="r">${gramsDisplay(r)}</td><td>${r.liverName || '—'}</td><td class="r">${Math.floor(hoursInStatus(r) / 24)}</td></tr>`;
+      }
+      h += `</tbody></table></div>`;
+    }
+    return h + `</div></div>`;
+  };
   const grouped = groupBySourceThenMiner(forPullout);
 
   const printDispatchSheet = () => {
@@ -74,7 +95,7 @@ export default function PulloutReport({ records, onClose }: Props) {
       <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@700&display=swap" rel="stylesheet">
       <style>${SHARED_STYLES}</style></head><body>
       <h1 class="font-cinzel" style="font-size:20px;margin:0 0 4px;">PULLOUT / DISPATCH SHEET</h1>
-      <p class="meta">⚠ INTERNAL USE ONLY — DO NOT SEND TO CLIENT &nbsp;|&nbsp; Generated: ${new Date().toLocaleString()} &nbsp;|&nbsp; ${forPullout.length} items</p>`;
+      <p class="meta">⚠ INTERNAL USE ONLY — DO NOT SEND TO CLIENT &nbsp;|&nbsp; Generated: ${new Date().toLocaleString()} &nbsp;|&nbsp; ${forPullout.length} items${toCancelCount ? ` &nbsp;|&nbsp; ${toCancelCount} to cancel` : ''}</p>`;
 
     grouped.forEach((byMiner, source) => {
       const allItems = Array.from(byMiner.values()).flat();
@@ -129,6 +150,7 @@ export default function PulloutReport({ records, onClose }: Props) {
       html += `</div></div>`;
     });
 
+    html += cancelHtml();
     html += `</body></html>`;
     win.document.write(html);
     win.document.close();
@@ -250,7 +272,7 @@ export default function PulloutReport({ records, onClose }: Props) {
             {forPullout.length} items ready for pullout across {grouped.size} source{grouped.size !== 1 ? 's' : ''}
           </p>
           {forPullout.length === 0 && (
-            <p className="text-xs text-muted-foreground">No items currently marked "For Pullout" or "Dispatch".</p>
+            <p className="text-xs text-muted-foreground">No items currently marked {getPulloutStatuses().map(s => `"${s}"`).join(" / ")}.</p>
           )}
         </div>
 
@@ -288,13 +310,36 @@ export default function PulloutReport({ records, onClose }: Props) {
           </div>
         )}
 
+        {/* Past deadline → cancel */}
+        {toCancelCount > 0 && (
+          <div className="rounded-lg border border-destructive/40 overflow-hidden">
+            <div className="px-3 py-2 bg-destructive/10 flex justify-between items-center">
+              <span className="font-cinzel text-xs font-bold text-destructive">Needs to be cancelled — past deadline</span>
+              <span className="text-[10px] text-destructive">{toCancelCount} item{toCancelCount !== 1 ? 's' : ''}</span>
+            </div>
+            <div className="px-3 py-2 space-y-2">
+              {toCancel.map(sec => (
+                <div key={sec.rule.status}>
+                  <p className="text-[11px] font-semibold text-muted-foreground">{sec.rule.status} — over {sec.rule.days} day{sec.rule.days === 1 ? '' : 's'}</p>
+                  {sec.items.map(r => (
+                    <div key={r.id} className="flex justify-between gap-2 text-xs">
+                      <span className="truncate"><b>{r.minerName || '—'}</b> · {[r.orderId, r.itemDescription].filter(Boolean).join(' · ')}</span>
+                      <span className="text-muted-foreground shrink-0">{r.liverName || '—'} · {Math.floor(hoursInStatus(r) / 24)}d</span>
+                    </div>
+                  ))}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* Two print buttons */}
         <div className="grid grid-cols-1 gap-3 pt-2 border-t border-border">
           <p className="text-xs text-muted-foreground font-medium">Choose what to print:</p>
 
           <button
             onClick={printDispatchSheet}
-            disabled={forPullout.length === 0}
+            disabled={forPullout.length === 0 && toCancelCount === 0}
             className="flex items-start gap-3 rounded-xl border border-primary/30 bg-primary/5 p-4 hover:bg-primary/10 transition-colors text-left disabled:opacity-50"
           >
             <ClipboardList className="h-5 w-5 text-primary shrink-0 mt-0.5" />

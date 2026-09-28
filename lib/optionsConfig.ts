@@ -18,6 +18,7 @@
  */
 
 import type { DatabaseRowType } from "@/types";
+import { DEFAULT_ADMIN_STATUSES, DEFAULT_ACCOUNTS_STATUSES, DEFAULT_DISPATCH_STATUSES } from "@/lib/statusDefaults";
 
 export type OptionKey =
   | "modeOfPayment"
@@ -29,7 +30,10 @@ export type OptionKey =
   | "source"
   | "location"
   | "remittanceStatus"
-  | "page";
+  | "page"
+  | "statusAdmin"
+  | "statusDispatch"
+  | "statusAccounts";
 
 export interface OptionListDef {
   key: OptionKey;
@@ -69,7 +73,13 @@ export const OPTION_LISTS: OptionListDef[] = [
   { key: "location", label: "Location", field: "locationOfMiner", defaults: ["Local", "Pinas", "International"] },
   { key: "remittanceStatus", label: "Remittance Status", field: "remittanceStatus", defaults: ["Pending", "Remitted", "Cleared", "N/A"] },
   { key: "page", label: "Page", field: "page", defaults: [] },
+  { key: "statusAdmin", label: "Status — Admin tab", field: "status", defaults: DEFAULT_ADMIN_STATUSES },
+  { key: "statusDispatch", label: "Status — Dispatch tab", field: "status", defaults: DEFAULT_DISPATCH_STATUSES },
+  { key: "statusAccounts", label: "Status — Accounts tab", field: "status", defaults: DEFAULT_ACCOUNTS_STATUSES },
 ];
+
+/** Status lists: the editor starts from the built-in list for that tab, not from every status in the data. */
+const STATUS_KEYS: OptionKey[] = ["statusAdmin", "statusDispatch", "statusAccounts"];
 
 export type OptionsConfig = Partial<Record<OptionKey, string[]>>;
 
@@ -174,5 +184,15 @@ export function getOptions(key: OptionKey, current?: string): string[] {
 /** Defaults + whatever is in the data — used to prefill the Settings editor. */
 export function getSuggestedOptions(key: OptionKey): string[] {
   const def = OPTION_LISTS.find((d) => d.key === key);
+  if (STATUS_KEYS.includes(key)) return dedupe(def?.defaults ?? []);
   return dedupe([...(_discovered[key] ?? []), ...(def?.defaults ?? [])]);
+}
+
+/** Every value that could be added to a list: defaults + everything seen in the data. */
+export function getAllKnownOptions(key: OptionKey): string[] {
+  const def = OPTION_LISTS.find((d) => d.key === key);
+  const extra = STATUS_KEYS.includes(key)
+    ? ["For COD", "For Pick Up", "For Dispatch", "Dispatched", "Picked Up", "Delivered", "Reseller", "Given to Shop", "Returned Item", ...(_discovered[key] ?? [])]
+    : (_discovered[key] ?? []);
+  return dedupe([...(def?.defaults ?? []), ...extra]);
 }

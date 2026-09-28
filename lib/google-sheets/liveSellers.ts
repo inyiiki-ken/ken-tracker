@@ -62,6 +62,7 @@ const ITEM_H = {
   cancelledDate: "Cancelled Date",
   notes: "Notes",
   recordKey: "Record Key",
+  customer: "Customer",
   updatedBy: "Updated By",
   updatedAt: "Updated At",
 } as const;
@@ -170,6 +171,7 @@ export async function getLiveData(_params?: Record<string, never>): Promise<Live
         cancelledDate: isoDate(r.get(ITEM_H.cancelledDate)),
         notes: str(r.get(ITEM_H.notes)),
         recordKey: str(r.get(ITEM_H.recordKey)),
+        customer: str(r.get(ITEM_H.customer)),
       };
     });
 
@@ -202,6 +204,7 @@ export interface LiveItemInput {
   rate: number;
   amount?: number;
   recordKey?: string;
+  customer?: string;
 }
 
 function itemRow(
@@ -224,6 +227,7 @@ function itemRow(
     [ITEM_H.amount]: String(amount),
     [ITEM_H.status]: "On hold",
     [ITEM_H.recordKey]: str(it.recordKey),
+    [ITEM_H.customer]: str(it.customer).toUpperCase(),
     [ITEM_H.updatedBy]: who,
     [ITEM_H.updatedAt]: stamp(),
   };

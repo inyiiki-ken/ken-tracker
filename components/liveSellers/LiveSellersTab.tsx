@@ -27,7 +27,7 @@ function monthStart(): string {
   return todayISO(new Date(d.getFullYear(), d.getMonth(), 1));
 }
 
-export default function LiveSellersTab({ canEditSettings, records = [] }: { canEditSettings: boolean; records?: DatabaseRowType[] }) {
+export default function LiveSellersTab({ canEditSettings, records = [], onRecordsChanged }: { canEditSettings: boolean; records?: DatabaseRowType[]; onRecordsChanged?: () => void }) {
   const [data, setData] = useState<LiveData>(EMPTY);
   const [loading, setLoading] = useState(true);
   const [view, setView] = useState<View>("sellers");
@@ -204,6 +204,7 @@ export default function LiveSellersTab({ canEditSettings, records = [] }: { canE
         sellers={sellerNames}
         records={records}
         usedKeys={usedKeys}
+        onRecordsChanged={onRecordsChanged}
         alreadyListed={dialog?.session ? data.items.filter((i) => i.sessionId === dialog.session!.id).reduce((t, i) => t + i.grams, 0) : 0}
       />
       <EditSessionDialog

@@ -10,6 +10,9 @@ import type { DatabaseRowType } from "@/types";
 import { g, money } from "./parts";
 
 export interface PickedItem {
+  code: string;
+  customer: string;
+  record: DatabaseRowType;
   description: string;
   type: string;
   grams: number;
@@ -69,7 +72,10 @@ export default function MasterlistPicker({
 
   const add = () => {
     onAdd(sel.map((r) => ({
-      description: [r.orderId, r.itemDescription].map((x) => String(x ?? "").trim()).filter(Boolean).join(" · "),
+      code: String(r.orderId ?? "").trim(),
+      customer: String(r.minerName ?? "").trim(),
+      record: r,
+      description: String(r.itemDescription ?? "").trim(),
       type: typeOf(r),
       grams: round2(Number(r.grams) || 0),
       amount: calcItemPriceAED(r),

@@ -10,6 +10,9 @@ import CollapsibleGroup from '@/components/CollapsibleGroup';
 import TabHeader from '@/components/TabHeader';
 import DispatchClientCard from './DispatchClientCard';
 import PulloutReport from './PulloutReport';
+import RemindersDialog from '@/components/RemindersDialog';
+import { computeOverdue } from '@/lib/reminders';
+import { getPulloutStatuses } from '@/lib/appConfig';
 import { parseDateRobust } from '@/lib/calculations';
 
 function agingHours(dateStr?: string): number {
@@ -34,21 +37,6 @@ function AgingLabel({ dateStr, warnAfterHours }: { dateStr?: string; warnAfterHo
 
 /** Normalize legacy 'Dispatch' status to 'For Pullout' for filtering/grouping only — never write back */
 const ns = (s: string) => s === 'Dispatch' ? 'For Pullout' : s;
-
-function hasDispatchReminders(records: DatabaseRowType[]): boolean {
-  for (const r of records) {
-    const s = r.status || '';
-    if (s === 'Dispatched') {
-      const h = r.dateOfLive ? Math.floor((Date.now() - (parseDateRobust(r.dateOfLive)?.getTime() || Date.now())) / (1000 * 60 * 60)) : 0;
-      if (h >= 48) return true;
-    }
-    if (s === 'For Pullout' || s === 'Dispatch') {
-      const h = r.dateOfLive ? Math.floor((Date.now() - (parseDateRobust(r.dateOfLive)?.getTime() || Date.now())) / (1000 * 60 * 60)) : 0;
-      if (h >= 24) return true;
-    }
-  }
-  return false;
-}
 
 /** One row in the work-queue list. */
 function QueueButton({
@@ -99,7 +87,10 @@ export default function DispatchBoard({ records, searchQuery, onSearchChange, on
     };
   }, [records, searchQuery]);
 
-  const pulloutCount = useMemo(() => records.filter(r => ns(r.status || '') === 'For Pullout').length, [records]);
+  const pulloutCount = useMemo(() => {
+    const set = new Set(getPulloutStatuses().map(x => x.toLowerCase()));
+    return records.filter(r => set.has(String(r.status || '').trim().toLowerCase())).length;
+  }, [records]);
 
   /**
    * Fulfilment statuses that exist in THIS customer's data but aren't one of the
@@ -204,7 +195,7 @@ export default function DispatchBoard({ records, searchQuery, onSearchChange, on
         onSearchChange={onSearchChange}
         rightContent={
           <div className="flex items-center gap-2">
-            {hasDispatchReminders(records) && (
+            {computeOverdue(records).length > 0 && (
               <Button
                 variant="outline"
                 size="sm"
@@ -301,142 +292,8 @@ export default function DispatchBoard({ records, searchQuery, onSearchChange, on
 
       {/* Courier & Pullout Reminders Dialog */}
       {showReminders && (
-        <DispatchRemindersDialog records={records} onClose={() => setShowReminders(false)} />
+        <RemindersDialog records={records} title="Courier & Pullout Reminders" onClose={() => setShowReminders(false)} />
       )}
     </div>
-  );
-}
-
-// ── Dispatch Reminders Dialog ──────────────────────────────────────────────────
-
-/** One card per CLIENT (not per item) — groups a client's overdue items together
- * so the same name doesn't repeat dozens of times. */
-interface ReminderGroup {
-  name: string;
-  items: DatabaseRowType[];
-  oldestHours: number;
-  page: string;
-  date?: string;
-}
-
-function groupRemindersByClient(list: DatabaseRowType[]): ReminderGroup[] {
-  const map = new Map<string, ReminderGroup>();
-  for (const r of list) {
-    const name = (r.minerName || '—').trim();
-    const key = name.toLowerCase();
-    const hrs = agingHours(r.dateOfLive);
-    const g = map.get(key);
-    if (g) {
-      g.items.push(r);
-      if (hrs > g.oldestHours) { g.oldestHours = hrs; g.date = r.dateOfLive; }
-    } else {
-      map.set(key, { name, items: [r], oldestHours: hrs, page: r.page || '', date: r.dateOfLive });
-    }
-  }
-  // Most overdue client first
-  return [...map.values()].sort((a, b) => b.oldestHours - a.oldestHours);
-}
-
-/** A grouped reminder card: client name once, all their items listed under it. */
-function ReminderClientCard({ group, urgentAfterHours, accent }: {
-  group: ReminderGroup;
-  urgentAfterHours: number;
-  accent: 'orange' | 'purple';
-}) {
-  const days = Math.floor(group.oldestHours / 24);
-  const isUrgent = group.oldestHours >= urgentAfterHours;
-  const accentCls = accent === 'orange'
-    ? 'bg-warning/15 text-warning border-warning/30'
-    : 'bg-hold/15 text-hold border-hold/30';
-  return (
-    <div className={`rounded-lg border p-3 ${isUrgent ? 'border-destructive/40 bg-destructive/5' : 'border-border bg-secondary/20'}`}>
-      <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0 flex-1">
-          <p className="text-xs font-semibold truncate">
-            {group.name}
-            <span className="text-muted-foreground font-normal ml-1.5">
-              · {group.items.length} item{group.items.length !== 1 ? 's' : ''}
-            </span>
-          </p>
-          <p className="text-[10px] text-muted-foreground">
-            {group.page || '—'} · oldest {group.date ? formatDate(group.date) : '—'}
-          </p>
-          <ul className="mt-1.5 space-y-0.5">
-            {group.items.map((it) => (
-              <li key={it.id} className="text-[10px] text-muted-foreground flex items-baseline gap-1.5">
-                <span className="text-muted-foreground/60">•</span>
-                <span className="truncate">{it.itemDescription || '—'}</span>
-                <span className="ml-auto shrink-0 text-muted-foreground/70">
-                  {Math.floor(agingHours(it.dateOfLive) / 24)}d
-                </span>
-              </li>
-            ))}
-          </ul>
-        </div>
-        <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border shrink-0 ${isUrgent ? 'bg-destructive/15 text-destructive border-destructive/30 animate-pulse' : accentCls}`}>
-          {isUrgent ? 'ACTION NEEDED' : `${days}d ago`}
-        </span>
-      </div>
-    </div>
-  );
-}
-
-function DispatchRemindersDialog({ records, onClose }: { records: DatabaseRowType[]; onClose: () => void }) {
-  const courierOverdue = records.filter(r => {
-    if (r.status !== 'Dispatched') return false;
-    const h = r.dateOfLive ? Math.floor((Date.now() - (parseDateRobust(r.dateOfLive)?.getTime() || Date.now())) / (1000 * 60 * 60)) : 0;
-    return h >= 48;
-  }).sort((a, b) => agingHours(a.dateOfLive) - agingHours(b.dateOfLive)).reverse();
-
-  const pulloutOverdue = records.filter(r => {
-    const s = ns(r.status || '');
-    if (s !== 'For Pullout') return false;
-    const h = r.dateOfLive ? Math.floor((Date.now() - (parseDateRobust(r.dateOfLive)?.getTime() || Date.now())) / (1000 * 60 * 60)) : 0;
-    return h >= 24;
-  }).sort((a, b) => agingHours(a.dateOfLive) - agingHours(b.dateOfLive)).reverse();
-
-  // One card per client instead of one per item.
-  const courierGroups = groupRemindersByClient(courierOverdue);
-  const pulloutGroups = groupRemindersByClient(pulloutOverdue);
-
-  return (
-    <Dialog open onOpenChange={onClose}>
-      <DialogContent className="max-w-lg max-h-[85vh] overflow-y-auto bg-card border-border" aria-describedby={undefined}>
-        <DialogHeader>
-          <DialogTitle className="font-cinzel text-primary flex items-center gap-2">
-            <AlertTriangle className="h-5 w-5" />
-            Courier & Pullout Reminders
-          </DialogTitle>
-        </DialogHeader>
-
-        {courierOverdue.length === 0 && pulloutOverdue.length === 0 && (
-          <p className="text-sm text-muted-foreground text-center py-8">✅ No overdue items. All clear!</p>
-        )}
-
-        {courierOverdue.length > 0 && (
-          <div className="space-y-2">
-            <h3 className="text-xs font-bold text-warning uppercase tracking-wider flex items-center gap-2">
-              <Truck className="h-3.5 w-3.5" /> Dispatched — Courier Follow-Up ({courierGroups.length} client{courierGroups.length !== 1 ? 's' : ''} · {courierOverdue.length} items)
-            </h3>
-            <p className="text-[10px] text-muted-foreground">Items dispatched but not yet delivered after 48+ hours.</p>
-            {courierGroups.map(g => (
-              <ReminderClientCard key={g.name} group={g} urgentAfterHours={72} accent="orange" />
-            ))}
-          </div>
-        )}
-
-        {pulloutOverdue.length > 0 && (
-          <div className="space-y-2 mt-4">
-            <h3 className="text-xs font-bold text-hold uppercase tracking-wider flex items-center gap-2">
-              <Package className="h-3.5 w-3.5" /> For Pullout — Waiting 24h+ ({pulloutGroups.length} client{pulloutGroups.length !== 1 ? 's' : ''} · {pulloutOverdue.length} items)
-            </h3>
-            <p className="text-[10px] text-muted-foreground">Items marked for pullout but still waiting after 24+ hours.</p>
-            {pulloutGroups.map(g => (
-              <ReminderClientCard key={g.name} group={g} urgentAfterHours={72} accent="purple" />
-            ))}
-          </div>
-        )}
-      </DialogContent>
-    </Dialog>
   );
 }

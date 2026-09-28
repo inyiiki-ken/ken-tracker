@@ -1,13 +1,15 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Loader2, Plus, Trash2, CheckCircle2, AlertTriangle, ListChecks } from "lucide-react";
+import { Loader2, Plus, Trash2, CheckCircle2, AlertTriangle, ListChecks, Wand2 } from "lucide-react";
 import { toast } from "sonner";
-import { startLiveSession, finishLiveSession, addLiveItems } from "@/lib/api";
+import { startLiveSession, finishLiveSession, addLiveItems, bulkUpdateRecords } from "@/lib/api";
+import { calcItemPriceAED } from "@/lib/calculations";
+import { suggestCustomer, fixSpelling, buildDictionary } from "@/lib/nameFix";
 import { rateFor, roundAmount, round2, todayISO, type LivePriceList, type LiveSession } from "@/lib/liveSellers";
 import { Field, g, money } from "./parts";
 import MasterlistPicker, { type PickedItem } from "./MasterlistPicker";
@@ -23,11 +25,16 @@ interface Row {
   amount: string;
   amountEdited: boolean;
   recordKey?: string;
+  customer: string;
+  code?: string;
+  /** Masterlist record this row came from, and its values before any correction. */
+  record?: DatabaseRowType;
+  orig?: { description: string; grams: number; customer: string };
 }
 
 let rowSeq = 1;
 function emptyRow(type = ""): Row {
-  return { key: rowSeq++, description: "", type, grams: "", amount: "", amountEdited: false };
+  return { key: rowSeq++, description: "", type, grams: "", amount: "", amountEdited: false, customer: "" };
 }
 
 const TOLERANCE = 0.1; // grams — scale rounding
@@ -49,9 +56,11 @@ interface Props {
   usedKeys?: Set<string>;
   /** Grams already listed for this live (adding items to a live already weighed back). */
   alreadyListed?: number;
+  /** Called after corrections were written back to the Admin masterlist. */
+  onRecordsChanged?: () => void;
 }
 
-export default function LiveDayDialog({ open, mode, onClose, onSaved, priceList, sellers, session, seller, records = [], usedKeys, alreadyListed = 0 }: Props) {
+export default function LiveDayDialog({ open, mode, onClose, onSaved, priceList, sellers, session, seller, records = [], usedKeys, alreadyListed = 0, onRecordsChanged }: Props) {
   const [date, setDate] = useState(todayISO());
   const [name, setName] = useState("");
   const [weightOut, setWeightOut] = useState("");
@@ -83,6 +92,10 @@ export default function LiveDayDialog({ open, mode, onClose, onSaved, priceList,
         amount: String(it.amount),
         amountEdited: true,
         recordKey: it.recordKey,
+        customer: it.customer.toUpperCase(),
+        code: it.code,
+        record: it.record,
+        orig: { description: it.description, grams: it.grams, customer: it.customer.toUpperCase() },
       }));
       return [...kept, ...added];
     });
@@ -94,6 +107,32 @@ export default function LiveDayDialog({ open, mode, onClose, onSaved, priceList,
     for (const r of rows) if (r.recordKey) s.add(r.recordKey);
     return s;
   }, [usedKeys, rows]);
+
+  // Known customers + spelling dictionary, from everything already in Admin.
+  const knownCustomers = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const r of records) {
+      const n = String(r.minerName ?? "").toUpperCase().replace(/\s+/g, " ").trim();
+      if (n) m.set(n, (m.get(n) ?? 0) + 1);
+    }
+    return m;
+  }, [records]);
+  const dict = useMemo(() => buildDictionary(records.map((r) => String(r.itemDescription ?? ""))), [records]);
+  const changedOf = (r: Row) => {
+    if (!r.record || !r.orig) return [] as string[];
+    const out: string[] = [];
+    if (r.description.trim().toUpperCase() !== r.orig.description.trim().toUpperCase()) out.push("description");
+    if (Math.abs((parseFloat(r.grams) || 0) - r.orig.grams) > 0.001) out.push("grams");
+    if (r.customer.trim().toUpperCase() !== r.orig.customer.trim().toUpperCase()) out.push("customer");
+    return out;
+  };
+  /** Grams corrected on a masterlist row: re-price it the same way Admin does. */
+  const setGrams = (r: Row, v: string) => {
+    if (r.record) {
+      const price = calcItemPriceAED({ ...r.record, grams: parseFloat(v) || 0 });
+      setRow(r.key, { grams: v, amount: String(price), amountEdited: true });
+    } else setRow(r.key, { grams: v });
+  };
 
   const cur = priceList.currency;
   const withAmounts = useMemo(
@@ -124,6 +163,52 @@ export default function LiveDayDialog({ open, mode, onClose, onSaved, priceList,
 
   const setRow = (key: number, patch: Partial<Row>) => setRows((rs) => rs.map((r) => (r.key === key ? { ...r, ...patch } : r)));
 
+  const itemPayload = (r: (typeof filled)[number]) => ({
+    description: [r.code, r.description.trim()].filter(Boolean).join(" · "),
+    type: r.type,
+    grams: r.gramsN,
+    rate: r.rate,
+    amount: r.amountN,
+    recordKey: r.recordKey,
+    customer: r.customer.trim().toUpperCase(),
+  });
+
+  /** Write gold-room corrections back to the masterlist records in Admin. */
+  const syncToAdmin = async (): Promise<number> => {
+    const stamp = new Date().toISOString();
+    const updates = filled
+      .map((r) => ({ r, changed: changedOf(r) }))
+      .filter((x) => x.changed.length && x.r.record)
+      .map(({ r, changed }) => {
+        const rec = r.record!;
+        const fields: Partial<DatabaseRowType> = {};
+        const notes: string[] = [];
+        if (changed.includes("description")) {
+          fields.itemDescription = r.description.trim().toUpperCase();
+          notes.push(`description "${r.orig!.description}" → "${fields.itemDescription}"`);
+        }
+        if (changed.includes("grams")) {
+          fields.grams = r.gramsN;
+          notes.push(`grams ${r.orig!.grams} → ${r.gramsN}`);
+        }
+        if (changed.includes("customer")) {
+          const to = r.customer.trim().toUpperCase();
+          fields.minerName = to;
+          // Link to the existing customer so their history stays together.
+          const same = records.find((x) => String(x.minerName ?? "").toUpperCase().trim() === to && x.customerId);
+          if (same?.customerId) fields.customerId = same.customerId;
+          notes.push(`customer "${r.orig!.customer}" → "${to}"`);
+        }
+        const lines = String(rec.auditTrail ?? "").split("\n").filter(Boolean);
+        lines.push(`${stamp} | Gold room check | Corrected ${notes.join(", ")}`);
+        fields.auditTrail = lines.slice(-20).join("\n");
+        return { rowId: rec.id, rowKey: rec.rowKey, fields };
+      });
+    if (!updates.length) return 0;
+    await bulkUpdateRecords({ updates });
+    return updates.length;
+  };
+
   const save = async () => {
     const who = name.trim().toUpperCase();
     if (!who) return toast.error("Enter the live seller.");
@@ -139,14 +224,25 @@ export default function LiveDayDialog({ open, mode, onClose, onSaved, priceList,
         if (!(outN > 0)) throw new Error("Enter the weight that went out.");
         if (backN === null) throw new Error("Enter the weight that came back.");
         if (backN > outN + TOLERANCE) throw new Error("Weight back is more than weight out. Check the scale.");
-        const items = filled.map((r) => ({ description: r.description, type: r.type, grams: r.gramsN, rate: r.rate, amount: r.amountN, recordKey: r.recordKey }));
+        const items = filled.map(itemPayload);
         const res = await finishLiveSession({ sessionId: session?.id, date, seller: who, weightOut: outN, weightBack: backN, notes, items });
         toast.success(`${res.added} item${res.added === 1 ? "" : "s"} on hold for ${who}.`);
       } else {
         if (!filled.length) throw new Error("Add at least one item.");
-        const items = filled.map((r) => ({ description: r.description, type: r.type, grams: r.gramsN, rate: r.rate, amount: r.amountN, recordKey: r.recordKey }));
+        const items = filled.map(itemPayload);
         const res = await addLiveItems({ seller: who, liveDate: date, items, sessionId: linked ? session!.id : undefined });
         toast.success(`${res.added} item${res.added === 1 ? "" : "s"} added to ${who}'s container.`);
+      }
+      if (mode !== "out") {
+        try {
+          const fixed = await syncToAdmin();
+          if (fixed) {
+            toast.success(`${fixed} masterlist record${fixed === 1 ? "" : "s"} corrected in Admin.`);
+            onRecordsChanged?.();
+          }
+        } catch (err) {
+          toast.error(`Items saved, but Admin wasn't updated: ${err instanceof Error ? err.message : "error"}`);
+        }
       }
       onSaved();
       onClose();
@@ -161,7 +257,7 @@ export default function LiveDayDialog({ open, mode, onClose, onSaved, priceList,
 
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="bg-card border-border max-w-3xl max-h-[92vh] overflow-y-auto" aria-describedby={undefined}>
+      <DialogContent className="bg-card border-border max-w-5xl max-h-[92vh] overflow-y-auto" aria-describedby={undefined}>
         <DialogHeader>
           <DialogTitle className="font-cinzel text-primary">{title}</DialogTitle>
         </DialogHeader>
@@ -228,9 +324,11 @@ export default function LiveDayDialog({ open, mode, onClose, onSaved, priceList,
               />
             )}
             <div className="overflow-x-auto -mx-1">
-              <table className="w-full text-sm min-w-[560px]">
+              <datalist id="ls-customers">{[...knownCustomers.keys()].slice(0, 500).map((n) => <option key={n} value={n} />)}</datalist>
+              <table className="w-full text-sm min-w-[860px] table-fixed">
                 <thead>
                   <tr className="text-[11px] text-muted-foreground text-left">
+                    <th className="px-1 py-1 font-medium w-44">Customer</th>
                     <th className="px-1 py-1 font-medium">Description</th>
                     <th className="px-1 py-1 font-medium w-40">Type</th>
                     <th className="px-1 py-1 font-medium w-24 text-right">Grams</th>
@@ -240,10 +338,21 @@ export default function LiveDayDialog({ open, mode, onClose, onSaved, priceList,
                   </tr>
                 </thead>
                 <tbody>
-                  {withAmounts.map((r) => (
-                    <tr key={r.key}>
-                      <td className="px-1 py-1">
-                        <Input value={r.description} onChange={(e) => setRow(r.key, { description: e.target.value })} placeholder="e.g. Cuban chain 20in" className="h-8 text-sm" />
+                  {withAmounts.map((r) => {
+                    const nameHint = r.customer.trim() ? suggestCustomer(r.customer, knownCustomers) : null;
+                    const spellHint = r.description.trim() ? fixSpelling(r.description, dict) : null;
+                    const changed = changedOf(r);
+                    return (
+                    <Fragment key={r.key}>
+                    <tr className={changed.length ? "bg-warning/5" : ""}>
+                      <td className="px-1 py-1 align-top">
+                        <Input list="ls-customers" value={r.customer} onChange={(e) => setRow(r.key, { customer: e.target.value })} placeholder="Customer" className={`h-8 text-sm uppercase ${changed.includes("customer") ? "border-warning" : ""}`} />
+                      </td>
+                      <td className="px-1 py-1 align-top">
+                        <div className="flex items-center gap-1">
+                          {r.code && <span className="text-[10px] text-muted-foreground whitespace-nowrap">{r.code}</span>}
+                          <Input value={r.description} onChange={(e) => setRow(r.key, { description: e.target.value })} placeholder="e.g. Cuban chain 20in" className={`h-8 text-sm ${changed.includes("description") ? "border-warning" : ""}`} />
+                        </div>
                       </td>
                       <td className="px-1 py-1">
                         <Select value={r.type || undefined} onValueChange={(v) => setRow(r.key, { type: v })}>
@@ -259,7 +368,7 @@ export default function LiveDayDialog({ open, mode, onClose, onSaved, priceList,
                         </Select>
                       </td>
                       <td className="px-1 py-1">
-                        <Input type="number" step="any" inputMode="decimal" value={r.grams} onChange={(e) => setRow(r.key, { grams: e.target.value })} className="h-8 text-sm text-right" />
+                        <Input type="number" step="any" inputMode="decimal" value={r.grams} onChange={(e) => setGrams(r, e.target.value)} className={`h-8 text-sm text-right ${changed.includes("grams") ? "border-warning" : ""}`} />
                       </td>
                       <td className="px-1 py-1 text-right text-muted-foreground tabular-nums">{r.rate || "—"}</td>
                       <td className="px-1 py-1">
@@ -278,7 +387,33 @@ export default function LiveDayDialog({ open, mode, onClose, onSaved, priceList,
                         </button>
                       </td>
                     </tr>
-                  ))}
+                    {(nameHint || spellHint || changed.length > 0) && (
+                      <tr>
+                        <td colSpan={7} className="px-1 pb-1.5 pt-0">
+                          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px]">
+                            {nameHint && (
+                              <button onClick={() => setRow(r.key, { customer: nameHint })} className="text-warning hover:underline">
+                                <Wand2 className="inline h-3 w-3 mr-0.5" />Did you mean <b>{nameHint}</b>?
+                              </button>
+                            )}
+                            {spellHint && (
+                              <button onClick={() => setRow(r.key, { description: spellHint })} className="text-warning hover:underline">
+                                <Wand2 className="inline h-3 w-3 mr-0.5" />Spelling: <b>{spellHint}</b>
+                              </button>
+                            )}
+                            {changed.length > 0 && (
+                              <span className="text-muted-foreground">
+                                Corrected {changed.join(", ")} — Admin will be updated
+                                {changed.includes("grams") && r.orig ? ` (was ${r.orig.grams} g)` : ""}
+                              </span>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                    </Fragment>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Loader2, Save, Sliders } from "lucide-react";
+import { Loader2, Save, Sliders, X, Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -15,7 +15,11 @@ import {
   getAppConfig as getLocalAppConfig,
   setAppConfig,
   serializeAppConfig,
+  DEFAULT_SALE_STATUSES,
+  DEFAULT_PULLOUT_STATUSES,
+  type StatusDeadline,
 } from "@/lib/appConfig";
+import { getAllKnownOptions } from "@/lib/optionsConfig";
 import { DEFAULT_ADMIN_STATUSES, DEFAULT_ACCOUNTS_STATUSES } from "@/lib/statusRegistry";
 import { getMotionEnabled, setMotionEnabled } from "@/lib/motionPref";
 
@@ -36,6 +40,9 @@ export default function AppConfigSettings() {
   const [statuses, setStatuses] = useState<string[]>([]);
   const [statusByTab, setStatusByTab] = useState<Record<string, string>>({});
   const [requirePullout, setRequirePullout] = useState(true);
+  const [saleStatuses, setSaleStatuses] = useState<string[]>([]);
+  const [pulloutStatuses, setPulloutStatuses] = useState<string[]>([]);
+  const [deadlines, setDeadlines] = useState<{ status: string; days: string }[]>([]);
   const [motion, setMotion] = useState(true);
   useEffect(() => { setMotion(getMotionEnabled()); }, []);
   const [loading, setLoading] = useState(true);
@@ -54,6 +61,9 @@ export default function AppConfigSettings() {
         for (const t of STATUS_TABS) byTab[t.key] = (c.statusOptionsByTab?.[t.key] ?? []).join(", ");
         setStatusByTab(byTab);
         setRequirePullout(c.requirePaymentForPullout !== false);
+        setSaleStatuses(c.saleStatuses.length ? c.saleStatuses : DEFAULT_SALE_STATUSES);
+        setPulloutStatuses(c.pulloutStatuses.length ? c.pulloutStatuses : DEFAULT_PULLOUT_STATUSES);
+        setDeadlines(c.statusDeadlines.map((d) => ({ status: d.status, days: String(d.days) })));
         setLoading(false);
       });
   }, []);
@@ -72,7 +82,21 @@ export default function AppConfigSettings() {
         const list = (statusByTab[t.key] ?? "").split(",").map((s) => s.trim()).filter(Boolean);
         if (list.length) statusOptionsByTab[t.key] = list;
       }
-      setAppConfig({ columnAliases: aliases, hiddenFields: hidden, statusOptions: statuses, statusOptionsByTab, requirePaymentForPullout: requirePullout });
+      const same = (a: string[], b: string[]) => a.length === b.length && a.every((x, i) => x === b[i]);
+      const statusDeadlines: StatusDeadline[] = deadlines
+        .map((d) => ({ status: d.status.trim(), days: parseInt(d.days, 10) || 0 }))
+        .filter((d) => d.status && d.days > 0);
+      setAppConfig({
+        columnAliases: aliases,
+        hiddenFields: hidden,
+        statusOptions: statuses,
+        statusOptionsByTab,
+        requirePaymentForPullout: requirePullout,
+        // Store only when changed from the default, so defaults can still evolve.
+        saleStatuses: same(saleStatuses, DEFAULT_SALE_STATUSES) ? [] : saleStatuses,
+        pulloutStatuses: same(pulloutStatuses, DEFAULT_PULLOUT_STATUSES) ? [] : pulloutStatuses,
+        statusDeadlines,
+      });
       await saveAppConfig({ config: serializeAppConfig() });
       toast.success("App settings saved. Reloading…");
       setTimeout(() => window.location.reload(), 700);
@@ -142,30 +166,54 @@ export default function AppConfigSettings() {
         <p className="text-[11px] text-muted-foreground mt-1">Click to toggle. Hidden = removed from the UI for this customer.</p>
       </div>
 
-      {/* Status options per team */}
+      {/* Status dropdowns moved */}
       <div>
-        <Label className="text-xs text-primary font-semibold">Status options per team</Label>
-        <p className="text-[11px] text-muted-foreground mb-2">
-          Control which statuses each team can pick in their dropdown — so Admin only sees intake
-          statuses, Dispatch sees delivery ones, etc. Type them separated by commas.
-          Leave a box empty to use the sensible default shown as the hint.
+        <Label className="text-xs text-primary font-semibold">Status dropdowns per tab</Label>
+        <p className="text-[11px] text-muted-foreground">
+          Now edited in <b>Dropdown Options</b> above (Status — Admin / Dispatch / Accounts tab): add, remove and reorder.
         </p>
+      </div>
+
+      {/* Liver sales */}
+      <div>
+        <Label className="text-xs text-primary font-semibold">Counts as a sale for the liver (My Sales)</Label>
+        <p className="text-[11px] text-muted-foreground mb-2">
+          An item in any of these statuses counts as sold for its liver. Add &quot;Dispatched&quot; if delivery can&apos;t be tracked.
+        </p>
+        <ChipList id="sale" values={saleStatuses} onChange={setSaleStatuses} />
+      </div>
+
+      {/* Deadlines */}
+      <div>
+        <Label className="text-xs text-primary font-semibold">Status deadlines (reminders)</Label>
+        <p className="text-[11px] text-muted-foreground mb-2">
+          If an item stays in a status longer than this, it shows in Reminders (Dispatch tab and the liver&apos;s own My Sales tab)
+          and in the Pullout Report under &quot;Needs to be cancelled&quot;. Counted from the day the status was set.
+          Leave empty to keep the built-in reminders (For Pullout after 1 day, Dispatched after 2 days).
+        </p>
+        <datalist id="dl-deadline-status">
+          {getAllKnownOptions("statusDispatch").map((o) => <option key={o} value={o} />)}
+        </datalist>
         <div className="space-y-2">
-          {STATUS_TABS.map((t) => (
-            <div key={t.key} className="grid grid-cols-[1fr,2.2fr] items-start gap-2">
-              <span className="text-xs text-muted-foreground pt-2">{t.label}</span>
-              <div>
-                <Input
-                  value={statusByTab[t.key] ?? ""}
-                  onChange={(e) => setStatusByTab((m) => ({ ...m, [t.key]: e.target.value }))}
-                  placeholder="leave empty for default"
-                  className="h-8 text-sm"
-                />
-                <p className="text-[10px] text-muted-foreground mt-0.5 truncate">Default: {t.hint}</p>
-              </div>
+          {deadlines.map((d, i) => (
+            <div key={i} className="flex items-center gap-2">
+              <Input list="dl-deadline-status" value={d.status} onChange={(e) => setDeadlines((ds) => ds.map((x, j) => (j === i ? { ...x, status: e.target.value } : x)))} placeholder="Status, e.g. For COD" className="h-8 text-sm flex-1" />
+              <Input type="number" min={1} value={d.days} onChange={(e) => setDeadlines((ds) => ds.map((x, j) => (j === i ? { ...x, days: e.target.value } : x)))} className="h-8 text-sm w-20 text-right" />
+              <span className="text-xs text-muted-foreground w-8">days</span>
+              <button onClick={() => setDeadlines((ds) => ds.filter((_, j) => j !== i))} className="text-muted-foreground hover:text-destructive" title="Remove"><Trash2 className="h-3.5 w-3.5" /></button>
             </div>
           ))}
+          <Button size="sm" variant="outline" className="h-8" onClick={() => setDeadlines((ds) => [...ds, { status: "", days: "3" }])}>
+            <Plus className="h-3.5 w-3.5 mr-1" /> Add deadline
+          </Button>
         </div>
+      </div>
+
+      {/* Pullout report */}
+      <div>
+        <Label className="text-xs text-primary font-semibold">Pullout Report includes</Label>
+        <p className="text-[11px] text-muted-foreground mb-2">Statuses listed as ready for pullout in the Dispatch report.</p>
+        <ChipList id="pullout" values={pulloutStatuses} onChange={setPulloutStatuses} />
       </div>
 
       {/* Animation — a personal, per-device choice, not a customer setting. */}
@@ -207,5 +255,35 @@ export default function AppConfigSettings() {
         </Button>
       </div>
     </section>
+  );
+}
+
+/** Small add/remove chip editor with suggestions from every known status. */
+function ChipList({ id, values, onChange }: { id: string; values: string[]; onChange: (v: string[]) => void }) {
+  const [draft, setDraft] = useState("");
+  const add = () => {
+    const v = draft.trim();
+    if (v && !values.some((x) => x.toLowerCase() === v.toLowerCase())) onChange([...values, v]);
+    setDraft("");
+  };
+  return (
+    <div>
+      <div className="flex flex-wrap gap-1.5 mb-2">
+        {values.map((v) => (
+          <span key={v} className="text-xs px-2 py-0.5 rounded-full bg-muted text-foreground flex items-center gap-1">
+            {v}
+            <button onClick={() => onChange(values.filter((x) => x !== v))} className="text-muted-foreground hover:text-destructive"><X className="h-3 w-3" /></button>
+          </span>
+        ))}
+        {values.length === 0 && <span className="text-[11px] text-muted-foreground">None.</span>}
+      </div>
+      <datalist id={`dl-${id}`}>
+        {getAllKnownOptions("statusDispatch").filter((o) => !values.includes(o)).map((o) => <option key={o} value={o} />)}
+      </datalist>
+      <div className="flex items-center gap-2">
+        <Input list={`dl-${id}`} value={draft} onChange={(e) => setDraft(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); add(); } }} placeholder="Add status…" className="h-8 text-sm w-56" />
+        <Button size="sm" variant="outline" className="h-8" onClick={add}><Plus className="h-3.5 w-3.5 mr-1" /> Add</Button>
+      </div>
+    </div>
   );
 }
