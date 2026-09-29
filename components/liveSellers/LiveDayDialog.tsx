@@ -8,7 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Loader2, Plus, Trash2, CheckCircle2, AlertTriangle, ListChecks, Wand2 } from "lucide-react";
 import { toast } from "sonner";
 import { startLiveSession, finishLiveSession, addLiveItems, bulkUpdateRecords } from "@/lib/api";
-import { calcItemPriceAED, isPcItem } from "@/lib/calculations";
+import { calcItemPriceAED, isPcItem, parseDateRobust } from "@/lib/calculations";
 import { generateCustomerId } from "@/lib/customerId";
 import { suggestCustomer, fixSpelling, buildDictionary } from "@/lib/nameFix";
 import { rateFor, roundAmount, round2, todayISO, type LivePriceList, type LiveSession } from "@/lib/liveSellers";
@@ -27,6 +27,8 @@ interface Row {
   amountEdited: boolean;
   recordKey?: string;
   customer: string;
+  /** Reseller the item is billed to (e.g. ROCHELLE buying for her own customer). */
+  billTo: string;
   code?: string;
   /** Masterlist record this row came from, and its values before any correction. */
   record?: DatabaseRowType;
@@ -35,7 +37,7 @@ interface Row {
 
 let rowSeq = 1;
 function emptyRow(type = ""): Row {
-  return { key: rowSeq++, description: "", type, grams: "", amount: "", amountEdited: false, customer: "" };
+  return { key: rowSeq++, description: "", type, grams: "", amount: "", amountEdited: false, customer: "", billTo: "" };
 }
 
 const TOLERANCE = 0.1; // grams — scale rounding
@@ -94,6 +96,7 @@ export default function LiveDayDialog({ open, mode, onClose, onSaved, priceList,
         amountEdited: true,
         recordKey: it.recordKey,
         customer: it.customer.toUpperCase(),
+        billTo: "",
         code: it.code,
         record: it.record,
         orig: { description: it.description, grams: it.grams, customer: it.customer.toUpperCase() },
@@ -125,6 +128,8 @@ export default function LiveDayDialog({ open, mode, onClose, onSaved, priceList,
     if (r.description.trim().toUpperCase() !== r.orig.description.trim().toUpperCase()) out.push("description");
     if (Math.abs((parseFloat(r.grams) || 0) - r.orig.grams) > 0.001) out.push("grams");
     if (r.customer.trim().toUpperCase() !== r.orig.customer.trim().toUpperCase()) out.push("customer");
+    const bill = r.billTo.trim().toUpperCase();
+    if (bill && bill !== r.orig.customer.trim().toUpperCase()) out.push("reseller");
     return out;
   };
   /** Grams corrected on a masterlist row: re-price it the same way Admin does. */
@@ -169,14 +174,22 @@ export default function LiveDayDialog({ open, mode, onClose, onSaved, priceList,
 
   const setRow = (key: number, patch: Partial<Row>) => setRows((rs) => rs.map((r) => (r.key === key ? { ...r, ...patch } : r)));
 
+  /** Description with the end customer's name added, for items billed to a reseller. */
+  const withEndCustomer = (desc: string, r: Row) => {
+    const bill = r.billTo.trim().toUpperCase();
+    const cust = r.customer.trim().toUpperCase();
+    if (!bill || !cust || cust === bill) return desc;
+    return desc.toUpperCase().includes(cust) ? desc : `${desc} - ${cust}`;
+  };
   const itemPayload = (r: (typeof filled)[number]) => ({
-    description: [r.code, r.description.trim()].filter(Boolean).join(" · "),
+    description: [r.code, withEndCustomer(r.description.trim(), r)].filter(Boolean).join(" · "),
     type: r.type,
     grams: r.gramsN,
     rate: r.rate,
     amount: r.amountN,
     recordKey: r.recordKey,
-    customer: r.customer.trim().toUpperCase(),
+    // Billed to a reseller → the item belongs to the reseller.
+    customer: (r.billTo.trim() || r.customer.trim()).toUpperCase(),
   });
 
   /** Write gold-room corrections back to the masterlist records in Admin. */
@@ -189,15 +202,35 @@ export default function LiveDayDialog({ open, mode, onClose, onSaved, priceList,
         const rec = r.record!;
         const fields: Partial<DatabaseRowType> = {};
         const notes: string[] = [];
-        if (changed.includes("description")) {
-          fields.itemDescription = r.description.trim().toUpperCase();
-          notes.push(`description "${r.orig!.description}" → "${fields.itemDescription}"`);
+        const bill = r.billTo.trim().toUpperCase();
+        if (changed.includes("description") || changed.includes("reseller")) {
+          const desc = withEndCustomer(r.description.trim().toUpperCase(), r);
+          if (desc !== r.orig!.description.trim().toUpperCase()) {
+            fields.itemDescription = desc;
+            notes.push(`description "${r.orig!.description}" → "${desc}"`);
+          }
         }
         if (changed.includes("grams") && !(isPcItem(rec) || /per pc|screw|diamond/i.test(rec.category || ''))) {
           fields.grams = r.gramsN;
           notes.push(`grams ${r.orig!.grams} → ${r.gramsN}`);
         }
-        if (changed.includes("customer")) {
+        if (bill && changed.includes("reseller")) {
+          // Invoice goes to the reseller: her name, her id, her delivery details.
+          const theirs = records
+            .filter((x) => String(x.minerName ?? "").toUpperCase().replace(/\s+/g, " ").trim() === bill)
+            .sort((a, b) => (parseDateRobust(b.dateOfLive)?.getTime() ?? 0) - (parseDateRobust(a.dateOfLive)?.getTime() ?? 0));
+          fields.minerName = bill;
+          fields.customerId = theirs.find((x) => x.customerId)?.customerId || generateCustomerId();
+          const latest = theirs[0];
+          if (latest) {
+            for (const k of ["clientAddress", "clientNumber", "regions", "locationOfMiner"] as const) {
+              const v = String(latest[k] ?? "").trim();
+              if (v) (fields as Record<string, unknown>)[k] = latest[k];
+            }
+            if (!String(rec.modeOfPayment ?? "").trim() && latest.modeOfPayment) fields.modeOfPayment = latest.modeOfPayment;
+          }
+          notes.push(`billed to reseller "${bill}" (customer "${r.customer.trim().toUpperCase() || r.orig!.customer}")`);
+        } else if (changed.includes("customer")) {
           const to = r.customer.trim().toUpperCase();
           fields.minerName = to;
           // Link to the existing customer so their history stays together.
@@ -332,10 +365,11 @@ export default function LiveDayDialog({ open, mode, onClose, onSaved, priceList,
             )}
             <div className="overflow-x-auto -mx-1">
               <datalist id="ls-customers">{[...knownCustomers.keys()].slice(0, 500).map((n) => <option key={n} value={n} />)}</datalist>
-              <table className="w-full text-sm min-w-[860px] table-fixed">
+              <table className="w-full text-sm min-w-[1020px] table-fixed">
                 <thead>
                   <tr className="text-[11px] text-muted-foreground text-left">
                     <th className="px-1 py-1 font-medium w-44">Customer</th>
+                    <th className="px-1 py-1 font-medium w-40" title="Fill in only when a reseller buys for her own customer. The invoice goes to the reseller; the customer's name is added to the description.">Bill to reseller</th>
                     <th className="px-1 py-1 font-medium">Description</th>
                     <th className="px-1 py-1 font-medium w-40">Type</th>
                     <th className="px-1 py-1 font-medium w-24 text-right">Grams</th>
@@ -347,6 +381,7 @@ export default function LiveDayDialog({ open, mode, onClose, onSaved, priceList,
                 <tbody>
                   {withAmounts.map((r) => {
                     const nameHint = r.customer.trim() ? suggestCustomer(r.customer, knownCustomers) : null;
+                    const billHint = r.billTo.trim() ? suggestCustomer(r.billTo, knownCustomers) : null;
                     const spellHint = r.description.trim() ? fixSpelling(r.description, dict) : null;
                     const changed = changedOf(r);
                     return (
@@ -354,6 +389,9 @@ export default function LiveDayDialog({ open, mode, onClose, onSaved, priceList,
                     <tr className={changed.length ? "bg-warning/5" : ""}>
                       <td className="px-1 py-1 align-top">
                         <Input list="ls-customers" value={r.customer} onChange={(e) => setRow(r.key, { customer: e.target.value })} placeholder="Customer" className={`h-8 text-sm uppercase ${changed.includes("customer") ? "border-warning" : ""}`} />
+                      </td>
+                      <td className="px-1 py-1 align-top">
+                        <Input list="ls-customers" value={r.billTo} onChange={(e) => setRow(r.key, { billTo: e.target.value })} placeholder="—" className={`h-8 text-sm uppercase ${changed.includes("reseller") ? "border-warning" : ""}`} />
                       </td>
                       <td className="px-1 py-1 align-top">
                         <div className="flex items-center gap-1">
@@ -394,14 +432,24 @@ export default function LiveDayDialog({ open, mode, onClose, onSaved, priceList,
                         </button>
                       </td>
                     </tr>
-                    {(nameHint || spellHint || changed.length > 0) && (
+                    {(nameHint || billHint || spellHint || changed.length > 0 || (r.billTo.trim() && r.customer.trim())) && (
                       <tr>
-                        <td colSpan={7} className="px-1 pb-1.5 pt-0">
+                        <td colSpan={8} className="px-1 pb-1.5 pt-0">
                           <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px]">
                             {nameHint && (
                               <button onClick={() => setRow(r.key, { customer: nameHint })} className="text-warning hover:underline">
                                 <Wand2 className="inline h-3 w-3 mr-0.5" />Did you mean <b>{nameHint}</b>?
                               </button>
+                            )}
+                            {billHint && (
+                              <button onClick={() => setRow(r.key, { billTo: billHint })} className="text-warning hover:underline">
+                                <Wand2 className="inline h-3 w-3 mr-0.5" />Reseller: <b>{billHint}</b>?
+                              </button>
+                            )}
+                            {r.billTo.trim() && r.customer.trim() && (
+                              <span className="text-muted-foreground">
+                                Invoice to <b>{r.billTo.trim().toUpperCase()}</b> · description gets “- {r.customer.trim().toUpperCase()}”
+                              </span>
                             )}
                             {spellHint && (
                               <button onClick={() => setRow(r.key, { description: spellHint })} className="text-warning hover:underline">

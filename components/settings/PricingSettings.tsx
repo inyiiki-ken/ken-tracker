@@ -144,13 +144,13 @@ export default function PricingSettings() {
         />
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mt-3">
           <div>
-            <Label className="text-xs text-muted-foreground">Other regions (default)</Label>
+            <Label className="text-xs text-muted-foreground">No region / not in list (default)</Label>
             <Input type="number" value={String(cfg.shippingFeeDefault)}
               onChange={(e) => setCfg((c) => ({ ...c, shippingFeeDefault: parseFloat(e.target.value) || 0 }))}
               className="h-8 text-sm mt-0.5" />
           </div>
           <div>
-            <Label className="text-xs text-muted-foreground">Pinas / International</Label>
+            <Label className="text-xs text-muted-foreground">International / Pinas (Location, Region or MOP)</Label>
             <Input type="number" value={String(cfg.shippingFeeInternational)}
               onChange={(e) => setCfg((c) => ({ ...c, shippingFeeInternational: parseFloat(e.target.value) || 0 }))}
               className="h-8 text-sm mt-0.5" />

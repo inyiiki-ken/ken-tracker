@@ -379,7 +379,16 @@ export function calcShippingFee(record: DatabaseRowType): number {
   const mop = (record.modeOfPayment || '').toLowerCase();
   const region = (record.regions || '').toLowerCase();
 
-  if (loc === 'INTERNATIONAL' || loc === 'PINAS') return getShippingFeeInternational();
+  // International can be picked in Location, Region or Mode of Payment — any of
+  // them means the international fee (before, only Location counted, so Region
+  // "International" fell through to the "Other regions" default).
+  const regionU = normCurrency(record.regions);
+  const mopU = normCurrency(record.modeOfPayment);
+  if (
+    loc === 'INTERNATIONAL' || loc === 'PINAS' ||
+    regionU === 'INTERNATIONAL' || regionU === 'PINAS' ||
+    mopU === 'INTERNATIONAL'
+  ) return getShippingFeeInternational();
 
   // Rates come from the per-customer pricing config (Settings → Pricing →
   // Shipping fees), so zones can be changed without a code release.
