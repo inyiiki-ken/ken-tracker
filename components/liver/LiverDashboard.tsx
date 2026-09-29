@@ -307,7 +307,7 @@ export default function LiverDashboard({ records, searchQuery, onSearchChange, l
   }, [byLiver, range, customStart, customEnd, materialFilter]);
 
   // Her own overdue items (status deadlines) — pops up once when she opens the tab.
-  const myOverdue = useMemo(() => computeOverdue(byLiver), [byLiver]);
+  const myOverdue = useMemo(() => computeOverdue(byLiver, undefined, records), [byLiver, records]);
   const overdueCount = myOverdue.reduce((n, sec) => n + sec.items.length, 0);
   useEffect(() => {
     if (selectedLiver && overdueCount > 0 && remindersSeenFor !== selectedLiver) {
@@ -495,6 +495,7 @@ export default function LiverDashboard({ records, searchQuery, onSearchChange, l
         {showReminders && (
           <RemindersDialog
             records={byLiver}
+            allRecords={records}
             title={`Reminders — ${selectedLiver}`}
             intro="Your items that passed their deadline. Follow up with the client, or they need to be cancelled."
             onClose={() => setShowReminders(false)}
