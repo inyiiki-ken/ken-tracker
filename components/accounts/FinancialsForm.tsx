@@ -22,6 +22,7 @@ import {
   BillingModifiers
 } from '@/lib/billingModifiers';
 import { getRatesForDate } from '@/lib/ratesStore';
+import { getPricing, getMakingCharge } from '@/lib/pricingConfig';
 
 interface Props {
   record: DatabaseRowType;
@@ -52,6 +53,7 @@ export default function FinancialsForm({ record, onUpdate }: Props) {
     la4MonthPayment: String(record.la4MonthPayment || ''),
     remittanceStatus: record.remittanceStatus || '',
     modeOfSale: record.modeOfSale || '',
+    category: record.category || '',
   });
 
   // Charge/discount state
@@ -80,6 +82,7 @@ export default function FinancialsForm({ record, onUpdate }: Props) {
       la4MonthPayment: String(record.la4MonthPayment || ''),
       remittanceStatus: record.remittanceStatus || '',
       modeOfSale: record.modeOfSale || '',
+      category: record.category || '',
     });
     setChargeEnabled(mods.charges.length > 0);
     setChargeAmount(mods.charges[0]?.amount?.toString() || '');
@@ -148,6 +151,7 @@ export default function FinancialsForm({ record, onUpdate }: Props) {
     goldRate: parseFloat(form.goldRate) || record.goldRate,
     supplierRate: form.supplierRate,
     mc: form.mc,
+    category: form.category,
     additionalCharges: buildAdditionalCharges(),
     downpayment: form.downpayment,
     amountReceived: form.amountReceived,
@@ -212,6 +216,7 @@ export default function FinancialsForm({ record, onUpdate }: Props) {
         goldRate: parseFloat(form.goldRate) || record.goldRate,
         supplierRate: form.supplierRate,
         mc: form.mc,
+        ...(form.category !== (record.category || '') ? { category: form.category } : {}),
         additionalCharges: encodedCharges,
         liverAdminRemarks: form.additionalFeeRemarks,
         downpayment: form.downpayment,
@@ -266,6 +271,30 @@ export default function FinancialsForm({ record, onUpdate }: Props) {
           </SelectTrigger>
           <SelectContent className="bg-popover border-border">
             {MODE_OF_SALE_OPTIONS.map(o => <SelectItem key={o} value={o} className="text-xs">{o}</SelectItem>)}
+          </SelectContent>
+        </Select>
+      </div>
+
+      <div className="mb-3">
+        <Label className="text-xs text-muted-foreground">Category</Label>
+        <Select
+          value={form.category || undefined}
+          onValueChange={v => {
+            // Picking a category sets its MC from Settings → Pricing (e.g. Gold Special 28),
+            // which re-prices the item for rate + MC customers.
+            const mc = getMakingCharge(v);
+            setForm(f => ({ ...f, category: v, ...(mc > 0 ? { mc: String(mc) } : {}) }));
+          }}
+        >
+          <SelectTrigger className="h-8 text-xs bg-background border-border mt-0.5">
+            <SelectValue placeholder="Select category..." />
+          </SelectTrigger>
+          <SelectContent className="bg-popover border-border">
+            {[...new Set([...getOptions('category', record.category), ...Object.keys(getPricing().makingCharges)])].map(c => (
+              <SelectItem key={c} value={c} className="text-xs">
+                {c}{getMakingCharge(c) > 0 ? ` · MC ${getMakingCharge(c)}` : ''}
+              </SelectItem>
+            ))}
           </SelectContent>
         </Select>
       </div>
