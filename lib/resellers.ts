@@ -102,7 +102,8 @@ function cleanText(s: string): string {
  * "18K GOLD HOOP EARRINGS (SP) - INDAY MICHELLE".
  */
 export function buildDescription(it: ResellerItem): string {
-  let item = cleanText(it.item).replace(/\((SP|EF)\)/g, "").replace(/\s+/g, " ").trim();
+  // "PLAIN LOOP SP" / "HOOP (SP)": the type is added once at the end below.
+  let item = cleanText(it.item).replace(/\((SP|EF)\)/g, "").replace(/\s+(SP|EF)\s*$/, "").replace(/\s+/g, " ").trim();
   if (item && !/\b(18K|21K|22K|24K|GOLD|SILVER)\b/.test(item)) item = `18K GOLD ${item}`;
   if (it.karat !== "18K") item = `${item} (${it.karat})`;
   const cust = cleanText(it.customer);
