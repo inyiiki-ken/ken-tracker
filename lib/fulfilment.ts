@@ -29,9 +29,8 @@ export function fulfilmentStage(status?: string): FulfilmentStage {
   if (EXCLUDED.has(s) || s.startsWith('cancel') || s.startsWith('returned')) return 'excluded';
   if (DELIVERED.has(s) || /\bdelivered\b/.test(s) || /\bpicked up\b/.test(s)) return 'delivered';
   if (DISPATCHED.has(s)) return 'dispatched';
-  // Shipments abroad count as dispatched as soon as they're marked, including
-  // "For Shipment International", even if Settings lists them as a pullout status.
-  if (/\b(shipment|shipping|international)\b/.test(s)) return 'dispatched';
+  // "For International Shipment" / "Shipment International" is still waiting to go out.
+  if (/\b(shipment|shipping|international)\b/.test(s)) return 'pullout';
   if (/\bpull ?out\b/.test(s) || isPulloutStatus(s) || /^for (cod|pick ?up|dispatch|delivery)\b/.test(s)) return 'pullout';
   // Anything about couriers that isn't "for …" (still waiting) is on the way.
   if (/\b(shipped|courier|in transit|out for delivery|dispatched)\b/.test(s)) return 'dispatched';
@@ -72,4 +71,67 @@ export function autoStageDates(
     out.deliveredDate = now;
   }
   return out;
+}
+
+// ─── Boxes ───────────────────────────────────────────────────────────────────
+// Crown sorts orders into physical boxes / containers. The Dispatch work queue,
+// the Statement of Account tabs and the Pullout Report all use these.
+
+export type OrderBox = 'intl' | 'cod' | 'pickup' | 'reseller' | 'dispatched' | 'delivered' | 'cancelled';
+
+export const ORDER_BOXES: { key: OrderBox; label: string }[] = [
+  { key: 'intl', label: 'For International Shipment' },
+  { key: 'cod', label: 'For COD' },
+  { key: 'pickup', label: 'For Pick Up' },
+  { key: 'reseller', label: 'Reseller' },
+  { key: 'dispatched', label: 'Dispatched' },
+  { key: 'delivered', label: 'Delivered' },
+  { key: 'cancelled', label: 'Cancelled / Returned' },
+];
+
+export function boxLabel(box: OrderBox): string {
+  return ORDER_BOXES.find(b => b.key === box)?.label ?? box;
+}
+
+/** The box a status names outright, or null when it doesn't name one (Pending, For Pullout…). */
+export function boxFromStatus(status?: string): OrderBox | null {
+  const s = String(status ?? '').trim().toLowerCase();
+  if (!s) return null;
+  const stage = fulfilmentStage(s);
+  if (stage === 'excluded') return 'cancelled';
+  if (stage === 'delivered') return 'delivered';
+  if (stage === 'dispatched') return 'dispatched';
+  if (/\b(international|shipment|shipping)\b/.test(s)) return 'intl';
+  if (/\bcod\b/.test(s)) return 'cod';
+  if (/\bpick ?up\b/.test(s)) return 'pickup';
+  if (/resell/.test(s)) return 'reseller';
+  return null;
+}
+
+/** The box that matches how the order is paid for / delivered. */
+function boxFromDelivery(r: DatabaseRowType): OrderBox {
+  const where = `${r.locationOfMiner ?? ''} ${r.regions ?? ''} ${r.modeOfPayment ?? ''}`.toLowerCase();
+  if (/international|pinas/.test(where)) return 'intl';
+  const mop = String(r.modeOfPayment ?? '').toLowerCase();
+  if (/pick ?up|meet ?up/.test(mop)) return 'pickup';
+  if (/resell/i.test(`${r.modeOfSale ?? ''}`)) return 'reseller';
+  return 'cod';
+}
+
+/**
+ * Which box an item belongs in. The status decides when it names a box;
+ * otherwise (For Pullout, Pending, Waiting for…, Paid/DP but Item Hold,
+ * Payment for Verification…) the delivery details decide.
+ */
+export function orderBox(r: DatabaseRowType): OrderBox {
+  return boxFromStatus(r.status) ?? boxFromDelivery(r);
+}
+
+/**
+ * Still being sorted out by Admin / Accounts (unpaid, on hold, being verified):
+ * not ready for a box on the Dispatch work queue or the Pullout Report yet.
+ */
+export function isStillWithAdmin(status?: string): boolean {
+  if (boxFromStatus(status)) return false;
+  return fulfilmentStage(status) !== 'pullout';
 }

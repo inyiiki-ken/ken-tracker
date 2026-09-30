@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from 'react';
-import { ClipboardList, Package, Truck, ShoppingBag, Layout, Crown, BookOpen, XCircle, PauseCircle, ShieldCheck, CheckCircle2, AlertTriangle, Gem } from 'lucide-react';
+import { ClipboardList, Package, Truck, ShoppingBag, Layout, Crown, BookOpen, XCircle, CheckCircle2, AlertTriangle, Gem, Plane, Store } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { TabProps, DatabaseRowType } from '@/types';
@@ -12,9 +12,11 @@ import DispatchClientCard from './DispatchClientCard';
 import PulloutReport from './PulloutReport';
 import RemindersDialog from '@/components/RemindersDialog';
 import { computeOverdue } from '@/lib/reminders';
-import { getPulloutStatuses, isPulloutStatus } from '@/lib/appConfig';
 import { parseDateRobust } from '@/lib/calculations';
-import { fulfilmentStage, shipmentDay } from '@/lib/fulfilment';
+import { ORDER_BOXES, OrderBox, orderBox, isStillWithAdmin, shipmentDay } from '@/lib/fulfilment';
+
+/** Boxes of items still waiting to go out. */
+const GOING_OUT = new Set<OrderBox>(['intl', 'cod', 'pickup', 'reseller']);
 
 function agingHours(dateStr?: string): number {
   if (!dateStr) return 0;
@@ -34,38 +36,6 @@ function AgingLabel({ dateStr, warnAfterHours }: { dateStr?: string; warnAfterHo
       {days === 0 ? 'today' : `${days}d`}
     </span>
   );
-}
-
-/** Normalize legacy 'Dispatch' status to 'For Pullout' for filtering/grouping only — never write back */
-/** Trimmed status; every "going out" status (Settings → Pullout Report includes:
- * For Pullout, For COD, For Pick Up…) shares the first queue. */
-const ns = (raw: string) => {
-  const s = String(raw || '').trim();
-  if (s === 'Dispatch' || isPulloutStatus(s)) return 'For Pullout';
-  return s;
-};
-
-/**
- * The work queue an item belongs to. Named holds keep their own queues; every
- * other status is placed by its stage (lib/fulfilment), so customer statuses
- * like "Shipment International" land in Dispatched and "Other Reseller" in
- * Active Orders instead of piling up under one catch-all.
- */
-function queueOf(raw: string): string {
-  // Shipped / delivered wins even when Settings also lists the status as a pullout one.
-  const own = fulfilmentStage(raw);
-  if (own === 'dispatched') return 'Dispatched';
-  if (own === 'delivered') return 'Delivered';
-  const s = ns(raw);
-  if (s === 'For Pullout') return 'For Pullout';
-  if (s === 'Paid/DP but Item Hold' || s === 'Payment for Verification') return s;
-  switch (fulfilmentStage(s)) {
-    case 'pullout': return 'For Pullout';
-    case 'dispatched': return 'Dispatched';
-    case 'delivered': return 'Delivered';
-    case 'excluded': return 'Cancelled';
-    default: return 'Active Orders';
-  }
 }
 
 /** One row in the work-queue list. */
@@ -98,51 +68,55 @@ export default function DispatchBoard({ records, searchQuery, onSearchChange, on
   const [showReport, setShowReport] = useState(false);
   const [showReminders, setShowReminders] = useState(() => computeOverdue(records).length > 0);
 
-  const { forPullout, activeOrders, onHold, paymentVerif, dispatched, delivered, cancelled } = useMemo(() => {
+  // One queue per box (lib/fulfilment ORDER_BOXES), named like Crown's physical
+  // boxes. Items still with Admin / Accounts (Pending, Waiting for…, on hold,
+  // payment being verified) aren't in a box yet, so they stay off this board.
+  const groups = useMemo(() => {
     const isWalkIn = (r: DatabaseRowType) => {
       const mos = (r.modeOfSale || '').toLowerCase().trim();
       return mos === 'in-store' || mos === 'walk-in' || mos === 'walk in';
     };
-    const searched = applySearch(records.filter(r => String(r.status || '').trim() && !isWalkIn(r)), searchQuery);
-    const buckets: Record<string, DatabaseRowType[]> = {
-      'For Pullout': [], 'Active Orders': [], 'Paid/DP but Item Hold': [], 'Payment for Verification': [],
-      'Dispatched': [], 'Delivered': [], 'Cancelled': [],
-    };
-    for (const r of searched) buckets[queueOf(r.status || '')].push(r);
-    return {
-      forPullout: groupByPageDateMiner(buckets['For Pullout']),
-      activeOrders: groupByPageDateMiner(buckets['Active Orders']),
-      onHold: groupByPageDateMiner(buckets['Paid/DP but Item Hold']),
-      paymentVerif: groupByPageDateMiner(buckets['Payment for Verification']),
+    const searched = applySearch(
+      records.filter(r => String(r.status || '').trim() && !isWalkIn(r) && !isStillWithAdmin(r.status)),
+      searchQuery,
+    );
+    const buckets = new Map<OrderBox, DatabaseRowType[]>(ORDER_BOXES.map(b => [b.key, []]));
+    for (const r of searched) buckets.get(orderBox(r))!.push(r);
+    return new Map(ORDER_BOXES.map(b => [
+      b.key,
       // Shipped items are grouped by the day they shipped, not the live date.
-      dispatched: groupByPageDateMiner(buckets['Dispatched'], shipmentDay),
-      delivered: groupByPageDateMiner(buckets['Delivered'], shipmentDay),
-      cancelled: groupByPageDateMiner(buckets['Cancelled']),
-    };
+      b.key === 'dispatched' || b.key === 'delivered'
+        ? groupByPageDateMiner(buckets.get(b.key)!, shipmentDay)
+        : groupByPageDateMiner(buckets.get(b.key)!),
+    ]));
   }, [records, searchQuery]);
 
-  const pulloutCount = useMemo(() => {
-    const set = new Set(getPulloutStatuses().map(x => x.toLowerCase()));
-    return records.filter(r => set.has(String(r.status || '').trim().toLowerCase())).length;
-  }, [records]);
-
-  const pulloutLabel = getPulloutStatuses().filter(x => x !== 'Dispatch').join(' / ') || 'For Pullout';
+  // Items waiting to go out, i.e. what the Pullout Report prints.
+  const pulloutCount = useMemo(
+    () => records.filter(r => String(r.status || '').trim() && !isStillWithAdmin(r.status) && GOING_OUT.has(orderBox(r))).length,
+    [records],
+  );
 
   // Which queue the right-hand pane is showing.
-  const [queue, setQueue] = useState<string>('For Pullout');
+  const [queue, setQueue] = useState<string>('intl');
 
-  const QUEUES: {
-    key: string; label: string; group: Map<string, Map<string, Map<string, DatabaseRowType[]>>>;
-    icon: React.ReactNode; urgent?: boolean; warnAfter?: number;
-  }[] = [
-    { key: 'For Pullout', label: pulloutLabel, group: forPullout, icon: <Package className="h-4 w-4" />, urgent: true },
-    { key: 'Active Orders', label: 'Active Orders (Reseller…)', group: activeOrders, icon: <ShoppingBag className="h-4 w-4" /> },
-    { key: 'Paid/DP but Item Hold', label: 'Paid/DP but On Hold', group: onHold, icon: <PauseCircle className="h-4 w-4" />, warnAfter: 72 },
-    { key: 'Payment for Verification', label: 'Payment for Verification', group: paymentVerif, icon: <ShieldCheck className="h-4 w-4" />, warnAfter: 24 },
-    { key: 'Dispatched', label: 'Dispatched', group: dispatched, icon: <Truck className="h-4 w-4" /> },
-    { key: 'Delivered', label: 'Delivered', group: delivered, icon: <CheckCircle2 className="h-4 w-4" /> },
-    { key: 'Cancelled', label: 'Cancelled / Returned', group: cancelled, icon: <XCircle className="h-4 w-4" /> },
-  ];
+  const BOX_ICONS: Record<OrderBox, React.ReactNode> = {
+    intl: <Plane className="h-4 w-4" />,
+    cod: <Package className="h-4 w-4" />,
+    pickup: <Store className="h-4 w-4" />,
+    reseller: <ShoppingBag className="h-4 w-4" />,
+    dispatched: <Truck className="h-4 w-4" />,
+    delivered: <CheckCircle2 className="h-4 w-4" />,
+    cancelled: <XCircle className="h-4 w-4" />,
+  };
+  const QUEUES = ORDER_BOXES.map(b => ({
+    key: b.key as string,
+    label: b.label,
+    group: groups.get(b.key)!,
+    icon: BOX_ICONS[b.key],
+    urgent: GOING_OUT.has(b.key) && b.key !== 'reseller',
+    warnAfter: undefined as number | undefined,
+  }));
 
   const countItems = (g: Map<string, Map<string, Map<string, DatabaseRowType[]>>>) =>
     Array.from(g.values()).reduce((s, dm) =>
