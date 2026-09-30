@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from 'react';
-import { FileText, ChevronDown, Eye, Edit2, CheckCircle, Info, Layers, Receipt } from 'lucide-react';
+import { FileText, ChevronDown, Eye, Edit2, CheckCircle, Info, Layers, Receipt, Users } from 'lucide-react';
 import SendToZohoDialog from '@/components/zoho/SendToZohoDialog';
 import { isZohoEnabled } from '@/lib/zoho/actions';
 import { Input } from '@/components/ui/input';
@@ -11,6 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Badge } from '@/components/ui/badge';
 import { TabProps, DatabaseRowType } from '@/types';
 import InvoiceModal from '@/components/InvoiceModal';
+import ResellerImportDialog from '@/components/invoicing/ResellerImportDialog';
 import { calcRemainingBalance, calcGroupBalance } from '@/lib/calculations';
 import { formatDate } from '@/lib/formatters';
 import { toast } from 'sonner';
@@ -403,8 +404,9 @@ function CustomerCard({ minerName, invoiceGroups, onUpdate }: CustomerCardProps)
 }
 
 // ─── Main Component ───────────────────────────────────────────────────────────
-export default function InvoicingTab({ records, onUpdate }: TabProps) {
+export default function InvoicingTab({ records, onUpdate, onRefresh }: TabProps) {
   const [search, setSearch] = useState('');
+  const [resellerOpen, setResellerOpen] = useState(false);
 
   const customerMap = useMemo(() => {
     const EXCLUDED = new Set(['Cancelled', 'Returned Item']);
@@ -426,7 +428,13 @@ export default function InvoicingTab({ records, onUpdate }: TabProps) {
         subtitle={`${customerMap.size} customers`}
         searchQuery={search}
         onSearchChange={setSearch}
+        rightContent={
+          <Button variant="outline" size="sm" onClick={() => setResellerOpen(true)}>
+            <Users className="h-4 w-4 mr-1" />Reseller invoice
+          </Button>
+        }
       />
+      <ResellerImportDialog open={resellerOpen} onClose={() => setResellerOpen(false)} onImported={onRefresh} records={records} />
 
       <div className="px-4 pt-4">
         {customerMap.size === 0 ? (

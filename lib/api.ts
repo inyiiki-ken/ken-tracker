@@ -36,6 +36,8 @@ export {
   getDataOptions,
   getPricingConfig,
   savePricingConfig,
+  getResellerConfig,
+  saveResellerConfig,
   getTabConfig,
   saveTabConfig,
   getBusinessConfig,
@@ -91,3 +93,6 @@ export {
   deleteLiveItems,
 } from "./google-sheets/liveSellers";
 export type { LiveItemInput } from "./google-sheets/liveSellers";
+
+export { readResellerPhoto, resellerPhotoReaderReady } from "./google-sheets/resellerPhotos";
+export type { ReadItem } from "./google-sheets/resellerPhotos";
