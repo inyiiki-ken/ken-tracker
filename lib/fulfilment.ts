@@ -29,9 +29,12 @@ export function fulfilmentStage(status?: string): FulfilmentStage {
   if (EXCLUDED.has(s) || s.startsWith('cancel') || s.startsWith('returned')) return 'excluded';
   if (DELIVERED.has(s) || /\bdelivered\b/.test(s) || /\bpicked up\b/.test(s)) return 'delivered';
   if (DISPATCHED.has(s)) return 'dispatched';
-  if (/\bpull ?out\b/.test(s) || isPulloutStatus(s) || /^for (cod|pick ?up|dispatch|delivery|shipment|shipping)\b/.test(s)) return 'pullout';
-  // Anything about shipping/couriers that isn't "for …" (still waiting) is on the way.
-  if (/\b(shipment|shipped|shipping|courier|in transit|out for delivery|dispatched|international)\b/.test(s)) return 'dispatched';
+  // Shipments abroad count as dispatched as soon as they're marked, including
+  // "For Shipment International", even if Settings lists them as a pullout status.
+  if (/\b(shipment|shipping|international)\b/.test(s)) return 'dispatched';
+  if (/\bpull ?out\b/.test(s) || isPulloutStatus(s) || /^for (cod|pick ?up|dispatch|delivery)\b/.test(s)) return 'pullout';
+  // Anything about couriers that isn't "for …" (still waiting) is on the way.
+  if (/\b(shipped|courier|in transit|out for delivery|dispatched)\b/.test(s)) return 'dispatched';
   return 'active';
 }
 

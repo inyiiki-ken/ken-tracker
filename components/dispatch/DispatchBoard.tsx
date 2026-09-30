@@ -52,6 +52,10 @@ const ns = (raw: string) => {
  * Active Orders instead of piling up under one catch-all.
  */
 function queueOf(raw: string): string {
+  // Shipped / delivered wins even when Settings also lists the status as a pullout one.
+  const own = fulfilmentStage(raw);
+  if (own === 'dispatched') return 'Dispatched';
+  if (own === 'delivered') return 'Delivered';
   const s = ns(raw);
   if (s === 'For Pullout') return 'For Pullout';
   if (s === 'Paid/DP but Item Hold' || s === 'Payment for Verification') return s;
