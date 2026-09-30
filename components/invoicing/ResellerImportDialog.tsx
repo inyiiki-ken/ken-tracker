@@ -6,13 +6,13 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Loader2, Plus, Trash2, ImagePlus, ClipboardPaste, AlertTriangle } from "lucide-react";
+import { Loader2, Plus, Trash2, ImagePlus, ClipboardPaste, AlertTriangle, ListChecks } from "lucide-react";
 import { toast } from "sonner";
-import { getResellerConfig, saveResellerConfig, importRows, readResellerPhoto, resellerPhotoReaderReady } from "@/lib/api";
+import { getResellerConfig, saveResellerConfig, importRows, bulkUpdateRecords, readResellerPhoto, resellerPhotoReaderReady } from "@/lib/api";
 import { parseDateRobust } from "@/lib/calculations";
 import { todayISO } from "@/lib/liveSellers";
 import {
-  RESELLER_KARATS, KARAT_CATEGORY, buildDescription, itemAmount, karatOf, knownResellers, newItem, parsePastedItems,
+  RESELLER_KARATS, KARAT_CATEGORY, buildDescription, itemAmount, itemFromRecord, karatOf, knownResellers, newItem, parsePastedItems,
   parseResellerConfig, ratesFor, resellerKey, round2, withRates,
   type ResellerConfig, type ResellerItem, type ResellerKarat, type ResellerRates,
 } from "@/lib/resellers";
@@ -59,6 +59,8 @@ export default function ResellerImportDialog({ open, onClose, onImported, record
   const [items, setItems] = useState<ResellerItem[]>([]);
   const [paste, setPaste] = useState("");
   const [showPaste, setShowPaste] = useState(false);
+  const [showPick, setShowPick] = useState(false);
+  const [picked, setPicked] = useState<Set<number>>(new Set());
   const [photoReady, setPhotoReady] = useState<boolean | null>(null);
   const [reading, setReading] = useState<{ done: number; total: number } | null>(null);
   const [saving, setSaving] = useState(false);
@@ -69,6 +71,8 @@ export default function ResellerImportDialog({ open, onClose, onImported, record
     setItems([]);
     setPaste("");
     setShowPaste(false);
+    setShowPick(false);
+    setPicked(new Set());
     setDate(todayISO());
     getResellerConfig().then(({ config }) => setCfg(parseResellerConfig(config))).catch(() => setCfg({ resellers: {} }));
     resellerPhotoReaderReady().then(setPhotoReady).catch(() => setPhotoReady(false));
@@ -91,6 +95,33 @@ export default function ResellerImportDialog({ open, onClose, onImported, record
     }
     return [...s].sort();
   }, [records, cfg]);
+
+  // Items already in Admin for this day under their end customers' names
+  // (e.g. the reseller's masterlist was uploaded as-is), grouped by upload.
+  const dayGroups = useMemo(() => {
+    const who = resellerKey(reseller);
+    const inList = new Set(items.map((it) => it.record?.id).filter((x): x is number => x != null));
+    const groups = new Map<string, DatabaseRowType[]>();
+    for (const r of records) {
+      const d = parseDateRobust(r.dateOfLive);
+      if (!d || todayISO(d) !== date) continue;
+      if (['Cancelled', 'Returned Item'].includes(String(r.status ?? ''))) continue;
+      if (who && resellerKey(String(r.minerName ?? "")) === who) continue;
+      if (inList.has(r.id)) continue;
+      const g = [r.liverName, r.page].map((x) => String(x ?? "").trim()).filter(Boolean).join(" · ") || "No liver / page";
+      if (!groups.has(g)) groups.set(g, []);
+      groups.get(g)!.push(r);
+    }
+    return [...groups.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+  }, [records, date, reseller, items]);
+
+  const addPicked = () => {
+    const chosen = dayGroups.flatMap(([, rs]) => rs).filter((r) => picked.has(r.id));
+    if (!chosen.length) return toast.error("Tick the items to bill to the reseller.");
+    setItems((xs) => [...xs.filter((x) => x.item.trim() || x.grams.trim()), ...chosen.map(itemFromRecord)]);
+    setPicked(new Set());
+    setShowPick(false);
+  };
 
   const rateNums: Partial<ResellerRates> = {
     "18K": parseFloat(rates["18K"]) || 0,
@@ -180,7 +211,31 @@ export default function ResellerImportDialog({ open, onClose, onImported, record
       }
 
       const stamp = new Date().toISOString();
-      const rows = filled.map((it) => ({
+      const moved = filled.filter((it) => it.record);
+      const fresh = filled.filter((it) => !it.record);
+      let updated = 0;
+      if (moved.length) {
+        const updates = moved.map((it) => {
+          const rec = it.record!;
+          const desc = buildDescription(it);
+          const lines = String(rec.auditTrail ?? "").split("\n").filter(Boolean);
+          lines.push(`${stamp} | Reseller invoice | Billed to ${who} (customer "${rec.minerName ?? ""}", description "${rec.itemDescription ?? ""}" → "${desc}", rate ${rateNums[it.karat]})`);
+          const fields: Partial<DatabaseRowType> = {
+            ...(contact as Partial<DatabaseRowType>),
+            minerName: who,
+            itemDescription: desc,
+            grams: parseFloat(it.grams),
+            category: KARAT_CATEGORY[it.karat],
+            clientRate: rateNums[it.karat],
+            currency: "AED",
+            auditTrail: lines.slice(-20).join("\n"),
+          };
+          return { rowId: rec.id, rowKey: rec.rowKey, fields };
+        });
+        const res = await bulkUpdateRecords({ updates });
+        updated = res.updatedCount;
+      }
+      const rows = fresh.map((it) => ({
         ...contact,
         dateOfLive: date,
         minerName: who,
@@ -193,11 +248,15 @@ export default function ResellerImportDialog({ open, onClose, onImported, record
         liverAdminRemarks: `Reseller import for ${it.customer.trim().toUpperCase()}`,
         rowKey: `R-${Date.now().toString(36)}-${it.key}-${Math.random().toString(36).slice(2, 6)}`.toUpperCase(),
       }));
-      const res = await importRows({ rows, importId: `reseller-${who}-${stamp}` });
+      const res = rows.length
+        ? await importRows({ rows, importId: `reseller-${who}-${stamp}` })
+        : { createdCount: 0, duplicates: 0, alreadyImported: 0, errors: [] as string[] };
       const skipped = res.duplicates + res.alreadyImported;
+      const done = res.createdCount + updated;
       toast.success(
-        `Added ${res.createdCount} item${res.createdCount === 1 ? "" : "s"} to ${who}` +
-          (skipped ? ` (${skipped} already there, skipped)` : "") + "."
+        `Billed ${done} item${done === 1 ? "" : "s"} to ${who}` +
+          (updated && res.createdCount ? ` (${updated} moved from Admin, ${res.createdCount} new)` : "") +
+          (skipped ? `; ${skipped} already there, skipped` : "") + "."
       );
       if (res.errors.length) toast.error(res.errors.slice(0, 3).join("\n"));
       onImported?.();
@@ -261,6 +320,9 @@ export default function ResellerImportDialog({ open, onClose, onImported, record
           <Button type="button" variant="outline" onClick={() => setShowPaste((v) => !v)}>
             <ClipboardPaste className="h-4 w-4 mr-1" />Paste items
           </Button>
+          <Button type="button" variant="outline" onClick={() => setShowPick((v) => !v)}>
+            <ListChecks className="h-4 w-4 mr-1" />Already in Admin{dayGroups.length ? ` (${dayGroups.reduce((n, [, rs]) => n + rs.length, 0)})` : ""}
+          </Button>
           <Button type="button" variant="ghost" onClick={() => setItems((xs) => [...xs, newItem()])}>
             <Plus className="h-4 w-4 mr-1" />Add row
           </Button>
@@ -274,6 +336,46 @@ export default function ResellerImportDialog({ open, onClose, onImported, record
             <Textarea rows={6} value={paste} onChange={(e) => setPaste(e.target.value)}
               placeholder={"One item per line: item - customer - grams - type\nHOOP EARRINGS - INDAY MICHELLE - 1.65 - SP\n18K GOLD FIGARO CHAIN - CARBIZE BELLA - 11.32"} />
             <Button type="button" size="sm" onClick={addPasted}>Add these items</Button>
+          </div>
+        )}
+
+        {showPick && (
+          <div className="rounded-xl border border-border p-3 space-y-3">
+            <p className="text-xs text-muted-foreground">
+              Items already uploaded for {date} under their customers&apos; names. Tick the reseller&apos;s items to move them to her invoice.
+            </p>
+            {dayGroups.length === 0 && <p className="text-sm text-muted-foreground">Nothing uploaded for this day.</p>}
+            {dayGroups.map(([g, rs]) => {
+              const all = rs.every((r) => picked.has(r.id));
+              return (
+                <div key={g}>
+                  <label className="flex items-center gap-2 text-sm font-medium">
+                    <input type="checkbox" checked={all} onChange={() => setPicked((p) => {
+                      const n = new Set(p);
+                      for (const r of rs) { if (all) n.delete(r.id); else n.add(r.id); }
+                      return n;
+                    })} />
+                    {g} <span className="text-muted-foreground font-normal">({rs.length})</span>
+                  </label>
+                  <div className="mt-1 ml-5 space-y-0.5 max-h-48 overflow-y-auto">
+                    {rs.map((r) => (
+                      <label key={r.id} className="flex items-center gap-2 text-xs">
+                        <input type="checkbox" checked={picked.has(r.id)} onChange={() => setPicked((p) => {
+                          const n = new Set(p);
+                          if (n.has(r.id)) n.delete(r.id); else n.add(r.id);
+                          return n;
+                        })} />
+                        <span className="font-medium w-40 truncate">{r.minerName || "—"}</span>
+                        <span className="flex-1 truncate">{r.itemDescription}</span>
+                        <span className="tabular-nums w-14 text-right">{r.grams ?? ""} g</span>
+                        <span className="w-28 truncate text-muted-foreground">{r.category}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+            {dayGroups.length > 0 && <Button type="button" size="sm" onClick={addPicked}>Bill ticked items to {resellerKey(reseller) || "reseller"}</Button>}
           </div>
         )}
 
@@ -297,7 +399,7 @@ export default function ResellerImportDialog({ open, onClose, onImported, record
                     <tr key={it.key} className="align-top">
                       <td className="px-1 py-1">
                         <Input value={it.item} onChange={(e) => setItem(it.key, { item: e.target.value })} className="h-8 text-sm uppercase" />
-                        <div className="text-[11px] text-muted-foreground mt-0.5 truncate" title="Description on the invoice">{buildDescription(it)}</div>
+                        <div className="text-[11px] text-muted-foreground mt-0.5 truncate" title="Description on the invoice">{it.record ? "Moves the Admin row · " : ""}{buildDescription(it)}</div>
                         {it.note && <div className="text-[11px] text-warning mt-0.5"><AlertTriangle className="inline h-3 w-3 mr-0.5" />{it.note}</div>}
                       </td>
                       <td className="px-1 py-1">
@@ -334,7 +436,7 @@ export default function ResellerImportDialog({ open, onClose, onImported, record
           <Button variant="outline" onClick={onClose} disabled={saving}>Cancel</Button>
           <Button onClick={save} disabled={saving || !!reading || !filled.length}>
             {saving && <Loader2 className="h-4 w-4 mr-1 animate-spin" />}
-            Add {filled.length || ""} item{filled.length === 1 ? "" : "s"} to {resellerKey(reseller) || "reseller"}
+            Bill {filled.length || ""} item{filled.length === 1 ? "" : "s"} to {resellerKey(reseller) || "reseller"}
           </Button>
         </DialogFooter>
       </DialogContent>

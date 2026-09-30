@@ -11,6 +11,8 @@
  * the reseller's most recent earlier day.
  */
 
+import type { DatabaseRowType } from "@/types";
+
 export type ResellerKarat = "18K" | "SP" | "EF";
 export const RESELLER_KARATS: ResellerKarat[] = ["18K", "SP", "EF"];
 
@@ -38,6 +40,8 @@ export interface ResellerItem {
   karat: ResellerKarat;
   /** Anything the reader was unsure about, shown next to the row. */
   note?: string;
+  /** Set when the item is an existing Admin row being moved to the reseller. */
+  record?: DatabaseRowType;
 }
 
 let itemSeq = 1;
@@ -113,6 +117,17 @@ export function karatOf(s: string): ResellerKarat | null {
   if (/\bSP\b|SPECIAL/.test(t)) return "SP";
   if (/\b18\s*K\b|\bGOLD NORMAL\b/.test(t)) return "18K";
   return null;
+}
+
+/** An existing Admin row as a reseller item: its customer becomes the end customer. */
+export function itemFromRecord(r: DatabaseRowType): ResellerItem {
+  return newItem({
+    item: String(r.itemDescription ?? ""),
+    customer: String(r.minerName ?? ""),
+    grams: r.grams ? String(r.grams) : "",
+    karat: karatOf(String(r.category ?? "")) ?? karatOf(String(r.itemDescription ?? "")) ?? "18K",
+    record: r,
+  });
 }
 
 const GRAMS_RE = /^\s*(\d+(?:[.,]\d+)?)\s*(?:g|gm|gms|grams?)?\s*$/i;
