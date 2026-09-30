@@ -11,7 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Badge } from '@/components/ui/badge';
 import { TabProps, DatabaseRowType } from '@/types';
 import InvoiceModal from '@/components/InvoiceModal';
-import { calcRemainingBalance, calcGroupBalance } from '@/lib/calculations';
+import { calcRemainingBalance, calcGroupBalance, getPaymentCurrency } from '@/lib/calculations';
 import { formatDate } from '@/lib/formatters';
 import { toast } from 'sonner';
 import TabHeader from '@/components/TabHeader';
@@ -30,12 +30,6 @@ const MOP_OPTIONS = [
   { value: 'Tabby', label: 'Tabby', currency: 'AED' },
   { value: 'Tamara', label: 'Tamara', currency: 'AED' },
 ];
-
-function getMopCurrency(mop: string): string {
-  const m = mop.toLowerCase().trim();
-  if (m.includes('php') || m === 'gcash') return 'PHP';
-  return 'AED';
-}
 
 function buildCustomerInvoices(records: DatabaseRowType[]) {
   const customers = new Map<string, Map<string, DatabaseRowType[]>>();
@@ -65,7 +59,7 @@ function EditDownpaymentDialog({ records, invoiceNum, onUpdate, onClose }: EditD
     Object.fromEntries(records.map(r => [r.id, String(r.downpayment ?? '')]))
   );
   const [mops, setMops] = useState<Record<number, string>>(
-    Object.fromEntries(records.map(r => [r.id, r.modeOfPayment || 'Bank Transfer AED']))
+    Object.fromEntries(records.map(r => [r.id, r.modeOfPayment || '']))
   );
   const [la1, setLa1] = useState<Record<number, string>>(
     Object.fromEntries(records.map(r => [r.id, String(r.la1MonthPayment ?? '')]))
@@ -133,8 +127,9 @@ function EditDownpaymentDialog({ records, invoiceNum, onUpdate, onClose }: EditD
 
         <div className="space-y-4 mt-1 max-h-[60vh] overflow-y-auto pr-1">
           {records.map(r => {
-            const currentMop = mops[r.id] || 'Bank Transfer AED';
-            const dpCurr = getMopCurrency(currentMop);
+            const currentMop = mops[r.id] || '';
+            // Same rule the balance uses; a blank MOP falls back to the item's currency/location.
+            const dpCurr = getPaymentCurrency({ ...r, modeOfPayment: currentMop });
             const isItemLayaway = r.status === 'Layaway' || currentMop === 'Layaway';
             return (
               <div key={r.id} className="rounded-lg border border-border bg-card p-3 space-y-2">
@@ -147,7 +142,7 @@ function EditDownpaymentDialog({ records, invoiceNum, onUpdate, onClose }: EditD
                 <div className="flex items-center gap-2">
                   <span className="text-[10px] text-muted-foreground w-24 shrink-0">Mode of Payment</span>
                   <Select value={currentMop} onValueChange={val => setMops(prev => ({ ...prev, [r.id]: val }))}>
-                    <SelectTrigger className="h-7 text-xs flex-1"><SelectValue /></SelectTrigger>
+                    <SelectTrigger className="h-7 text-xs flex-1"><SelectValue placeholder="Not set" /></SelectTrigger>
                     <SelectContent>
                       {MOP_OPTIONS.map(opt => (
                         <SelectItem key={opt.value} value={opt.value}>

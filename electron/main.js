@@ -12,6 +12,7 @@ const PORT = Number(process.env.MYK_PORT || 34567); // fixed so the Google OAuth
 // redirect URI (http://localhost:34567/api/auth/callback/google) is stable.
 const isDev = !app.isPackaged;
 let serverProc = null;
+let serverExitCode = null; // set once the Next server process exits
 
 /**
  * Load configuration/secrets from a .env file so customers/you can update keys
@@ -141,7 +142,7 @@ function startServer() {
   });
   serverProc.stdout.on("data", (d) => console.log("[next]", String(d).trim()));
   serverProc.stderr.on("data", (d) => console.error("[next]", String(d).trim()));
-  serverProc.on("exit", (code) => console.log("[next] exited", code));
+  serverProc.on("exit", (code) => { serverExitCode = code ?? -1; console.log("[next] exited", code); });
   return true;
 }
 
@@ -187,7 +188,11 @@ function rescueUpdate(reason) {
 function waitForServer(onReady, tries = 0) {
   const req = http.get({ host: "127.0.0.1", port: PORT, path: "/" }, () => onReady());
   req.on("error", () => {
-    if (tries > 80) return rescueUpdate("The app server did not start in time.");
+    // Only self-repair if the server actually died. A slow start (first run,
+    // antivirus scan, slow disk) is not a broken install, so keep waiting while
+    // the process is alive, up to ~3 minutes.
+    if (serverExitCode !== null) return rescueUpdate(`The app server stopped (exit code ${serverExitCode}).`);
+    if (tries > 450) return rescueUpdate("The app server did not start in time.");
     setTimeout(() => waitForServer(onReady, tries + 1), 400);
   });
 }
