@@ -13,6 +13,8 @@ import { getCcIncludeShipping } from '@/lib/pricingConfig';
 import InvoicePrintContent from '@/components/InvoicePrintContent';
 import { parseDateRobust } from '@/lib/calculations';
 import { toast } from 'sonner';
+import { fulfilmentStage, shipmentDay } from '@/lib/fulfilment';
+import { formatDate } from '@/lib/formatters';
 
 interface Props {
   records: DatabaseRowType[];
@@ -20,11 +22,6 @@ interface Props {
 }
 
 const CURRENCIES = ['PHP', 'AED', 'USD'];
-
-// Statuses that mean the item is completed/on-the-way — shown on a SEPARATE invoice
-const DISPATCHED_STATUSES = new Set(['Dispatched', 'Delivered', 'Given to Shop']);
-// Statuses fully excluded from all invoices
-const EXCLUDED_STATUSES = new Set(['Cancelled', 'Returned Item']);
 
 function sortByDate(list: DatabaseRowType[]) {
   return [...list].sort((a, b) => {
@@ -34,7 +31,12 @@ function sortByDate(list: DatabaseRowType[]) {
   });
 }
 
-type InvoiceTab = 'active' | 'dispatched';
+type InvoiceTab = 'active' | 'dispatched' | 'delivered';
+
+/** Shipment days present in a list, newest first. */
+function shipmentDays(list: DatabaseRowType[]): string[] {
+  return [...new Set(list.map(shipmentDay))].sort((a, b) => b.localeCompare(a));
+}
 
 export default function InvoiceModal({ records, onClose }: Props) {
   const printRef = useRef<HTMLDivElement>(null);
@@ -52,24 +54,35 @@ export default function InvoiceModal({ records, onClose }: Props) {
     }
   }, []);
 
-  // ACTIVE: pending/waiting/payment — NOT dispatched/delivered/cancelled
-  const activeRecords = useMemo(() =>
-    sortByDate(records.filter(r => {
-      const s = r.status || '';
-      return !EXCLUDED_STATUSES.has(s) && !DISPATCHED_STATUSES.has(s);
-    })),
-    [records]
-  );
+  // Each item goes to a tab by its status (see lib/fulfilment): Reseller and
+  // other open orders are Active; Shipment International, couriers and
+  // Dispatched are Dispatched; Delivered / Given to Shop / Picked Up are Delivered.
+  const { activeRecords, dispatchedRecords, deliveredRecords } = useMemo(() => {
+    const active: DatabaseRowType[] = [], dispatched: DatabaseRowType[] = [], delivered: DatabaseRowType[] = [];
+    for (const r of records) {
+      const stage = fulfilmentStage(r.status);
+      if (stage === 'excluded') continue;
+      if (stage === 'delivered') delivered.push(r);
+      else if (stage === 'dispatched') dispatched.push(r);
+      else active.push(r);
+    }
+    return { activeRecords: sortByDate(active), dispatchedRecords: sortByDate(dispatched), deliveredRecords: sortByDate(delivered) };
+  }, [records]);
 
-  // DISPATCHED / COMPLETED: items on-the-way or already delivered
-  const dispatchedRecords = useMemo(() =>
-    sortByDate(records.filter(r => DISPATCHED_STATUSES.has(r.status || ''))),
-    [records]
-  );
-
-  const visibleRecords =
+  // Dispatched and Delivered items are invoiced per shipment date, one invoice
+  // per day shipped. 'all' shows every date together.
+  const tabRecords =
     tab === 'active' ? activeRecords :
-    dispatchedRecords;
+    tab === 'dispatched' ? dispatchedRecords :
+    deliveredRecords;
+  const dayOptions = useMemo(() => (tab === 'active' ? [] : shipmentDays(tabRecords)), [tab, tabRecords]);
+  const [shipDay, setShipDay] = useState<string>('');
+  useEffect(() => { setShipDay(dayOptions[0] ?? ''); }, [dayOptions]);
+
+  const visibleRecords = useMemo(() => {
+    if (tab === 'active' || !shipDay || shipDay === 'all') return tabRecords;
+    return tabRecords.filter(r => shipmentDay(r) === shipDay);
+  }, [tab, tabRecords, shipDay]);
 
   const baseRecord = visibleRecords[0] || records[0];
   // Default = the item's own currency; a blank currency means AED (local),
@@ -143,13 +156,14 @@ export default function InvoiceModal({ records, onClose }: Props) {
 
   const tabConfig: { key: InvoiceTab; label: string; count: number }[] = [
     { key: 'active', label: 'Active Orders', count: activeRecords.length },
-    { key: 'dispatched', label: 'Dispatched / Delivered', count: dispatchedRecords.length },
+    { key: 'dispatched', label: 'Dispatched', count: dispatchedRecords.length },
+    { key: 'delivered', label: 'Delivered', count: deliveredRecords.length },
   ];
 
   const handleDownloadCSV = () => {
     if (visibleRecords.length === 0) return;
     const minerName = baseRecord?.minerName || 'Customer';
-    const invoiceNum = baseRecord?.pureWeight || 'N/A';
+    const invoiceNum = baseRecord?.invoiceNumber || baseRecord?.pureWeight || 'N/A';
     const invoiceDate = baseRecord?.dateOfLive || new Date().toISOString().split('T')[0];
     const headers = ['Invoice Number', 'Invoice Date', 'Customer Name', 'Item Name', 'Quantity', 'Rate', 'Amount', 'Currency Code'];
     const rows = visibleRecords.map(r => {
@@ -269,6 +283,28 @@ export default function InvoiceModal({ records, onClose }: Props) {
                 </button>
               ))}
             </div>
+
+            {/* Shipment date — one invoice per day shipped */}
+            {tab !== 'active' && dayOptions.length > 0 && (
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className="text-xs text-muted-foreground font-medium">Shipment date:</span>
+                {[...dayOptions, ...(dayOptions.length > 1 ? ['all'] : [])].map(d => {
+                  const count = d === 'all' ? tabRecords.length : tabRecords.filter(r => shipmentDay(r) === d).length;
+                  return (
+                    <button
+                      key={d}
+                      onClick={() => setShipDay(d)}
+                      className={`px-2 py-0.5 text-xs rounded border transition-colors ${
+                        shipDay === d ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground hover:text-primary'
+                      }`}
+                    >
+                      {d === 'all' ? 'All dates' : d === 'Unknown Date' ? 'No date' : formatDate(d)}
+                      <span className="ml-1 opacity-70">{count}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
           </div>
         </DialogHeader>
 
@@ -278,8 +314,10 @@ export default function InvoiceModal({ records, onClose }: Props) {
             <p className="font-semibold text-warning">No Items</p>
             <p className="text-xs">
               {tab === 'active'
-                ? 'No active/pending items. Check the other tab.'
-                : 'No dispatched or delivered items.'}
+                ? 'No active/pending items. Check the other tabs.'
+                : tab === 'dispatched'
+                ? 'No dispatched items.'
+                : 'No delivered items.'}
             </p>
           </div>
         )}

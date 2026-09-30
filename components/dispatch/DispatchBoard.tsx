@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from 'react';
-import { ClipboardList, Package, Truck, Layout, Crown, BookOpen, XCircle, PauseCircle, ShieldCheck, CheckCircle2, AlertTriangle, Gem } from 'lucide-react';
+import { ClipboardList, Package, Truck, ShoppingBag, Layout, Crown, BookOpen, XCircle, PauseCircle, ShieldCheck, CheckCircle2, AlertTriangle, Gem } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { TabProps, DatabaseRowType } from '@/types';
@@ -14,6 +14,7 @@ import RemindersDialog from '@/components/RemindersDialog';
 import { computeOverdue } from '@/lib/reminders';
 import { getPulloutStatuses, isPulloutStatus } from '@/lib/appConfig';
 import { parseDateRobust } from '@/lib/calculations';
+import { fulfilmentStage, shipmentDay } from '@/lib/fulfilment';
 
 function agingHours(dateStr?: string): number {
   if (!dateStr) return 0;
@@ -43,6 +44,25 @@ const ns = (raw: string) => {
   if (s === 'Dispatch' || isPulloutStatus(s)) return 'For Pullout';
   return s;
 };
+
+/**
+ * The work queue an item belongs to. Named holds keep their own queues; every
+ * other status is placed by its stage (lib/fulfilment), so customer statuses
+ * like "Shipment International" land in Dispatched and "Other Reseller" in
+ * Active Orders instead of piling up under one catch-all.
+ */
+function queueOf(raw: string): string {
+  const s = ns(raw);
+  if (s === 'For Pullout') return 'For Pullout';
+  if (s === 'Paid/DP but Item Hold' || s === 'Payment for Verification') return s;
+  switch (fulfilmentStage(s)) {
+    case 'pullout': return 'For Pullout';
+    case 'dispatched': return 'Dispatched';
+    case 'delivered': return 'Delivered';
+    case 'excluded': return 'Cancelled';
+    default: return 'Active Orders';
+  }
+}
 
 /** One row in the work-queue list. */
 function QueueButton({
@@ -74,22 +94,26 @@ export default function DispatchBoard({ records, searchQuery, onSearchChange, on
   const [showReport, setShowReport] = useState(false);
   const [showReminders, setShowReminders] = useState(() => computeOverdue(records).length > 0);
 
-  const { forPullout, onHold, paymentVerif, dispatched, delivered, cancelled } = useMemo(() => {
-    const filtered = records.filter(r => {
-      const s = ns(r.status || '');
-      if (!['For Pullout', 'Dispatched', 'Delivered', 'Given to Shop', 'Paid/DP but Item Hold', 'Payment for Verification', 'Cancelled'].includes(s)) return false;
+  const { forPullout, activeOrders, onHold, paymentVerif, dispatched, delivered, cancelled } = useMemo(() => {
+    const isWalkIn = (r: DatabaseRowType) => {
       const mos = (r.modeOfSale || '').toLowerCase().trim();
-      if (mos === 'in-store' || mos === 'walk-in' || mos === 'walk in') return false;
-      return true;
-    });
-    const searched = applySearch(filtered, searchQuery);
+      return mos === 'in-store' || mos === 'walk-in' || mos === 'walk in';
+    };
+    const searched = applySearch(records.filter(r => String(r.status || '').trim() && !isWalkIn(r)), searchQuery);
+    const buckets: Record<string, DatabaseRowType[]> = {
+      'For Pullout': [], 'Active Orders': [], 'Paid/DP but Item Hold': [], 'Payment for Verification': [],
+      'Dispatched': [], 'Delivered': [], 'Cancelled': [],
+    };
+    for (const r of searched) buckets[queueOf(r.status || '')].push(r);
     return {
-      forPullout: groupByPageDateMiner(searched.filter(r => ns(r.status || '') === 'For Pullout')),
-      onHold: groupByPageDateMiner(searched.filter(r => ns(r.status || '') === 'Paid/DP but Item Hold')),
-      paymentVerif: groupByPageDateMiner(searched.filter(r => ns(r.status || '') === 'Payment for Verification')),
-      dispatched: groupByPageDateMiner(searched.filter(r => ns(r.status || '') === 'Dispatched')),
-      delivered: groupByPageDateMiner(searched.filter(r => ns(r.status || '') === 'Delivered' || ns(r.status || '') === 'Given to Shop')),
-      cancelled: groupByPageDateMiner(searched.filter(r => ns(r.status || '') === 'Cancelled')),
+      forPullout: groupByPageDateMiner(buckets['For Pullout']),
+      activeOrders: groupByPageDateMiner(buckets['Active Orders']),
+      onHold: groupByPageDateMiner(buckets['Paid/DP but Item Hold']),
+      paymentVerif: groupByPageDateMiner(buckets['Payment for Verification']),
+      // Shipped items are grouped by the day they shipped, not the live date.
+      dispatched: groupByPageDateMiner(buckets['Dispatched'], shipmentDay),
+      delivered: groupByPageDateMiner(buckets['Delivered'], shipmentDay),
+      cancelled: groupByPageDateMiner(buckets['Cancelled']),
     };
   }, [records, searchQuery]);
 
@@ -97,37 +121,6 @@ export default function DispatchBoard({ records, searchQuery, onSearchChange, on
     const set = new Set(getPulloutStatuses().map(x => x.toLowerCase()));
     return records.filter(r => set.has(String(r.status || '').trim().toLowerCase())).length;
   }, [records]);
-
-  /**
-   * Fulfilment statuses that exist in THIS customer's data but aren't one of the
-   * six built-in sections — the "Given to Courier …" values, Picked Up, Reseller.
-   * They previously had nowhere to appear on this board.
-   */
-  const extraQueues = useMemo(() => {
-    const BUILT_IN = new Set(['For Pullout', 'Dispatched', 'Delivered', 'Given to Shop', 'Paid/DP but Item Hold', 'Payment for Verification', 'Cancelled']);
-    const counts = new Map<string, number>();
-    for (const r of records) {
-      const st = ns(r.status || '').trim();
-      if (!st || BUILT_IN.has(st)) continue;
-      const mos = (r.modeOfSale || '').toLowerCase().trim();
-      if (mos === 'in-store' || mos === 'walk-in' || mos === 'walk in') continue;
-      counts.set(st, (counts.get(st) ?? 0) + 1);
-    }
-    return [...counts.entries()]
-      .sort((a, b) => b[1] - a[1])
-      .map(([status, count]) => ({ status, count }));
-  }, [records]);
-
-  const extraGroups = useMemo(() => {
-    const out = new Map<string, ReturnType<typeof groupByPageDateMiner>>();
-    for (const { status } of extraQueues) {
-      out.set(status, groupByPageDateMiner(applySearch(records.filter(r => {
-        const mos = (r.modeOfSale || '').toLowerCase().trim();
-        return ns(r.status || '') === status && !(mos === 'in-store' || mos === 'walk-in' || mos === 'walk in');
-      }), searchQuery)));
-    }
-    return out;
-  }, [records, extraQueues, searchQuery]);
 
   const pulloutLabel = getPulloutStatuses().filter(x => x !== 'Dispatch').join(' / ') || 'For Pullout';
 
@@ -139,11 +132,12 @@ export default function DispatchBoard({ records, searchQuery, onSearchChange, on
     icon: React.ReactNode; urgent?: boolean; warnAfter?: number;
   }[] = [
     { key: 'For Pullout', label: pulloutLabel, group: forPullout, icon: <Package className="h-4 w-4" />, urgent: true },
+    { key: 'Active Orders', label: 'Active Orders (Reseller…)', group: activeOrders, icon: <ShoppingBag className="h-4 w-4" /> },
     { key: 'Paid/DP but Item Hold', label: 'Paid/DP but On Hold', group: onHold, icon: <PauseCircle className="h-4 w-4" />, warnAfter: 72 },
     { key: 'Payment for Verification', label: 'Payment for Verification', group: paymentVerif, icon: <ShieldCheck className="h-4 w-4" />, warnAfter: 24 },
     { key: 'Dispatched', label: 'Dispatched', group: dispatched, icon: <Truck className="h-4 w-4" /> },
     { key: 'Delivered', label: 'Delivered', group: delivered, icon: <CheckCircle2 className="h-4 w-4" /> },
-    { key: 'Cancelled', label: 'Cancelled', group: cancelled, icon: <XCircle className="h-4 w-4" /> },
+    { key: 'Cancelled', label: 'Cancelled / Returned', group: cancelled, icon: <XCircle className="h-4 w-4" /> },
   ];
 
   const countItems = (g: Map<string, Map<string, Map<string, DatabaseRowType[]>>>) =>
@@ -253,43 +247,24 @@ export default function DispatchBoard({ records, searchQuery, onSearchChange, on
             ))}
           </div>
 
-          {extraQueues.length > 0 && (
-            <>
-              <div className="hidden md:block h-px bg-border my-2" />
-              <p className="hidden md:block text-[10px] uppercase tracking-widest text-muted-foreground px-2 py-1.5">
-                Couriers &amp; other
-              </p>
-              <div className="flex md:flex-col gap-1 min-w-max md:min-w-0 mt-1 md:mt-0">
-                {extraQueues.map(({ status, count }) => (
-                  <QueueButton
-                    key={status}
-                    active={queue === status}
-                    label={status}
-                    count={count}
-                    onClick={() => setQueue(status)}
-                  />
-                ))}
-              </div>
-            </>
-          )}
         </div>
 
         {/* Selected queue */}
         <div className="min-w-0">
           {(() => {
-            const built = QUEUES.find(q => q.key === queue);
-            const group = built ? built.group : extraGroups.get(queue);
+            const built = QUEUES.find(q => q.key === queue) ?? QUEUES[0];
+            const group = built.group;
             const total = group ? countItems(group) : 0;
             return (
               <>
                 <div className="flex items-center gap-2 mb-3">
-                  <h2 className="font-cinzel text-sm text-foreground truncate">{built ? built.label : queue}</h2>
+                  <h2 className="font-cinzel text-sm text-foreground truncate">{built.label}</h2>
                   <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
                     {total} item{total !== 1 ? 's' : ''}
                   </span>
                 </div>
                 {group && total > 0 ? (
-                  renderGroupedRecords(group, built?.warnAfter)
+                  renderGroupedRecords(group, built.warnAfter)
                 ) : (
                   <div className="text-center py-16 border border-dashed border-border rounded-xl">
                     <p className="text-sm text-muted-foreground">Nothing in this queue.</p>

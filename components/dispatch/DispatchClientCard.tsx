@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useRef, memo, useCallback, useMemo } from 'react';
+import { autoStageDates } from '@/lib/fulfilment';
 import { FileText, Truck, Upload, History, ChevronDown, AlertTriangle, Pencil, Check, X, Scissors, StickyNote, Plus, Gift, MapPin, Phone } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -369,9 +370,9 @@ function DispatchClientCard({ minerName, records, allRecords, onUpdate, userEmai
   const handleStatusChange = async (record: DatabaseRowType, newStatus: string) => {
     setResetKeys(prev => ({ ...prev, [record.id]: (prev[record.id] || 0) + 1 }));
     if (newStatus === 'Cancelled') { setCancelRecord(record); return; }
-    const fields: Partial<DatabaseRowType> = { status: newStatus };
-    if (newStatus === 'Dispatched') fields.dispatchDate = new Date().toISOString();
-    if (newStatus === 'Delivered' || newStatus === 'Given to Shop') fields.deliveredDate = new Date().toISOString();
+    // Dispatch / Delivered dates fill in on their own for any shipping status
+    // (Shipment International, couriers…), never overwriting one already set.
+    const fields: Partial<DatabaseRowType> = { status: newStatus, ...autoStageDates(getEffective(record), newStatus) };
     if (userEmail) {
       const timestamp = new Date().toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' });
       const newEntry = `[${newStatus} by ${userEmail.split('@')[0]} on ${timestamp}]`;

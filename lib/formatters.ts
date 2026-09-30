@@ -136,14 +136,18 @@ export function groupByLocationSourceLiverDateMiner(
 }
 
 // page -> dateOfLive -> miner -> records (same hierarchy as Admin Pipeline)
-export function groupByPageDateMiner(records: DatabaseRowType[]): Map<string, Map<string, Map<string, DatabaseRowType[]>>> {
+export function groupByPageDateMiner(
+  records: DatabaseRowType[],
+  /** Which date to group by — the live date unless given (e.g. shipment date). */
+  dateOf: (r: DatabaseRowType) => string | undefined = r => r.dateOfLive,
+): Map<string, Map<string, Map<string, DatabaseRowType[]>>> {
   const map = new Map<string, Map<string, Map<string, DatabaseRowType[]>>>();
   for (const record of records) {
     let pageKey = (record.page || 'Other').trim();
     if (pageKey.toUpperCase().includes('MYK')) pageKey = 'MYK';
     else if (pageKey.toUpperCase().includes('EMPIRE')) pageKey = 'Empire Gold By ETG';
     else if (pageKey.toUpperCase().includes('ALIYAH')) pageKey = "Aliyah's Sterling Silver Collection";
-    const date = record.dateOfLive || 'Unknown Date';
+    const date = dateOf(record) || 'Unknown Date';
     const miner = record.minerName?.trim() || 'Unknown Client';
     if (!map.has(pageKey)) map.set(pageKey, new Map());
     const byPage = map.get(pageKey)!;

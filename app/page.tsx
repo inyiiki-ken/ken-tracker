@@ -46,6 +46,7 @@ import DesignSettings from '@/components/settings/DesignSettings';
 import UploadMasterlistFAB from '@/components/UploadMasterlistFAB';
 import PreviewAsUser from '@/components/PreviewAsUser';
 import RateCalculatorWidget from '@/components/RateCalculatorWidget';
+import { autoStageDates } from '@/lib/fulfilment';
 type TabKey = 'admin' | 'dispatch' | 'accounts' | 'bossing' | 'liver' | 'purchasing' | 'invoicing' | 'livesellers' | 'settings' | 'godmode';
 
 function getVisibleTabs(roles: string[]): Set<TabKey> {
@@ -179,6 +180,11 @@ function AppContent() {
       fields = rest;
       if (Object.keys(fields).length === 0) return;
     }
+    // Shipping statuses fill in Dispatch / Delivered dates automatically.
+    if (fields.status !== undefined && fields.status !== before?.status) {
+      const stamps = autoStageDates({ ...before, ...fields }, fields.status);
+      if (Object.keys(stamps).length) fields = { ...fields, ...stamps };
+    }
     const localAudit = fields.status !== undefined && fields.status !== before?.status
       ? trimAudit([...String(before?.auditTrail ?? '').split('\n').filter(Boolean), `${new Date().toISOString()} | ${user?.email || 'unknown'} | Updated: ${Object.keys(fields).join(', ')}`], 20).join('\n')
       : undefined;
@@ -201,6 +207,14 @@ function AppContent() {
   /** Batched update: optimistic local state for every row, then ONE server call. */
   const handleBulkUpdate = useCallback(async (updates: { rowId: number; fields: Partial<DatabaseRowType> }[]) => {
     if (updates.length === 0) return;
+    // Shipping statuses fill in Dispatch / Delivered dates automatically.
+    const now = new Date().toISOString();
+    updates = updates.map(u => {
+      const existing = recordsRef.current.find(r => r.id === u.rowId);
+      if (u.fields.status === undefined || u.fields.status === existing?.status) return u;
+      const stamps = autoStageDates({ ...existing, ...u.fields }, u.fields.status, now);
+      return Object.keys(stamps).length ? { ...u, fields: { ...u.fields, ...stamps } } : u;
+    });
     const byId = new Map(updates.map(u => [u.rowId, u.fields]));
     setRecords(prev => prev.map(r => (byId.has(r.id) ? { ...r, ...byId.get(r.id)! } : r)));
     try {

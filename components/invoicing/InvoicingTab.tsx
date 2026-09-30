@@ -15,6 +15,7 @@ import { calcRemainingBalance, calcGroupBalance } from '@/lib/calculations';
 import { formatDate } from '@/lib/formatters';
 import { toast } from 'sonner';
 import TabHeader from '@/components/TabHeader';
+import { fulfilmentStage } from '@/lib/fulfilment';
 
 const MOP_OPTIONS = [
   { value: 'Bank Transfer AED', label: 'Bank Transfer AED', currency: 'AED' },
@@ -407,8 +408,7 @@ export default function InvoicingTab({ records, onUpdate }: TabProps) {
   const [search, setSearch] = useState('');
 
   const customerMap = useMemo(() => {
-    const EXCLUDED = new Set(['Cancelled', 'Returned Item']);
-    const nonCancelled = records.filter(r => !EXCLUDED.has(r.status || ''));
+    const nonCancelled = records.filter(r => fulfilmentStage(r.status) !== 'excluded');
     const filtered = search.trim()
       ? nonCancelled.filter(r =>
           (r.minerName || '').toLowerCase().includes(search.toLowerCase()) ||
