@@ -449,7 +449,7 @@ function AppContent() {
         <PurchasingTab userEmail={user.email} />
       )}
       {activeTab === 'invoicing' && (
-        <InvoicingTab records={records} searchQuery={searchQueries.invoicing} onSearchChange={handleSearchChange} onUpdate={handleUpdate} />
+        <InvoicingTab records={records} searchQuery={searchQueries.invoicing} onSearchChange={handleSearchChange} onUpdate={handleUpdate} onRefresh={() => fetchData(true)} />
       )}
       {activeTab === 'livesellers' && (devSeesAll || !isTabHidden('livesellers')) && (
         <LiveSellersTab records={records} onRecordsChanged={() => fetchData(true)} canEditSettings={effectiveRoles.includes('super_admin') || effectiveRoles.includes('admin')} />

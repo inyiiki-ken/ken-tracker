@@ -1029,6 +1029,19 @@ export async function savePricingConfig(params: { config: string }): Promise<{ s
   return { success: true };
 }
 
+// ---------- Reseller rates (Uploads marker) ----------
+// Per-reseller daily rates per type (18K / SP / EF), see lib/resellers.ts.
+
+export async function getResellerConfig(_params?: Record<string, never>): Promise<{ config: string }> {
+  return { config: await readConfig("__RESELLER_CONFIG__") };
+}
+
+export async function saveResellerConfig(params: { config: string }): Promise<{ success: boolean }> {
+  await requireRole(["admin", "super_admin"]);
+  await writeConfig("__RESELLER_CONFIG__", params.config);
+  return { success: true };
+}
+
 // ---------- Tab config (Uploads marker) ----------
 // Per-tenant tab visibility / labels / order, stored as a JSON blob.
 
