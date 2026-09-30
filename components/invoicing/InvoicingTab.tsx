@@ -11,8 +11,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Badge } from '@/components/ui/badge';
 import { TabProps, DatabaseRowType } from '@/types';
 import InvoiceModal from '@/components/InvoiceModal';
-import { calcRemainingBalance, calcGroupBalance, getPaymentCurrency } from '@/lib/calculations';
+import { calcRemainingBalance, calcGroupBalance } from '@/lib/calculations';
 import { formatDate } from '@/lib/formatters';
+import { getPaymentCurrency } from '@/lib/calculations';
 import { toast } from 'sonner';
 import TabHeader from '@/components/TabHeader';
 
