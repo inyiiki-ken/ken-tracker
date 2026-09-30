@@ -45,7 +45,7 @@ const SCHEMA = {
 
 const PROMPT = `This photo is from a jewellery reseller. It shows gold items with tags or a written list. Each item carries the name of the reseller's own customer, a description of the piece, and its weight in grams.
 
-List every item you can see, once each. For each one give:
+List every item you can see, once each and one row per piece. Never combine two pieces into one row, even when they belong to the same customer. For each one give:
 - item: what the piece is, in upper case (e.g. "18K GOLD HOOP EARRINGS", "18K GOLD BRACELET S7.5"). Keep sizes like S7.5 or S18. Leave out the customer's name and any price.
 - customer: the customer's name as written. Handwriting is often unclear: give your best reading and say so in note.
 - grams: the weight. Weights are small decimals such as 1.62 or 11.32; a price in $ or AED is not a weight.
