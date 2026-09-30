@@ -265,11 +265,30 @@ function fixCodes(codes: string[]): string[] {
   const prefix = [...prefixCount.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || "";
   const width = Math.max(2, ...parsed.map((p) => (Number.isFinite(p.num) ? String(p.num).length : 0)));
   const start = Number.isFinite(parsed[0]?.num) ? parsed[0].num : 1;
-  const sequential = parsed.filter((p, i) => p.num === start + i).length >= parsed.length * 0.6;
+  // Keep every number that reads in order, so a row the OCR missed shows up as
+  // a gap (AMB13 → AMB15) instead of every later code shifting down by one.
+  // Only an unreadable or out-of-order number is replaced by previous + 1.
+  let prev = start - 1;
   return parsed.map((p, i) => {
-    const n = sequential ? start + i : p.num;
+    const nextNum = parsed.slice(i + 1).find((q) => Number.isFinite(q.num))?.num;
+    const fits = Number.isFinite(p.num) && p.num > prev && p.num - prev <= 5 && (nextNum === undefined || p.num < nextNum || nextNum <= prev);
+    const n = fits ? p.num : prev + 1;
+    prev = n;
     return prefix && Number.isFinite(n) ? prefix + String(n).padStart(width, "0") : p.raw;
   });
+}
+
+/** Codes missing from a numbered run, e.g. ["AMB14"] for AMB01…AMB13, AMB15…AMB17. */
+export function missingCodes(codes: string[]): string[] {
+  const nums = codes.map((c) => c.match(/^([A-Z]+)(\d+)$/)).filter((m): m is RegExpMatchArray => !!m);
+  if (nums.length < 2) return [];
+  const prefix = nums[0][1];
+  const width = nums[0][2].length;
+  const have = new Set(nums.filter((m) => m[1] === prefix).map((m) => parseInt(m[2], 10)));
+  const lo = Math.min(...have), hi = Math.max(...have);
+  const out: string[] = [];
+  for (let n = lo; n <= hi; n++) if (!have.has(n)) out.push(prefix + String(n).padStart(width, "0"));
+  return out;
 }
 
 export async function parseMasterlistImage(file: File, mapping?: MasterlistMapping): Promise<PhotoParseResult> {
@@ -294,12 +313,31 @@ export async function parseMasterlistImage(file: File, mapping?: MasterlistMappi
     nameDescBorder = between.length ? between[0] : (nameW.x1 + descW.x0) / 2;
   }
 
+  // Numbers start at the WT/GRAMS column. Splitting by position (not at the
+  // first number) keeps descriptions that start or end with a digit, such as
+  // "2 TONE DIACUT LOOP", whole; the old split cut them off and the row was
+  // then dropped for having no description.
+  const gramsHead = header.words.find((w) => /GRAM|WT/.test(clean(w.text)));
+  let numBorder = NaN;
+  if (gramsHead) {
+    const gc = (gramsHead.x0 + gramsHead.x1) / 2;
+    const left = colLines.filter((x) => x < gc && x > (descW ? descW.x1 : 0));
+    numBorder = left.length ? left[left.length - 1] : gramsHead.x0 - (gramsHead.x1 - gramsHead.x0) * 0.5;
+  }
+
   type Row = { code: string; name: string; desc: string; nums: number[] };
   const raw: Row[] = [];
   for (const l of lines.slice(headerIdx + 1)) {
     const words = l.words.filter((w) => !/^[|~_\-—'"()]+$/.test(w.text));
     if (words.length < 3) continue;
-    const firstNum = words.findIndex((w, i) => i > 0 && isNumeric(w.text));
+    let firstNum = Number.isFinite(numBorder)
+      ? words.findIndex((w, i) => i > 0 && (w.x0 + w.x1) / 2 >= numBorder)
+      : -1;
+    if (firstNum < 0) {
+      // No grams column found: the numbers are the run of numeric words at the end.
+      firstNum = words.length;
+      while (firstNum > 1 && isNumeric(words[firstNum - 1].text)) firstNum--;
+    }
     if (firstNum < 2) continue;
     const textWords = words.slice(1, firstNum);
     const nums = words.slice(firstNum).filter((w) => isNumeric(w.text)).map((w) => readNumber(w.text)).filter(Number.isFinite);
@@ -335,18 +373,43 @@ export async function parseMasterlistImage(file: File, mapping?: MasterlistMappi
     raw.forEach((r) => r.nums[1] > 0 && counts.set(r.nums[1], (counts.get(r.nums[1]) || 0) + 1));
     return [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? 0;
   })();
+  // MC takes only a few values per sheet (e.g. 25 and 30). A value seen on one
+  // row only, within 2 of a common one, is a misread ("26" for 25).
+  const mcCount = new Map<number, number>();
+  raw.forEach((r) => r.nums.length >= 4 && r.nums[2] > 0 && mcCount.set(r.nums[2], (mcCount.get(r.nums[2]) || 0) + 1));
+  const commonMcs = [...mcCount.entries()].filter(([, c]) => c >= 2).map(([v]) => v);
+  const snapMc = (mc: number) => {
+    if (!mc || (mcCount.get(mc) || 0) >= 2 || !commonMcs.length) return mc;
+    const near = commonMcs.reduce((a, b) => (Math.abs(b - mc) < Math.abs(a - mc) ? b : a));
+    return Math.abs(near - mc) <= 2 ? near : mc;
+  };
+  const corrected: string[] = [];
+  const oneDigitApart = (a: number, b: number) => {
+    const x = a.toFixed(2), y = b.toFixed(2);
+    return x.length === y.length && [...x].filter((c, k) => c !== y[k]).length === 1;
+  };
   const fixed = raw.map((r, i) => {
     let [grams, rate, mc, amount] = r.nums;
     if (r.nums.length === 3) { amount = r.nums[2]; mc = 0; }
     // The rate is the same on every row of one sheet — trust the common value.
     if (rateMode && Math.abs(rate - rateMode) > 0.01) rate = rateMode;
-    const per = rate + (mc || 0);
+    mc = snapMc(mc || 0);
+    const per = rate + mc;
     const ok = (g: number) => per > 0 && amount > 0 && Math.abs(g * per - amount) <= Math.max(0.6, amount * 0.002);
+    // Grams and amount disagree: one of them was misread, and either can be.
+    // Keep the grams as read and flag the row; replacing grams with
+    // amount ÷ rate silently priced 3.69 g as 3.93 g when the amount was misread.
+    // Exception: when amount ÷ rate differs from the grams in ONE digit only
+    // (1.66 vs 1.65, 1.42 vs 1.12) the grams digit is the likely slip, so use it
+    // and say so.
     if (!ok(grams) && per > 0 && amount > 0) {
       const g2 = Math.round((amount / per) * 100) / 100;
-      if (ok(g2)) grams = g2; else flagged.push(i);
+      if (ok(g2) && oneDigitApart(grams, g2)) {
+        corrected.push(`${codes[i]} ${grams} → ${g2} g`);
+        grams = g2;
+      } else flagged.push(i);
     }
-    return { code: codes[i], name: r.name, desc: r.desc, grams, rate, mc: mc || 0, amount };
+    return { code: codes[i], name: r.name, desc: r.desc, grams, rate, mc, amount };
   });
 
   const liveDate = findDate(text.toUpperCase());
@@ -396,7 +459,20 @@ export async function parseMasterlistImage(file: File, mapping?: MasterlistMappi
 
   const parsed = parseMasterlistGrid(grid, m);
   if (!title) warnings.push("Couldn't read the liver name — set it below.");
-  if (flagged.length) warnings.push(`${flagged.length} row(s) don't add up (grams × (rate + MC) ≠ amount) — check the highlighted rows.`);
+  // Never lose a row silently: say which rows were read but not imported, and
+  // which codes in the numbered run never showed up.
+  for (const sk of parsed.skipped) warnings.push(`Not imported: ${sk.replace(/^row \d+ \((.+?)\)/, "$1")}. Add it by hand.`);
+  const gaps = missingCodes(codes);
+  if (gaps.length) warnings.push(`${gaps.join(", ")} ${gaps.length === 1 ? "is" : "are"} missing from the photo reading. Add ${gaps.length === 1 ? "it" : "them"} by hand.`);
+  if (corrected.length) warnings.push(`Weight corrected from the amount column: ${corrected.join("; ")}. Check against the photo.`);
+  if (flagged.length) {
+    const detail = flagged.map((i) => {
+      const r = fixed[i];
+      const g2 = Math.round((r.amount / (r.rate + r.mc)) * 100) / 100;
+      return `${r.code} ${r.grams} g (amount reads ${r.amount}, which would be ${g2} g)`;
+    });
+    warnings.push(`${flagged.length} row(s) don't add up (grams × (rate + MC) ≠ amount), check the weight against the photo: ${detail.join("; ")}.`);
+  }
 
   const liver = parsed.liverName !== "Unknown" ? parsed.liverName : title;
   const rows = parsed.rows.map((r) => ({ ...r, liverName: r.liverName === "Unknown" ? liver : r.liverName }));

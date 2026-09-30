@@ -3,6 +3,7 @@ import {
   resolveMasterlistMapping,
   cleanTitle,
   categoryForMc,
+  suggestMcCategories,
   type MasterlistMapping,
   type ResolvedMasterlistMapping,
 } from "./masterlistMapping";
@@ -177,6 +178,24 @@ function parseSheetGrid(data: unknown[][], m: ResolvedMasterlistMapping, raw?: u
   const skipped: string[] = [];
   let lastMiner = "";
 
+  // MC → category. The customer's saved map wins. An MC it doesn't list falls
+  // back to "SP" / "EF" written in the item, then to the MC tiers in this file
+  // (lowest = Gold Normal, next = Special Price, next = Special Price EF), so a
+  // sheet with MC 25 and 30 doesn't put every item under Gold Normal.
+  const fileMcs: number[] = [];
+  for (let i = m.dataStartIndex; i < data.length; i++) {
+    const v = data[i] ? numAt(raw, data[i], i, m.col.mc) : 0;
+    if (v > 0) fileMcs.push(v);
+  }
+  const mcTiers = suggestMcCategories(fileMcs);
+  const catFor = (mc: number, desc: string) => {
+    const saved = categoryForMc(m.mcCategories, mc);
+    if (saved) return saved;
+    if (/\(?\bEF\b\)?\s*$/.test(desc)) return "Special Price EF";
+    if (/\(?\bSP\b\)?\s*$/.test(desc)) return "Special Price";
+    return categoryForMc(mcTiers, mc);
+  };
+
   for (let i = m.dataStartIndex; i < data.length; i++) {
     const row = data[i];
     if (!row) continue;
@@ -209,7 +228,7 @@ function parseSheetGrid(data: unknown[][], m: ResolvedMasterlistMapping, raw?: u
     const rowGold = numAt(raw, row, i, m.col.goldRate);
     let goldRate = up(rowGold > 0 ? rowGold : fallbackGold);
     let mc = mcCell;
-    let category = cell(row, m.col.category) || categoryForMc(m.mcCategories, mcCell) || m.defaultCategory;
+    let category = cell(row, m.col.category) || catFor(mcCell, itemDescription) || m.defaultCategory;
     const warnings: string[] = [];
 
     let clientRate: number;
@@ -223,7 +242,7 @@ function parseSheetGrid(data: unknown[][], m: ResolvedMasterlistMapping, raw?: u
           // MC blank: work it out from the file's AMOUNT.
           const derived = Math.round((fileAmount / gramsN - base) * 100) / 100;
           if (derived >= 0) mc = Math.round(derived);
-          category = category || categoryForMc(m.mcCategories, mc) || m.defaultCategory;
+          category = category || catFor(mc, itemDescription) || m.defaultCategory;
         }
         if (!mc) mc = getMakingCharge(category);
         clientRate = base + mc;
