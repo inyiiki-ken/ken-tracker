@@ -31,7 +31,7 @@ function sortByDate(list: DatabaseRowType[]) {
   });
 }
 
-type InvoiceTab = 'active' | 'dispatched' | 'delivered';
+type InvoiceTab = 'active' | 'pullout' | 'dispatched' | 'delivered';
 
 /** Shipment days present in a list, newest first. */
 function shipmentDays(list: DatabaseRowType[]): string[] {
@@ -41,7 +41,6 @@ function shipmentDays(list: DatabaseRowType[]): string[] {
 export default function InvoiceModal({ records, onClose }: Props) {
   const printRef = useRef<HTMLDivElement>(null);
   const [isCopying, setIsCopying] = useState(false);
-  const [tab, setTab] = useState<InvoiceTab>('active');
   const [ccIncludeShipping, setCcIncludeShipping] = useState(getCcIncludeShipping());
 
   useEffect(() => {
@@ -55,34 +54,46 @@ export default function InvoiceModal({ records, onClose }: Props) {
   }, []);
 
   // Each item goes to a tab by its status (see lib/fulfilment): Reseller and
-  // other open orders are Active; Shipment International, couriers and
-  // Dispatched are Dispatched; Delivered / Given to Shop / Picked Up are Delivered.
-  const { activeRecords, dispatchedRecords, deliveredRecords } = useMemo(() => {
-    const active: DatabaseRowType[] = [], dispatched: DatabaseRowType[] = [], delivered: DatabaseRowType[] = [];
+  // other open orders are Active; For Pullout / For COD / For Pick Up are
+  // For Pullout; Shipment International, couriers and Dispatched are
+  // Dispatched; Delivered / Given to Shop / Picked Up are Delivered.
+  const { activeRecords, pulloutRecords, dispatchedRecords, deliveredRecords } = useMemo(() => {
+    const active: DatabaseRowType[] = [], pullout: DatabaseRowType[] = [], dispatched: DatabaseRowType[] = [], delivered: DatabaseRowType[] = [];
     for (const r of records) {
       const stage = fulfilmentStage(r.status);
       if (stage === 'excluded') continue;
       if (stage === 'delivered') delivered.push(r);
       else if (stage === 'dispatched') dispatched.push(r);
+      else if (stage === 'pullout') pullout.push(r);
       else active.push(r);
     }
-    return { activeRecords: sortByDate(active), dispatchedRecords: sortByDate(dispatched), deliveredRecords: sortByDate(delivered) };
+    return {
+      activeRecords: sortByDate(active), pulloutRecords: sortByDate(pullout),
+      dispatchedRecords: sortByDate(dispatched), deliveredRecords: sortByDate(delivered),
+    };
   }, [records]);
+
+  // Open on the first tab that has items, so a card's Invoice button lands on its own items.
+  const [tab, setTab] = useState<InvoiceTab>(() =>
+    activeRecords.length ? 'active' : pulloutRecords.length ? 'pullout' : dispatchedRecords.length ? 'dispatched' : deliveredRecords.length ? 'delivered' : 'active'
+  );
 
   // Dispatched and Delivered items are invoiced per shipment date, one invoice
   // per day shipped. 'all' shows every date together.
   const tabRecords =
     tab === 'active' ? activeRecords :
+    tab === 'pullout' ? pulloutRecords :
     tab === 'dispatched' ? dispatchedRecords :
     deliveredRecords;
-  const dayOptions = useMemo(() => (tab === 'active' ? [] : shipmentDays(tabRecords)), [tab, tabRecords]);
+  const byShipDate = tab === 'dispatched' || tab === 'delivered';
+  const dayOptions = useMemo(() => (byShipDate ? shipmentDays(tabRecords) : []), [byShipDate, tabRecords]);
   const [shipDay, setShipDay] = useState<string>('');
   useEffect(() => { setShipDay(dayOptions[0] ?? ''); }, [dayOptions]);
 
   const visibleRecords = useMemo(() => {
-    if (tab === 'active' || !shipDay || shipDay === 'all') return tabRecords;
+    if (!byShipDate || !shipDay || shipDay === 'all') return tabRecords;
     return tabRecords.filter(r => shipmentDay(r) === shipDay);
-  }, [tab, tabRecords, shipDay]);
+  }, [byShipDate, tabRecords, shipDay]);
 
   const baseRecord = visibleRecords[0] || records[0];
   // Default = the item's own currency; a blank currency means AED (local),
@@ -156,6 +167,7 @@ export default function InvoiceModal({ records, onClose }: Props) {
 
   const tabConfig: { key: InvoiceTab; label: string; count: number }[] = [
     { key: 'active', label: 'Active Orders', count: activeRecords.length },
+    { key: 'pullout', label: 'For Pullout', count: pulloutRecords.length },
     { key: 'dispatched', label: 'Dispatched', count: dispatchedRecords.length },
     { key: 'delivered', label: 'Delivered', count: deliveredRecords.length },
   ];
@@ -285,7 +297,7 @@ export default function InvoiceModal({ records, onClose }: Props) {
             </div>
 
             {/* Shipment date — one invoice per day shipped */}
-            {tab !== 'active' && dayOptions.length > 0 && (
+            {byShipDate && dayOptions.length > 0 && (
               <div className="flex items-center gap-1.5 flex-wrap">
                 <span className="text-xs text-muted-foreground font-medium">Shipment date:</span>
                 {[...dayOptions, ...(dayOptions.length > 1 ? ['all'] : [])].map(d => {
@@ -315,6 +327,8 @@ export default function InvoiceModal({ records, onClose }: Props) {
             <p className="text-xs">
               {tab === 'active'
                 ? 'No active/pending items. Check the other tabs.'
+                : tab === 'pullout'
+                ? 'No items waiting for pullout.'
                 : tab === 'dispatched'
                 ? 'No dispatched items.'
                 : 'No delivered items.'}
