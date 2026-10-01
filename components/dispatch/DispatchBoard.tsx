@@ -197,7 +197,8 @@ export default function DispatchBoard({ records, searchQuery, onSearchChange, on
     return <Layout className="h-4 w-4 text-muted-foreground" />;
   };
 
-  const renderGroupedRecords = (groupedData: Map<string, Map<string, Map<string, DatabaseRowType[]>>>, agingWarnHours = 0) => {
+  // datePrefix says what the header date is: when it shipped, or the customer's latest order.
+  const renderGroupedRecords = (groupedData: Map<string, Map<string, Map<string, DatabaseRowType[]>>>, agingWarnHours = 0, datePrefix = 'Latest order:') => {
     if (groupedData.size === 0) {
       return <p className="text-xs text-muted-foreground px-1 py-2">No items in this category.</p>;
     }
@@ -218,7 +219,7 @@ export default function DispatchBoard({ records, searchQuery, onSearchChange, on
               const isUrgent = agingWarnHours > 0 && maxAge >= agingWarnHours;
               const agingEl = agingWarnHours > 0 ? <AgingLabel dateStr={allItems[0]?.dateOfLive} warnAfterHours={agingWarnHours} /> : null;
               return (
-                <CollapsibleGroup key={date} label={formatDate(date)} colorClass={isUrgent ? 'text-destructive' : 'text-muted-foreground'} lineClass={isUrgent ? 'bg-destructive/30' : 'bg-border/40'} indent defaultOpen={false} labelSuffix={agingEl}>
+                <CollapsibleGroup key={date} label={date === 'Unknown Date' ? date : `${datePrefix} ${formatDate(date)}`} colorClass={isUrgent ? 'text-destructive' : 'text-muted-foreground'} lineClass={isUrgent ? 'bg-destructive/30' : 'bg-border/40'} indent defaultOpen={false} labelSuffix={agingEl}>
                   {Array.from(minerMap.entries()).map(([miner, items]) => (
                     <DispatchClientCard
                       key={miner}
@@ -322,7 +323,7 @@ export default function DispatchBoard({ records, searchQuery, onSearchChange, on
                   })()}
                 </div>
                 {group && total > 0 ? (
-                  renderGroupedRecords(group, built.warnAfter)
+                  renderGroupedRecords(group, built.warnAfter, built.key === 'dispatched' || built.key === 'delivered' ? 'Shipped' : 'Latest order:')
                 ) : (
                   <div className="text-center py-16 border border-dashed border-border rounded-xl">
                     <p className="text-sm text-muted-foreground">Nothing in this queue.</p>
