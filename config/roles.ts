@@ -88,6 +88,14 @@
     return set.has(email.toLowerCase());
   }
 
+  /**
+   * A user whose ONLY role is liver. The server sends such a user just her own
+   * items (lib/google-sheets/actions.ts getRecords); any other role sees all.
+   */
+  export function isLiverOnly(roles: string[]): boolean {
+    return roles.length > 0 && roles.every(r => r === 'liver');
+  }
+
   export function getUserRole(
     email: string,
     dynamicRoles: DynamicRole[] | null = null,

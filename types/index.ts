@@ -49,6 +49,12 @@ export type DatabaseRowType = {
   zohoContactId?: string;
   /** Why the item was cancelled (free note, typed by Dispatch when cancelling). */
   cancelReason?: string;
+  /**
+   * Not a sheet column. Sent only to liver-only users (who get just their own
+   * rows): the customer's newest purchase across every liver, ISO, so her
+   * reminders count from the same day Dispatch's do.
+   */
+  customerLastPurchaseAt?: string;
   id: number;
 };
 

@@ -24,7 +24,7 @@ import { getMyContext } from '@/lib/tenancy';
 import type { MyContext } from '@/lib/tenancy-types';
 import GodModePanel from '@/components/godmode/GodModePanel';
 import { CompactModeProvider, useCompactMode } from '@/lib/compactMode';
-import { getUserRole, EMAIL_TO_LIVER_NAME } from '@/config/roles';
+import { getUserRole, isLiverOnly, EMAIL_TO_LIVER_NAME } from '@/config/roles';
 import { applyRatesConfig } from '@/lib/ratesStore';
 import { computeClientMilestones } from '@/lib/milestones';
 import { DatabaseRowType } from '@/types';
@@ -48,6 +48,9 @@ import PreviewAsUser from '@/components/PreviewAsUser';
 import RateCalculatorWidget from '@/components/RateCalculatorWidget';
 import { autoStageDates } from '@/lib/fulfilment';
 type TabKey = 'admin' | 'dispatch' | 'accounts' | 'bossing' | 'liver' | 'purchasing' | 'invoicing' | 'livesellers' | 'settings' | 'godmode';
+
+/** The tab a user lands on: the first of these they can see. */
+const DEFAULT_TAB_PRIORITY: TabKey[] = ['admin', 'dispatch', 'accounts', 'bossing', 'liver', 'purchasing', 'invoicing', 'livesellers'];
 
 function getVisibleTabs(roles: string[]): Set<TabKey> {
   if (roles.includes('super_admin')) {
@@ -80,7 +83,6 @@ function AppContent() {
   const [searchQueries, setSearchQueries] = useState<Record<TabKey, string>>({
     admin: '', dispatch: '', accounts: '', bossing: '', liver: '', purchasing: '', invoicing: '', livesellers: '', settings: '', godmode: '',
   });
-  const [roles, setRoles] = useState<string[]>([]);
   const [dynamicRoles, setDynamicRoles] = useState<any[] | null>(null);
   const [previewEmail, setPreviewEmail] = useState<string | null>(null);
   const [devContext, setDevContext] = useState<MyContext | null>(null);
@@ -92,6 +94,16 @@ function AppContent() {
     if (!user) return;
     getMyRoles({}).then(setServerRoles).catch(() => {});
   }, [user]);
+  // The signed-in user's own roles, worked out during render (not in an effect)
+  // so the first frame never shows a tab they can't open. If the Roles tab
+  // couldn't be read, fall back to the roles the server gave them.
+  const roles = useMemo<string[]>(
+    () => (dynamicRoles ? getUserRole(user?.email || '', dynamicRoles) : serverRoles),
+    [user?.email, dynamicRoles, serverRoles],
+  );
+  // The tab actually on screen (set during render, below). Kept in a ref so the
+  // search box and the tab sync below always use the tab the user can see.
+  const shownTabRef = useRef<TabKey | null>(null);
   // Bumped after the per-tenant tab config loads, to re-render the nav with the
   // customer's labels/visibility.
   const [tabConfigVersion, setTabConfigVersion] = useState(0);
@@ -159,15 +171,13 @@ function AppContent() {
       .finally(() => setDevReady(true));
   }, [user, fetchData]);
 
+  // Move the selected tab only when the user can't see it (first load, a role
+  // or tab switched off, preview). A refresh no longer throws anyone back to
+  // their default tab.
   useEffect(() => {
-    if (!user?.email) return;
-    const userRoles = getUserRole(user.email, dynamicRoles);
-    setRoles(userRoles);
-    const visible = getVisibleTabs(userRoles);
-    const priority: TabKey[] = ['admin', 'dispatch', 'accounts', 'bossing', 'liver', 'purchasing', 'invoicing', 'livesellers'];
-    const defaultTab = priority.find(t => visible.has(t) && !isTabHidden(t));
-    if (defaultTab) setActiveTab(defaultTab);
-  }, [user?.email, dynamicRoles]);
+    const shown = shownTabRef.current;
+    if (shown && shown !== activeTab) setActiveTab(shown);
+  });
 
   const handleUpdate = useCallback(async (rowId: number, fields: Partial<DatabaseRowType>) => {
     // Mirror the server's change-history line locally, so reminders count a new
@@ -200,7 +210,7 @@ function AppContent() {
       });
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Update failed');
-      fetchData();
+      fetchData(true);
     }
   }, [fetchData, user?.email]);
 
@@ -242,12 +252,13 @@ function AppContent() {
       }
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Bulk update failed');
-      fetchData();
+      fetchData(true);
     }
   }, [fetchData, user?.email]);
 
   const handleSearchChange = useCallback((query: string) => {
-    setSearchQueries(prev => ({ ...prev, [activeTab]: query }));
+    const tab = shownTabRef.current ?? activeTab;
+    setSearchQueries(prev => ({ ...prev, [tab]: query }));
   }, [activeTab]);
 
   const clientMilestones = useMemo(() => computeClientMilestones(records), [records]);
@@ -337,6 +348,17 @@ function AppContent() {
   };
   visibleTabs.sort((a, b) => orderIndex(a.key) - orderIndex(b.key));
 
+  // Render only a tab this user may see; anything else falls back to their
+  // default tab (so a liver never lands on the Admin board, even for a frame).
+  const firstVisible = DEFAULT_TAB_PRIORITY.find(k => visibleTabs.some(t => t.key === k)) ?? visibleTabs[0]?.key ?? null;
+  const shownTab: TabKey | null = visibleTabs.some(t => t.key === activeTab) ? activeTab : firstVisible;
+  shownTabRef.current = shownTab;
+  // The server sends a liver-only user just her own items (by her real roles,
+  // not the previewed ones).
+  const liverOnly = isLiverOnly(realRoles);
+  // Roles tab couldn't be read: we can't tell whose items are whose.
+  const rolesFailed = dynamicRoles === null;
+
   const activeWorkspace = devContext?.activeTenant?.displayName ?? null;
   const initials = (user.firstName?.[0] || user.email[0]).toUpperCase();
 
@@ -388,9 +410,9 @@ function AppContent() {
             <button
               key={tab.key}
               onClick={() => setActiveTab(tab.key)}
-              data-active={activeTab === tab.key ? "true" : undefined}
+              data-active={shownTab === tab.key ? "true" : undefined}
               className={`kt-tab flex items-center gap-1 px-3 py-2 font-cinzel text-[10px] uppercase whitespace-nowrap transition-all relative ${
-                activeTab === tab.key
+                shownTab === tab.key
                   ? 'border-b-2 border-primary text-primary bg-primary/10'
                   : 'text-muted-foreground hover:text-primary'
               }`}
@@ -417,45 +439,54 @@ function AppContent() {
       {/* Record count */}
       <div className="kt-statusbar flex items-center justify-between px-3 py-1 border-b border-border bg-muted/50">
         <span className="text-[10px] font-medium text-muted-foreground">
-          {records.length.toLocaleString()} records loaded
+          {liverOnly ? `${records.length.toLocaleString()} of your items` : `${records.length.toLocaleString()} records loaded`}
         </span>
-        <button onClick={fetchData} className="text-[10px] font-cinzel uppercase tracking-widest hover:underline text-primary">
+        <button onClick={() => fetchData(true)} className="text-[10px] font-cinzel uppercase tracking-widest hover:underline text-primary">
           Refresh
         </button>
       </div>
 
       {/* Tab Content */}
-      {activeTab === 'admin' && (
-        <AdminPipeline onBulkUpdate={handleBulkUpdate} records={records} searchQuery={searchQueries.admin} onSearchChange={handleSearchChange} onUpdate={handleUpdate} userEmail={user.email} userFirstName={user.firstName} onRefresh={fetchData} />
-      )}
-      {activeTab === 'dispatch' && (
-        <DispatchBoard onBulkUpdate={handleBulkUpdate} records={records} searchQuery={searchQueries.dispatch} onSearchChange={handleSearchChange} onUpdate={handleUpdate} userEmail={user.email} clientMilestones={clientMilestones} />
-      )}
-      {activeTab === 'accounts' && (
-        <AccountsTracking records={records} searchQuery={searchQueries.accounts} onSearchChange={handleSearchChange} onUpdate={handleUpdate} userEmail={user.email} userFirstName={user.firstName} onRefresh={fetchData} />
-      )}
-      {activeTab === 'bossing' && (
-        <BossingDashboard records={records} searchQuery={searchQueries.bossing} onSearchChange={handleSearchChange} onUpdate={handleUpdate} />
-      )}
-      {activeTab === 'liver' && !lockedLiverName && !effectiveRoles.some(r => r === 'super_admin' || r === 'admin' || r === 'bossing' || r === 'accounts') && (
+      {!shownTab && (
         <div className="px-4 py-16 text-center text-sm text-muted-foreground">
-          Your liver name isn&apos;t set yet. Ask the admin to put your name in the <b>Roles</b> sheet (column &quot;name&quot;), exactly as it appears in the masterlist.
+          No tabs are switched on for your account — ask the admin.
         </div>
       )}
-      {activeTab === 'liver' && (lockedLiverName || effectiveRoles.some(r => r === 'super_admin' || r === 'admin' || r === 'bossing' || r === 'accounts')) && (
+      {shownTab === 'admin' && (
+        <AdminPipeline onBulkUpdate={handleBulkUpdate} records={records} searchQuery={searchQueries.admin} onSearchChange={handleSearchChange} onUpdate={handleUpdate} userEmail={user.email} userFirstName={user.firstName} onRefresh={fetchData} />
+      )}
+      {shownTab === 'dispatch' && (
+        <DispatchBoard onBulkUpdate={handleBulkUpdate} records={records} searchQuery={searchQueries.dispatch} onSearchChange={handleSearchChange} onUpdate={handleUpdate} userEmail={user.email} clientMilestones={clientMilestones} />
+      )}
+      {shownTab === 'accounts' && (
+        <AccountsTracking records={records} searchQuery={searchQueries.accounts} onSearchChange={handleSearchChange} onUpdate={handleUpdate} userEmail={user.email} userFirstName={user.firstName} onRefresh={fetchData} />
+      )}
+      {shownTab === 'bossing' && (
+        <BossingDashboard records={records} searchQuery={searchQueries.bossing} onSearchChange={handleSearchChange} onUpdate={handleUpdate} />
+      )}
+      {shownTab === 'liver' && !lockedLiverName && !effectiveRoles.some(r => r === 'super_admin' || r === 'admin' || r === 'bossing' || r === 'accounts') && (
+        <div className="px-4 py-16 text-center text-sm text-muted-foreground">
+          {rolesFailed ? (
+            <>Couldn&apos;t load your account — tap <b>Refresh</b>.</>
+          ) : (
+            <>Your liver name isn&apos;t set yet. Ask the admin to put your name in the <b>Roles</b> sheet (column &quot;name&quot;), exactly as it appears in the masterlist.</>
+          )}
+        </div>
+      )}
+      {shownTab === 'liver' && (lockedLiverName || effectiveRoles.some(r => r === 'super_admin' || r === 'admin' || r === 'bossing' || r === 'accounts')) && (
         <LiverDashboard records={records} searchQuery={searchQueries.liver} onSearchChange={handleSearchChange} onUpdate={handleUpdate} lockedLiverName={lockedLiverName} />
       )}
-      {activeTab === 'purchasing' && (
+      {shownTab === 'purchasing' && (
         <PurchasingTab userEmail={user.email} />
       )}
-      {activeTab === 'invoicing' && (
+      {shownTab === 'invoicing' && (
         <InvoicingTab records={records} searchQuery={searchQueries.invoicing} onSearchChange={handleSearchChange} onUpdate={handleUpdate} onRefresh={() => fetchData(true)} />
       )}
-      {activeTab === 'livesellers' && (devSeesAll || !isTabHidden('livesellers')) && (
+      {shownTab === 'livesellers' && (devSeesAll || !isTabHidden('livesellers')) && (
         <LiveSellersTab records={records} onRecordsChanged={() => fetchData(true)} canEditSettings={effectiveRoles.includes('super_admin') || effectiveRoles.includes('admin')} />
       )}
-      {activeTab === 'settings' && <DesignSettings />}
-      {activeTab === 'godmode' && <GodModePanel />}
+      {shownTab === 'settings' && <DesignSettings />}
+      {shownTab === 'godmode' && <GodModePanel />}
     </div>
   );
 }

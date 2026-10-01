@@ -3,6 +3,7 @@
 import type { DatabaseRowType } from "@/types";
 import { getAppConfig, type StatusDeadline } from "@/lib/appConfig";
 import { parseDateRobust, customerKey } from "@/lib/calculations";
+import { lineDate, newestPurchaseByCustomer } from "@/lib/purchaseDates";
 
 /**
  * Status deadlines ("an item may stay For COD for 3 days, Reseller for 3 weeks").
@@ -65,15 +66,6 @@ export function getReminderRules(): ReminderRule[] {
   return cfg.statusDeadlines.length ? cfg.statusDeadlines.map(ruleFromDeadline) : LEGACY_RULES;
 }
 
-const ISO_AT_START = /^(\d{4}-\d{2}-\d{2}T[^ |]+)\s*\|/;
-
-function lineDate(line: string): Date | null {
-  const m = line.match(ISO_AT_START);
-  if (!m) return null;
-  const d = new Date(m[1]);
-  return Number.isNaN(d.getTime()) ? null : d;
-}
-
 /**
  * When the item got its current status:
  *   1. the latest change-history line that touched "status";
@@ -118,21 +110,17 @@ function matches(rule: ReminderRule, status: string): boolean {
 export const MAX_HOLD_DAYS = 7;
 const DAY = 86_400_000;
 
-/** When the item was bought: live date, else the first dated history line. */
-function boughtOn(r: DatabaseRowType): Date | null {
-  const d = parseDateRobust(r.dateOfLive);
-  if (d) return d;
-  for (const l of String(r.auditTrail ?? "").split("\n")) { const x = lineDate(l); if (x) return x; }
-  return null;
-}
-
-/** Each customer's latest purchase (any item that isn't cancelled). */
+/**
+ * Each customer's latest purchase (any item that isn't cancelled). A liver only
+ * gets her own rows, so the server stamps each with the customer's newest
+ * purchase across ALL livers (customerLastPurchaseAt); that wins when newer.
+ */
 export function lastPurchases(all: DatabaseRowType[]): Map<string, Date> {
-  const m = new Map<string, Date>();
+  const m = newestPurchaseByCustomer(all);
   for (const r of all) {
-    if (/cancel/i.test(String(r.status ?? ""))) continue;
-    const d = boughtOn(r);
-    if (!d) continue;
+    if (!r.customerLastPurchaseAt) continue;
+    const d = new Date(r.customerLastPurchaseAt);
+    if (Number.isNaN(d.getTime())) continue;
     const k = customerKey(r);
     const cur = m.get(k);
     if (!cur || d > cur) m.set(k, d);

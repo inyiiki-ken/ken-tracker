@@ -4,12 +4,16 @@ import { getSpreadsheetById } from "./client";
 import { getActiveDoc, getActiveWorksheet, getActiveRows, invalidateActiveRows } from "./tenant-context";
 import { readConfig, writeConfig, readConfigByPrefix, deleteConfigMarker, readConfigChunks, writeConfigChunks, clearConfigChunks } from "./config-store";
 import { parseSheetId } from "./sheetId";
-import { requireSession, requireRole, getSessionRoles } from "./authz";
+import { requireSession, requireRole, getSessionRoles, getSessionAccess } from "./authz";
+import { isDeveloper } from "./tenancy-core";
 import { rowToDatabaseRecord, databaseRecordToRow } from "./row-mapper";
 import { DATABASE_HEADERS, DATABASE_HEADER_ALIASES, OPTIONAL_DATABASE_KEYS, ROLES_HEADERS, UPLOADS_HEADERS } from "./sheet-config";
 import type { DatabaseRowType } from "@/types";
 import { buildCustomerIdIndex, resolveCustomerIdFor } from "@/lib/customerId";
 import { trimAudit } from "@/lib/auditTrim";
+import { isLiverOnly, getUserRole } from "@/config/roles";
+import { customerKey } from "@/lib/calculations";
+import { newestPurchaseByCustomer } from "@/lib/purchaseDates";
 
 /** Google caps a cell at 50,000 characters. The audit trail is append-only, so
  * without trimming a heavily-edited row eventually fails to save. Keep the most
@@ -228,11 +232,47 @@ async function ensureOptionalColumns(sheet: any, records: Partial<DatabaseRowTyp
   invalidateActiveRows();
 }
 
+/**
+ * Roles that change records (create/update/bulk/split/merge/invoice number/
+ * import). Admin, Dispatch (incl. "Liver came"), Accounts (Add Client) and
+ * Live Sellers (live day). Developers always pass. Livers and Bossing only read.
+ */
+const RECORD_WRITE_ROLES = ["super_admin", "admin", "dispatch", "accounts", "livesellers"];
+
+/** Same comparison the Liver tab uses for the Liver column (case/spaces ignored). */
+function liverKey(v: unknown): string {
+  return String(v ?? "").toUpperCase().trim().replace(/\s+/g, " ");
+}
+
+/** Crown's cost side — never sent to a liver. Prices are worked out from clientRate. */
+const LIVER_HIDDEN_FIELDS = ["supplierRate", "profit", "goldRate", "mc"] as const;
+
 export async function getRecords(_params?: { tailOnly?: boolean }): Promise<DatabaseRowType[]> {
+  const access = await getSessionAccess();
+  // Signed in but not in the Roles tab: nothing to show (the app says Access denied).
+  if (!access.all && access.roles.length === 0) return [];
   const sheet = await getActiveWorksheet("database");
   const rows = await sheet.getRows();
   const aliases = await getTenantColumnAliases();
-  return rows.map((r) => rowToDatabaseRecord(r, aliases));
+  const all = rows.map((r) => rowToDatabaseRecord(r, aliases));
+  if (access.all || !isLiverOnly(access.roles)) return all;
+
+  // A liver only ever gets her own items (her "name" in the Roles tab). No
+  // name yet ⇒ nothing; the Liver tab explains what to ask the admin.
+  const me = liverKey(access.liverName);
+  if (!me) return [];
+  // Her customers may also buy from other livers; reminders count from the
+  // customer's newest purchase, so stamp that on her rows before dropping the rest.
+  const newest = newestPurchaseByCustomer(all);
+  return all
+    .filter((r) => liverKey(r.liverName) === me)
+    .map((r) => {
+      const out: DatabaseRowType = { ...r };
+      for (const k of LIVER_HIDDEN_FIELDS) delete out[k];
+      const last = newest.get(customerKey(r));
+      if (last) out.customerLastPurchaseAt = last.toISOString();
+      return out;
+    });
 }
 
 /** Matches src/api/createRecord.ts: sets a "created" audit trail entry. */
@@ -240,7 +280,7 @@ export async function createRecord(params: {
   fields: Partial<DatabaseRowType>;
   userEmail?: string;
 }): Promise<{ success: boolean }> {
-  const sessionEmailForAudit = await requireSession();
+  const sessionEmailForAudit = await requireRole(RECORD_WRITE_ROLES);
   const sheet = await getActiveWorksheet("database");
   const timestamp = new Date().toISOString();
 
@@ -389,7 +429,7 @@ export async function updateRecord(params: {
   existingRecord?: Partial<DatabaseRowType>;
   userEmail?: string;
 }): Promise<{ success: boolean }> {
-  const sessionEmailForAudit = await requireSession();
+  const sessionEmailForAudit = await requireRole(RECORD_WRITE_ROLES);
   const sheet = await getActiveWorksheet("database");
 
   const timestamp = new Date().toISOString();
@@ -413,7 +453,7 @@ export async function updateRecord(params: {
 export async function bulkUpdateRecords(params: {
   updates: { rowId: number; rowKey?: string; fields: Partial<DatabaseRowType> }[];
 }): Promise<{ success: boolean; updatedCount: number }> {
-  await requireSession();
+  await requireRole(RECORD_WRITE_ROLES);
   const sheet = await getActiveWorksheet("database");
   await ensureOptionalColumns(sheet, params.updates.map((u) => u.fields));
   const dbHeaders = await activeHeaderSet(sheet);
@@ -438,7 +478,7 @@ export async function mergeClients(params: {
   masterCustomerId: string;
   masterMinerName: string;
 }): Promise<{ updatedCount: number; success: boolean; message: string }> {
-  await requireSession();
+  await requireRole(RECORD_WRITE_ROLES);
   const sheet = await getActiveWorksheet("database");
   const rows = await sheet.getRows();
   const toUpdate = rows.filter((r) => r.get(DATABASE_HEADERS.customerId) === params.duplicateCustomerId);
@@ -477,7 +517,7 @@ export async function splitItem(params: {
   existingRecord: Record<string, unknown>;
   userEmail?: string;
 }): Promise<{ success: boolean; remainingGrams: number; splitGrams: number }> {
-  await requireSession();
+  await requireRole(RECORD_WRITE_ROLES);
   const origGrams = Number(params.existingRecord.grams) || 0;
   const remaining = origGrams - params.splitGrams;
   if (remaining <= 0) {
@@ -529,7 +569,7 @@ export async function generateInvoiceNumber(params: {
   minerName: string;
   rowKey?: string;
 }): Promise<{ invoiceNumber: string }> {
-  await requireSession();
+  await requireRole(RECORD_WRITE_ROLES);
   const datePart = params.dateOfLive.replace(/[^0-9]/g, "").slice(0, 8) || "00000000";
   const invoiceNumber = `${params.prefix}-${datePart}-${params.recordId}`;
 
@@ -590,7 +630,7 @@ export async function importRows(params: {
   /** Import rows even if the same item (liver + date + code + description) is already in the sheet. */
   allowDuplicates?: boolean;
 }): Promise<{ success: boolean; createdCount: number; errors: string[]; duplicates: number; alreadyImported: number }> {
-  const sessionEmail = await requireSession();
+  const sessionEmail = await requireRole(RECORD_WRITE_ROLES);
   const sheet = await getActiveWorksheet("database");
   const dbHeaders = await activeHeaderSet(sheet);
   const dbAliases = await getTenantColumnAliases();
@@ -1330,14 +1370,19 @@ export async function deletePurchase(params: { rowId: number }): Promise<{ succe
 // ---------- Roles ----------
 
 export async function getRoles(_params?: Record<string, never>): Promise<Record<string, string>[]> {
+  const email = await requireSession();
   const sheet = await getActiveWorksheet("roles");
   const rows = await sheet.getRows();
-  return rows.map((r) => ({
+  const all = rows.map((r) => ({
     email: r.get(ROLES_HEADERS.email) ?? "",
     role: r.get(ROLES_HEADERS.role) ?? "",
     name: r.get(ROLES_HEADERS.name) ?? "",
-    whatsappNumber: r.get(ROLES_HEADERS.whatsappNumber) ?? "",
   }));
+  // Everyone needs their own row (roles, liver name). Only those who can
+  // "Preview as" someone (super_admin, developer) get the whole staff list.
+  if (email === null || isDeveloper(email) || getUserRole(email, all).includes("super_admin")) return all;
+  const me = email.toLowerCase().trim();
+  return all.filter((r) => String(r.email).toLowerCase().trim() === me);
 }
 
 

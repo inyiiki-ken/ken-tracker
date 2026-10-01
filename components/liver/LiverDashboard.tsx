@@ -18,6 +18,24 @@ import { getSaleStatuses } from '@/lib/appConfig';
 import { computeOverdue } from '@/lib/reminders';
 import RemindersDialog from '@/components/RemindersDialog';
 import { PulloutPanel, CancelledItems } from './LiverPullout';
+import { todayISO } from '@/lib/pulloutRequests';
+
+/** The overdue popup shows once per liver per day, even if the tab remounts. */
+function remindersSeenKey(liver: string): string {
+  return `liverReminders:${liver}:${todayISO()}`;
+}
+// In-memory copy for when sessionStorage is blocked (private browsing).
+const remindersSeenThisVisit = new Set<string>();
+function remindersSeen(liver: string): boolean {
+  const key = remindersSeenKey(liver);
+  if (remindersSeenThisVisit.has(key)) return true;
+  try { return sessionStorage.getItem(key) === '1'; } catch { return false; }
+}
+function markRemindersSeen(liver: string): void {
+  const key = remindersSeenKey(liver);
+  remindersSeenThisVisit.add(key);
+  try { sessionStorage.setItem(key, '1'); } catch { /* ignore */ }
+}
 
 /** Statuses that count as a sale for this customer (Settings → App Settings). */
 function isSale(r: DatabaseRowType): boolean {
@@ -234,7 +252,6 @@ export default function LiverDashboard({ records, searchQuery, onSearchChange, l
   const [materialFilter, setMaterialFilter] = useState<MaterialFilter>('all');
   const [copiedId, setCopiedId] = useState<number | null>(null);
   const [showReminders, setShowReminders] = useState(false);
-  const [remindersSeenFor, setRemindersSeenFor] = useState('');
 
   const copyRow = useCallback((r: DatabaseRowType) => {
     const text = [r.minerName, r.itemDescription, r.grams ? `${r.grams}g` : ''].filter(Boolean).join(' · ');
@@ -311,11 +328,11 @@ export default function LiverDashboard({ records, searchQuery, onSearchChange, l
   const myOverdue = useMemo(() => computeOverdue(byLiver, undefined, records), [byLiver, records]);
   const overdueCount = myOverdue.reduce((n, sec) => n + sec.items.length, 0);
   useEffect(() => {
-    if (selectedLiver && overdueCount > 0 && remindersSeenFor !== selectedLiver) {
+    if (selectedLiver && overdueCount > 0 && !remindersSeen(selectedLiver)) {
       setShowReminders(true);
-      setRemindersSeenFor(selectedLiver);
+      markRemindersSeen(selectedLiver);
     }
-  }, [selectedLiver, overdueCount, remindersSeenFor]);
+  }, [selectedLiver, overdueCount]);
 
   const totalItems = filtered.length;
   const totalGrams = calcGrams(filtered);
