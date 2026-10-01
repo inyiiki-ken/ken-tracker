@@ -1,9 +1,10 @@
 "use client";
 
-import { useState, useRef, memo, useCallback, useMemo } from 'react';
+import { useState, useRef, memo, useCallback, useMemo, useEffect } from 'react';
 import { autoStageDates, orderBox } from '@/lib/fulfilment';
 import { Checkbox } from '@/components/ui/checkbox';
 import { formatDate, orderedRangeLabel } from '@/lib/formatters';
+import { parseDateRobust } from '@/lib/calculations';
 import { FileText, Truck, Upload, History, ChevronDown, AlertTriangle, Pencil, Check, X, Scissors, StickyNote, Plus, Gift, MapPin, Phone, Copy } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -34,6 +35,8 @@ interface Props {
   clientMilestones?: Map<string, ClientMilestone>;
   /** Items ticked on the board for a bulk status change. */
   selectedIds?: Set<number>;
+  /** Search text: matching items are highlighted and the card opens. */
+  highlight?: string;
   onSelect?: (ids: number[], on: boolean) => void;
 }
 
@@ -290,8 +293,35 @@ function StickyNotes({ notes }: { notes: ParsedNote[] }) {
 }
 
 // ─── Main Card ────────────────────────────────────────────────────────────────
-function DispatchClientCard({ minerName, records, allRecords, onUpdate, userEmail, clientMilestones, selectedIds, onSelect }: Props) {
+function DispatchClientCard({ minerName, records, allRecords, onUpdate, userEmail, clientMilestones, selectedIds, onSelect, highlight }: Props) {
   const [isExpanded, setIsExpanded] = useState(false);
+  // Items whose details (fees, history, notes) are shown.
+  const [openItems, setOpenItems] = useState<Set<number>>(new Set());
+  const toggleItem = useCallback((id: number) => {
+    setOpenItems(prev => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  }, []);
+  const q = (highlight ?? '').trim().toLowerCase();
+  const isHit = useCallback((r: DatabaseRowType) => !!q && [r.itemDescription, r.orderId, r.pureWeight]
+    .some(v => v != null && String(v).toLowerCase().includes(q)), [q]);
+  // Searching opens the card so the highlighted items are in view.
+  useEffect(() => {
+    if (q && records.some(isHit)) setIsExpanded(true);
+  }, [q, records, isHit]);
+  // Newest order date first; one group per date.
+  const itemsByDay = useMemo(() => {
+    const t = (r: DatabaseRowType) => (r.dateOfLive ? parseDateRobust(r.dateOfLive)?.getTime() : undefined) ?? 0;
+    const groups = new Map<string, DatabaseRowType[]>();
+    for (const r of [...records].sort((a, b) => t(b) - t(a))) {
+      const day = formatDate(r.dateOfLive);
+      if (!groups.has(day)) groups.set(day, []);
+      groups.get(day)!.push(r);
+    }
+    return [...groups];
+  }, [records]);
   const [showInvoice, setShowInvoice] = useState(false);
   const [cancelRecord, setCancelRecord] = useState<DatabaseRowType | null>(null);
   const [cancelReason, setCancelReason] = useState('');
@@ -478,7 +508,7 @@ function DispatchClientCard({ minerName, records, allRecords, onUpdate, userEmai
               </div>
             ) : (
               <>
-                <span className="font-cinzel text-[13px] text-primary">{minerName}</span>
+                <span className="font-cinzel text-sm text-primary">{minerName}</span>
                 <button className="shrink-0 text-muted-foreground hover:text-primary transition-colors" title="Copy name" onClick={copyName}><Copy className="h-3 w-3" /></button>
                 <button className="shrink-0 text-muted-foreground hover:text-primary transition-colors" title="Edit customer name" onClick={startEditName}><Pencil className="h-3 w-3" /></button>
                 {first?.customerId && (
@@ -517,7 +547,16 @@ function DispatchClientCard({ minerName, records, allRecords, onUpdate, userEmai
               <p className="text-xs font-bold text-warning">{milestoneAlert}</p>
             </div>
           )}
-          {records.map(record => {
+          {/* Newest first, under one divider per order date, so an item is easy to find. */}
+          {itemsByDay.map(([day, items]) => (
+            <div key={day}>
+              <div className="flex items-center gap-2 pt-1.5 pb-1">
+                <span className="text-xs font-semibold text-foreground">{day === '—' ? 'No order date' : `Ordered ${day}`}</span>
+                <span className="text-xs text-muted-foreground">· {items.length} item{items.length !== 1 ? 's' : ''}</span>
+                <div className="h-px flex-1 bg-border" />
+              </div>
+              <div className="rounded-lg border border-border divide-y divide-border bg-background">
+          {items.map(record => {
             const effective = getEffective(record);
             const givenToShopMode = isGivenToShopMode(effective);
             const latestAudit = effective.auditTrail ? effective.auditTrail.split(/(?=\[)/).pop() : null;
@@ -526,47 +565,69 @@ function DispatchClientCard({ minerName, records, allRecords, onUpdate, userEmai
             const isEditingThis = editingItemId === record.id;
             const isAddingNote = addingNoteId === record.id;
             const { remarks, notes } = parseNotes(effective.liverAdminRemarks);
+            const detailsOpen = openItems.has(record.id) || isEditingThis || isAddingNote;
+            const hit = isHit(effective);
 
             return (
-              <div key={record.id} className="rounded-lg border border-border/50 bg-secondary/20 p-3">
-                <div className="flex items-start justify-between mb-2">
+              <div key={record.id} className={`px-2.5 py-2 ${hit ? 'bg-warning/15 ring-2 ring-inset ring-warning' : ''}`}>
+                <div className="flex items-center gap-2.5">
                   {onSelect && (
                     <Checkbox
-                      className="mt-0.5 mr-2"
+                      className="h-5 w-5 shrink-0"
                       checked={!!selectedIds?.has(record.id)}
                       onCheckedChange={v => onSelect([record.id], v === true)}
                     />
                   )}
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium">
-                      {effective.itemDescription}
-                      {/* A card can hold items from several lives, so each item shows its own date. */}
-                      {effective.dateOfLive && <span className="ml-2 text-[10px] font-normal text-muted-foreground">Ordered {formatDate(effective.dateOfLive)}</span>}
+                  <button className="flex-1 min-w-0 text-left" onClick={() => toggleItem(record.id)} title="Show details">
+                    <p className="text-sm font-semibold text-foreground truncate">{effective.itemDescription || '—'}</p>
+                    <p className="text-xs text-muted-foreground truncate">
+                      {isScrewType ? `${getQty(effective)} PCS` : (effective.grams ? `${effective.grams}g` : 'PC')}
+                      {effective.category ? ` · ${effective.category}` : ''}
+                      {effective.modeOfPayment ? ` · ${effective.modeOfPayment}` : ''}
                     </p>
-                    {!isCompact && (
-                      <p className="text-xs text-muted-foreground mt-0.5">
-                        {effective.category} · {isScrewType ? `${getQty(effective)} PCS` : (effective.grams ? `${effective.grams}g` : 'PC')}
-                        <span className="text-foreground font-medium ml-1">· {effective.modeOfPayment || 'No MOP'} {effective.regions && `(${effective.regions})`}</span>
-                      </p>
-                    )}
-                  </div>
-                  <div className="flex items-center gap-1.5 shrink-0 ml-2">
-                    {record.status === 'Outsource' && (record.grams ?? 0) > 0 && !isEditingThis && (
-                      <button className="text-success hover:text-success transition-colors" title="Split item" onClick={() => setSplitRecord(record)}>
-                        <Scissors className="h-3.5 w-3.5" />
-                      </button>
-                    )}
-                    {!isEditingThis && record.status !== 'Cancelled' && (
-                      <button className="text-muted-foreground hover:text-primary transition-colors" title="Edit MOP & Grams" onClick={() => setEditingItemId(record.id)}>
-                        <Pencil className="h-3.5 w-3.5" />
-                      </button>
-                    )}
-                    <StatusBadge status={effective.status} />
-                  </div>
+                  </button>
+                  {!dispatchAllowed && !givenToShopMode && (
+                    <Badge variant="destructive" className="text-[10px] px-1.5 py-0 h-5 hidden sm:flex items-center gap-1 shrink-0">
+                      <AlertTriangle className="h-2.5 w-2.5" /> Balance
+                    </Badge>
+                  )}
+                  {notes.length > 0 && (
+                    <span className="flex items-center gap-0.5 text-attention text-xs shrink-0" title={`${notes.length} dispatch note${notes.length !== 1 ? 's' : ''}`}>
+                      <StickyNote className="h-3.5 w-3.5" />{notes.length}
+                    </span>
+                  )}
+                  <span className="shrink-0"><StatusBadge status={effective.status} /></span>
+                  {effective.status !== 'Cancelled' && (
+                    <Select key={`status-${record.id}-${resetKeys[record.id] || 0}`} onValueChange={v => handleStatusChange(record, v)}>
+                      <SelectTrigger className="h-8 text-xs w-[130px] sm:w-[160px] bg-background border-border shrink-0"><SelectValue placeholder="Set status..." /></SelectTrigger>
+                      <SelectContent className="bg-popover border-border">
+                        {(() => {
+                          // Exactly the Dispatch list from Settings → Dropdown Options
+                          // (not the item's own current status, so removed statuses stay removed).
+                          const list = getEffectiveStatuses('dispatch');
+                          const opts = givenToShopMode && !list.some(x => /^given to shop$/i.test(x)) ? ['Given to Shop', ...list] : list;
+                          return opts.map((s) => (
+                            <SelectItem
+                              key={s}
+                              value={s}
+                              className={`text-xs font-medium ${/cancel/i.test(s) ? 'text-destructive' : 'text-foreground'}`}
+                            >
+                              {s}{/^(dispatched|delivered)$/i.test(s) && !dispatchAllowed ? ' (Balance Pending)' : ''}
+                            </SelectItem>
+                          ));
+                        })()}
+                      </SelectContent>
+                    </Select>
+                  )}
+                  <button className="shrink-0 text-muted-foreground hover:text-foreground p-1" onClick={() => toggleItem(record.id)} title={detailsOpen ? 'Hide details' : 'Show details'}>
+                    <ChevronDown className={`h-4 w-4 transition-transform ${detailsOpen ? 'rotate-180' : ''}`} />
+                  </button>
                 </div>
 
-                {!isCompact && (
-                  <div className="flex items-center gap-1 text-xs text-muted-foreground mb-2">
+                {/* Details: one tap away instead of always shown. */}
+                {detailsOpen && (
+                <div className={`mt-2 space-y-1.5 ${onSelect ? 'pl-7' : ''}`}>
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
                     <Truck className="h-3 w-3" />
                     <span>SF: AED {calcShippingFee(effective).toFixed(2)}</span>
                     {isFreeSf(effective) && <span className="text-primary">(FREE)</span>}
@@ -578,36 +639,47 @@ function DispatchClientCard({ minerName, records, allRecords, onUpdate, userEmai
                     {effective.additionalCharges?.includes('DISCOUNT:') && (
                       <span className="text-success">(Discount applied)</span>
                     )}
-                    {effective.source && <span className="ml-2 text-muted-foreground/70 border-l border-border/40 pl-2">📦 {effective.source}</span>}
-                  </div>
-                )}
+                    {effective.regions && <span>· {effective.regions}</span>}
+                    {effective.source && <span className="border-l border-border/40 pl-2">📦 {effective.source}</span>}
+                    {effective.orderId && <span className="border-l border-border/40 pl-2 font-mono">{effective.orderId}</span>}
+                    <span className="ml-auto flex items-center gap-2">
+                      {record.status === 'Outsource' && (record.grams ?? 0) > 0 && !isEditingThis && (
+                        <button className="flex items-center gap-1 text-success hover:underline" onClick={() => setSplitRecord(record)}>
+                          <Scissors className="h-3.5 w-3.5" /> Split
+                        </button>
+                      )}
+                      {!isEditingThis && record.status !== 'Cancelled' && (
+                        <button className="flex items-center gap-1 hover:text-primary" onClick={() => setEditingItemId(record.id)}>
+                          <Pencil className="h-3.5 w-3.5" /> Edit MOP & grams
+                        </button>
+                      )}
+                    </span>
+                </div>
 
                 {!dispatchAllowed && !givenToShopMode && (
-                  <div className="flex items-center gap-1.5 mb-2">
+                  <div className="flex items-center gap-1.5">
                     <Badge variant="destructive" className="text-[10px] px-1.5 py-0 h-5 flex items-center gap-1">
                       <AlertTriangle className="h-2.5 w-2.5" /> Balance Pending
                     </Badge>
-                    <span className="text-[10px] text-muted-foreground">Paid: AED {roundPrice(calcTotalPaid(effective)).toLocaleString('en-US')} / {roundPrice(calcItemPriceAED(effective) + calcCCFee(effective)).toLocaleString('en-US')}</span>
+                    <span className="text-xs text-muted-foreground">Paid: AED {roundPrice(calcTotalPaid(effective)).toLocaleString('en-US')} / {roundPrice(calcItemPriceAED(effective) + calcCCFee(effective)).toLocaleString('en-US')}</span>
                   </div>
                 )}
 
-                {!isCompact && remarks && (
-                  <p className="text-xs text-muted-foreground/70 italic mb-1.5 truncate">Remarks: {remarks}</p>
+                {remarks && (
+                  <p className="text-xs text-muted-foreground italic">Remarks: {remarks}</p>
                 )}
 
-                {!isCompact && latestAudit && (
-                  <p className="text-[10px] text-primary/60 mb-2 truncate flex items-center gap-1" title={effective.auditTrail}>
-                    <History className="h-2.5 w-2.5" />{latestAudit}
+                {latestAudit && (
+                  <p className="text-[10px] text-muted-foreground truncate flex items-center gap-1" title={effective.auditTrail}>
+                    <History className="h-2.5 w-2.5 shrink-0" />{latestAudit}
                   </p>
                 )}
 
-                {/* Sticky Notes */}
                 <StickyNotes notes={notes} />
 
-                {/* Add Note button */}
                 {!isAddingNote && !isEditingThis && record.status !== 'Cancelled' && (
                   <button
-                    className="flex items-center gap-1 text-[10px] text-attention/70 hover:text-attention transition-colors mt-1.5"
+                    className="flex items-center gap-1 text-xs text-attention/80 hover:text-attention transition-colors"
                     onClick={() => { setAddingNoteId(record.id); setEditingItemId(null); }}
                   >
                     <Plus className="h-3 w-3" />
@@ -615,7 +687,6 @@ function DispatchClientCard({ minerName, records, allRecords, onUpdate, userEmai
                   </button>
                 )}
 
-                {/* Note input */}
                 {isAddingNote && (
                   <NoteInput
                     saving={savingNoteId === record.id}
@@ -624,7 +695,6 @@ function DispatchClientCard({ minerName, records, allRecords, onUpdate, userEmai
                   />
                 )}
 
-                {/* Inline MOP & Grams editor */}
                 {isEditingThis && (
                   <ItemEditRow
                     record={effective}
@@ -633,32 +703,14 @@ function DispatchClientCard({ minerName, records, allRecords, onUpdate, userEmai
                     onCancel={() => setEditingItemId(null)}
                   />
                 )}
-
-                {effective.status !== 'Cancelled' && (
-                  <Select key={`status-${record.id}-${resetKeys[record.id] || 0}`} onValueChange={v => handleStatusChange(record, v)}>
-                    <SelectTrigger className="h-7 text-xs w-full bg-background border-border mt-2"><SelectValue placeholder="Set status..." /></SelectTrigger>
-                    <SelectContent className="bg-popover border-border">
-                      {(() => {
-                        // Exactly the Dispatch list from Settings → Dropdown Options
-                        // (not the item's own current status, so removed statuses stay removed).
-                        const list = getEffectiveStatuses('dispatch');
-                        const opts = givenToShopMode && !list.some(x => /^given to shop$/i.test(x)) ? ['Given to Shop', ...list] : list;
-                        return opts.map((s) => (
-                          <SelectItem
-                            key={s}
-                            value={s}
-                            className={`text-xs font-medium ${/cancel/i.test(s) ? 'text-destructive' : 'text-foreground'}`}
-                          >
-                            {s}{/^(dispatched|delivered)$/i.test(s) && !dispatchAllowed ? ' (Balance Pending)' : ''}
-                          </SelectItem>
-                        ));
-                      })()}
-                    </SelectContent>
-                  </Select>
+                </div>
                 )}
               </div>
             );
           })}
+              </div>
+            </div>
+          ))}
         </div>
       )}
 
@@ -708,6 +760,7 @@ export default memo(DispatchClientCard, (prev, next) => {
   if (prev.allRecords !== next.allRecords) return false;
   if (prev.clientMilestones !== next.clientMilestones) return false;
   if (prev.onSelect !== next.onSelect) return false;
+  if (prev.highlight !== next.highlight) return false;
   // Re-render when one of this card's ticks changes.
   if (prev.records.some(r => !!prev.selectedIds?.has(r.id) !== !!next.selectedIds?.has(r.id))) return false;
   return true;

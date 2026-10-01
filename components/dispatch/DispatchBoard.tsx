@@ -223,7 +223,7 @@ export default function DispatchBoard({ records, searchQuery, onSearchChange, on
               const isUrgent = agingWarnHours > 0 && maxAge >= agingWarnHours;
               const agingEl = agingWarnHours > 0 ? <AgingLabel dateStr={allItems[0]?.dateOfLive} warnAfterHours={agingWarnHours} /> : null;
               return (
-                <CollapsibleGroup key={date} label={date === 'Unknown Date' ? date : `${datePrefix} ${formatDate(date)}`} colorClass={isUrgent ? 'text-destructive' : 'text-muted-foreground'} lineClass={isUrgent ? 'bg-destructive/30' : 'bg-border/40'} indent defaultOpen={false} labelSuffix={agingEl}>
+                <CollapsibleGroup key={`${date}-${searchQuery ? 'search' : ''}`} label={date === 'Unknown Date' ? date : `${datePrefix} ${formatDate(date)}`} colorClass={isUrgent ? 'text-destructive' : 'text-muted-foreground'} lineClass={isUrgent ? 'bg-destructive/30' : 'bg-border/40'} indent defaultOpen={!!searchQuery.trim()} labelSuffix={agingEl}>
                   {Array.from(minerMap.entries()).map(([miner, items]) => (
                     <DispatchClientCard
                       key={miner}
@@ -235,6 +235,7 @@ export default function DispatchBoard({ records, searchQuery, onSearchChange, on
                       clientMilestones={clientMilestones}
                       selectedIds={selected}
                       onSelect={toggleSelect}
+                      highlight={searchQuery}
                     />
                   ))}
                 </CollapsibleGroup>
