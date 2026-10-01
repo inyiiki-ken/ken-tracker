@@ -1,7 +1,8 @@
 "use client";
 
 import { useState, useRef, memo, useCallback, useMemo } from 'react';
-import { autoStageDates } from '@/lib/fulfilment';
+import { autoStageDates, orderBox } from '@/lib/fulfilment';
+import { Checkbox } from '@/components/ui/checkbox';
 import { FileText, Truck, Upload, History, ChevronDown, AlertTriangle, Pencil, Check, X, Scissors, StickyNote, Plus, Gift, MapPin, Phone } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -29,6 +30,9 @@ interface Props {
   onUpdate: (rowId: number, fields: Partial<DatabaseRowType>) => Promise<void>;
   userEmail?: string;
   clientMilestones?: Map<string, ClientMilestone>;
+  /** Items ticked on the board for a bulk status change. */
+  selectedIds?: Set<number>;
+  onSelect?: (ids: number[], on: boolean) => void;
 }
 
 const MOP_OPTIONS = [
@@ -284,7 +288,7 @@ function StickyNotes({ notes }: { notes: ParsedNote[] }) {
 }
 
 // ─── Main Card ────────────────────────────────────────────────────────────────
-function DispatchClientCard({ minerName, records, allRecords, onUpdate, userEmail, clientMilestones }: Props) {
+function DispatchClientCard({ minerName, records, allRecords, onUpdate, userEmail, clientMilestones, selectedIds, onSelect }: Props) {
   const [isExpanded, setIsExpanded] = useState(false);
   const [showInvoice, setShowInvoice] = useState(false);
   const [cancelRecord, setCancelRecord] = useState<DatabaseRowType | null>(null);
@@ -428,10 +432,25 @@ function DispatchClientCard({ minerName, records, allRecords, onUpdate, userEmai
     finally { setSavingNoteId(null); }
   };
 
+  const cardIds = records.map(r => r.id);
+  const cardTicked = !!selectedIds && cardIds.length > 0 && cardIds.every(id => selectedIds.has(id));
+  const cardPartly = !!selectedIds && !cardTicked && cardIds.some(id => selectedIds.has(id));
+  // Invoice: all of this customer's items, opened on this card's box (the other boxes are one click away).
+  const customerRecords = allRecords.filter(r => r.minerName?.trim().toLowerCase() === minerName.trim().toLowerCase());
+
   return (
     <div className="mb-3 rounded-xl border border-border bg-card overflow-hidden">
+      <div className="flex items-stretch border-b border-border/50">
+      {onSelect && (
+        <label className="flex items-center pl-3 cursor-pointer" title="Select all items of this card">
+          <Checkbox
+            checked={cardTicked ? true : cardPartly ? 'indeterminate' : false}
+            onCheckedChange={v => onSelect(cardIds, v === true)}
+          />
+        </label>
+      )}
       <button
-        className="w-full px-4 py-2.5 border-b border-border/50 flex items-center justify-between text-left focus:outline-none"
+        className="flex-1 min-w-0 px-4 py-2.5 flex items-center justify-between text-left focus:outline-none"
         onClick={() => setIsExpanded(prev => !prev)}
       >
         <div className="flex-1 min-w-0">
@@ -472,6 +491,7 @@ function DispatchClientCard({ minerName, records, allRecords, onUpdate, userEmai
           <ChevronDown className={`h-4 w-4 text-muted-foreground transition-transform duration-200 ${isExpanded ? 'rotate-180' : ''}`} />
         </div>
       </button>
+      </div>
 
       {isExpanded && (
         <div className="px-3 py-2 space-y-2 animate-in fade-in slide-in-from-top-2 duration-200">
@@ -495,6 +515,13 @@ function DispatchClientCard({ minerName, records, allRecords, onUpdate, userEmai
             return (
               <div key={record.id} className="rounded-lg border border-border/50 bg-secondary/20 p-3">
                 <div className="flex items-start justify-between mb-2">
+                  {onSelect && (
+                    <Checkbox
+                      className="mt-0.5 mr-2"
+                      checked={!!selectedIds?.has(record.id)}
+                      onCheckedChange={v => onSelect([record.id], v === true)}
+                    />
+                  )}
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-medium">{effective.itemDescription}</p>
                     {!isCompact && (
@@ -618,8 +645,8 @@ function DispatchClientCard({ minerName, records, allRecords, onUpdate, userEmai
 
       {showInvoice && (
         <InvoiceModal
-          // Only this card's items: the For Pullout card invoices its own items, not the whole customer.
-          records={records}
+          records={customerRecords}
+          initialBox={first ? orderBox(first) : undefined}
           onClose={() => setShowInvoice(false)}
         />
       )}
@@ -660,5 +687,8 @@ export default memo(DispatchClientCard, (prev, next) => {
   }
   if (prev.allRecords !== next.allRecords) return false;
   if (prev.clientMilestones !== next.clientMilestones) return false;
+  if (prev.onSelect !== next.onSelect) return false;
+  // Re-render when one of this card's ticks changes.
+  if (prev.records.some(r => !!prev.selectedIds?.has(r.id) !== !!next.selectedIds?.has(r.id))) return false;
   return true;
 });

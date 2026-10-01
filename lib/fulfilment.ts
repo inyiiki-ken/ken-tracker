@@ -77,9 +77,10 @@ export function autoStageDates(
 // Crown sorts orders into physical boxes / containers. The Dispatch work queue,
 // the Statement of Account tabs and the Pullout Report all use these.
 
-export type OrderBox = 'intl' | 'cod' | 'pickup' | 'reseller' | 'dispatched' | 'delivered' | 'cancelled';
+export type OrderBox = 'outsource' | 'intl' | 'cod' | 'pickup' | 'reseller' | 'dispatched' | 'delivered' | 'cancelled';
 
 export const ORDER_BOXES: { key: OrderBox; label: string }[] = [
+  { key: 'outsource', label: 'Outsource' },
   { key: 'intl', label: 'For International Shipment' },
   { key: 'cod', label: 'For COD' },
   { key: 'pickup', label: 'For Pick Up' },
@@ -101,6 +102,7 @@ export function boxFromStatus(status?: string): OrderBox | null {
   if (stage === 'excluded') return 'cancelled';
   if (stage === 'delivered') return 'delivered';
   if (stage === 'dispatched') return 'dispatched';
+  if (/outsourc/.test(s)) return 'outsource';
   if (/\b(international|shipment|shipping)\b/.test(s)) return 'intl';
   if (/\bcod\b/.test(s)) return 'cod';
   if (/\bpick ?up\b/.test(s)) return 'pickup';
@@ -123,6 +125,11 @@ function boxFromDelivery(r: DatabaseRowType): OrderBox {
  * otherwise (For Pullout, Pending, Waiting for…, Paid/DP but Item Hold,
  * Payment for Verification…) the delivery details decide.
  */
+/** Outsource supplier of an item (its Source), shown before the date on the Outsource queue. */
+export function outsourceName(r: DatabaseRowType): string {
+  return String(r.source ?? '').trim() || 'No outsource name';
+}
+
 export function orderBox(r: DatabaseRowType): OrderBox {
   return boxFromStatus(r.status) ?? boxFromDelivery(r);
 }

@@ -140,6 +140,8 @@ export function groupByPageDateMiner(
   records: DatabaseRowType[],
   /** Which date to group by — the live date unless given (e.g. shipment date). */
   dateOf: (r: DatabaseRowType) => string | undefined = r => r.dateOfLive,
+  /** Top-level group — the page unless given (e.g. outsource name). */
+  groupOf?: (r: DatabaseRowType) => string,
 ): Map<string, Map<string, Map<string, DatabaseRowType[]>>> {
   const map = new Map<string, Map<string, Map<string, DatabaseRowType[]>>>();
   for (const record of records) {
@@ -147,6 +149,7 @@ export function groupByPageDateMiner(
     if (pageKey.toUpperCase().includes('MYK')) pageKey = 'MYK';
     else if (pageKey.toUpperCase().includes('EMPIRE')) pageKey = 'Empire Gold By ETG';
     else if (pageKey.toUpperCase().includes('ALIYAH')) pageKey = "Aliyah's Sterling Silver Collection";
+    if (groupOf) pageKey = groupOf(record);
     const date = dateOf(record) || 'Unknown Date';
     const miner = record.minerName?.trim() || 'Unknown Client';
     if (!map.has(pageKey)) map.set(pageKey, new Map());
