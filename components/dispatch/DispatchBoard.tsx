@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useMemo, useState } from 'react';
-import { ClipboardList, Package, Truck, Handshake, CheckSquare, ShoppingBag, Layout, Crown, BookOpen, XCircle, CheckCircle2, AlertTriangle, Gem, Plane, Store } from 'lucide-react';
+import { ClipboardList, Package, Truck, Handshake, CheckSquare, ShoppingBag, Layout, Crown, BookOpen, XCircle, CheckCircle2, AlertTriangle, Gem, Plane, Store, Printer } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { TabProps, DatabaseRowType } from '@/types';
@@ -10,12 +10,13 @@ import CollapsibleGroup from '@/components/CollapsibleGroup';
 import TabHeader from '@/components/TabHeader';
 import DispatchClientCard from './DispatchClientCard';
 import PulloutReport from './PulloutReport';
+import CancelReport from './CancelReport';
 import PulloutRequestsPanel from './PulloutRequestsPanel';
 import CancelReasonField from '@/components/CancelReasonField';
 import RemindersDialog from '@/components/RemindersDialog';
 import { computeOverdue } from '@/lib/reminders';
 import { parseDateRobust } from '@/lib/calculations';
-import { ORDER_BOXES, OrderBox, orderBox, isStillWithAdmin, shipmentDay, outsourceName } from '@/lib/fulfilment';
+import { ORDER_BOXES, OrderBox, orderBox, isStillWithAdmin, shipmentDay, cancelDay, outsourceName } from '@/lib/fulfilment';
 import { getEffectiveStatuses } from '@/lib/statusRegistry';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { toast } from 'sonner';
@@ -85,6 +86,7 @@ function QueueButton({
 
 export default function DispatchBoard({ records, searchQuery, onSearchChange, onUpdate, onBulkUpdate, userEmail, clientMilestones }: TabProps) {
   const [showReport, setShowReport] = useState(false);
+  const [showCancelReport, setShowCancelReport] = useState(false);
   const [showReminders, setShowReminders] = useState(() => computeOverdue(records).length > 0);
 
   // One queue per box (lib/fulfilment ORDER_BOXES), named like Crown's physical
@@ -105,6 +107,8 @@ export default function DispatchBoard({ records, searchQuery, onSearchChange, on
       const list = buckets.get(b.key)!;
       // Shipped items are grouped by the day they shipped, not the live date.
       if (b.key === 'dispatched' || b.key === 'delivered') return [b.key, groupByPageDateMiner(list, shipmentDay)];
+      // Cancelled / Returned: by the day it was cancelled.
+      if (b.key === 'cancelled') return [b.key, groupByPageDateMiner(list, cancelDay)];
       // Waiting boxes: one card per customer with all their items (they go out
       // together, on one invoice), filed under the customer's latest live date.
       const latest = latestLiveDateByCustomer(list);
@@ -312,18 +316,23 @@ export default function DispatchBoard({ records, searchQuery, onSearchChange, on
                   <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
                     {total} item{total !== 1 ? 's' : ''}
                   </span>
+                  {built.key === 'cancelled' && (
+                    <Button variant="outline" size="sm" className="h-7 text-xs ml-auto" onClick={() => setShowCancelReport(true)}>
+                      <Printer className="h-3.5 w-3.5 mr-1" />Print report
+                    </Button>
+                  )}
                   {total > 0 && (() => {
                     const ids = Array.from(group.values()).flatMap(dm => Array.from(dm.values()).flatMap(mm => Array.from(mm.values()).flat())).map(r => r.id);
                     const allOn = ids.every(id => selected.has(id));
                     return (
-                      <Button variant="ghost" size="sm" className="h-7 text-xs ml-auto" onClick={() => toggleSelect(ids, !allOn)}>
+                      <Button variant="ghost" size="sm" className={`h-7 text-xs ${built.key === 'cancelled' ? '' : 'ml-auto'}`} onClick={() => toggleSelect(ids, !allOn)}>
                         <CheckSquare className="h-3.5 w-3.5 mr-1" />{allOn ? 'Unselect all' : 'Select all'}
                       </Button>
                     );
                   })()}
                 </div>
                 {group && total > 0 ? (
-                  renderGroupedRecords(group, built.warnAfter, built.key === 'dispatched' || built.key === 'delivered' ? 'Shipped' : 'Latest order:')
+                  renderGroupedRecords(group, built.warnAfter, built.key === 'dispatched' || built.key === 'delivered' ? 'Shipped' : built.key === 'cancelled' ? 'Cancelled' : 'Latest order:')
                 ) : (
                   <div className="text-center py-16 border border-dashed border-border rounded-xl">
                     <p className="text-sm text-muted-foreground">Nothing in this queue.</p>
@@ -368,6 +377,7 @@ export default function DispatchBoard({ records, searchQuery, onSearchChange, on
       </Dialog>
 
       {showReport && <PulloutReport records={records} onClose={() => setShowReport(false)} />}
+      {showCancelReport && <CancelReport records={records} onClose={() => setShowCancelReport(false)} />}
 
       {/* Courier & Pullout Reminders Dialog */}
       {showReminders && (
