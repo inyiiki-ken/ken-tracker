@@ -89,6 +89,7 @@ export function rowToDatabaseRecord(
     rowKey: get("rowKey") ?? "",
     zohoInvoice: get("zohoInvoice") ?? "",
     zohoContactId: get("zohoContactId") ?? "",
+    cancelReason: get("cancelReason") ?? "",
   };
 }
 

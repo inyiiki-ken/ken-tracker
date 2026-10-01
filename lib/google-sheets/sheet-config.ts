@@ -75,7 +75,15 @@ export const DATABASE_HEADERS: Record<string, string> = {
    * "Zoho Contact ID" is what stops duplicate customers being created there. */
   zohoInvoice: "ZOHO Invoice",
   zohoContactId: "Zoho Contact ID",
+  /** Free note typed when an item is cancelled (e.g. "Past the reservation
+   * period"). Optional: the column is added to the sheet the first time a
+   * reason is saved. */
+  cancelReason: "Cancel Reason",
 };
+
+/** Columns the app adds by itself when first needed, so a sheet without them
+ * is not reported as broken. */
+export const OPTIONAL_DATABASE_KEYS = new Set<string>(["cancelReason"]);
 
 /**
  * Alternate header names some customers use for the same field. The app reads

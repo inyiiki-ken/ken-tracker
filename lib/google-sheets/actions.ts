@@ -6,7 +6,7 @@ import { readConfig, writeConfig, readConfigByPrefix, deleteConfigMarker, readCo
 import { parseSheetId } from "./sheetId";
 import { requireSession, requireRole, getSessionRoles } from "./authz";
 import { rowToDatabaseRecord, databaseRecordToRow } from "./row-mapper";
-import { DATABASE_HEADERS, DATABASE_HEADER_ALIASES, ROLES_HEADERS, UPLOADS_HEADERS } from "./sheet-config";
+import { DATABASE_HEADERS, DATABASE_HEADER_ALIASES, OPTIONAL_DATABASE_KEYS, ROLES_HEADERS, UPLOADS_HEADERS } from "./sheet-config";
 import type { DatabaseRowType } from "@/types";
 import { buildCustomerIdIndex, resolveCustomerIdFor } from "@/lib/customerId";
 import { trimAudit } from "@/lib/auditTrim";
@@ -65,7 +65,10 @@ export async function verifyConnectionAndHeaders(
   params?: { sheetIdOrUrl?: string }
 ): Promise<ConnectionCheckResult> {
   const expected: Record<string, { title: string; headers: Record<string, string> }> = {
-    database: { title: "Database", headers: DATABASE_HEADERS },
+    database: {
+      title: "Database",
+      headers: Object.fromEntries(Object.entries(DATABASE_HEADERS).filter(([k]) => !OPTIONAL_DATABASE_KEYS.has(k))),
+    },
     uploads: { title: "Uploads", headers: UPLOADS_HEADERS },
     roles: { title: "Roles", headers: ROLES_HEADERS },
   };
@@ -200,6 +203,29 @@ async function activeHeaderSet(sheet: { loadHeaderRow: () => Promise<void>; head
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Adds an optional column (e.g. "Cancel Reason") to the END of the Database
+ * header row the first time a value is saved to it. Never moves existing columns.
+ */
+async function ensureOptionalColumns(sheet: any, records: Partial<DatabaseRowType>[]): Promise<void> {
+  const wanted = [...OPTIONAL_DATABASE_KEYS].filter((k) =>
+    records.some((r) => String((r as Record<string, unknown>)[k] ?? "").trim() !== "")
+  );
+  if (wanted.length === 0) return;
+  await sheet.loadHeaderRow();
+  const current: string[] = [...(sheet.headerValues ?? [])].map((h: unknown) => String(h ?? ""));
+  const have = new Set(current.map((h) => h.trim()));
+  const missing = wanted.map((k) => DATABASE_HEADERS[k]).filter((h) => h && !have.has(h));
+  if (missing.length === 0) return;
+  while (current.length && !current[current.length - 1].trim()) current.pop();
+  const next = [...current, ...missing];
+  if (sheet.columnCount < next.length) {
+    await sheet.resize({ rowCount: sheet.rowCount, columnCount: next.length });
+  }
+  await sheet.setHeaderRow(next);
+  invalidateActiveRows();
 }
 
 export async function getRecords(_params?: { tailOnly?: boolean }): Promise<DatabaseRowType[]> {
@@ -374,6 +400,7 @@ export async function updateRecord(params: {
     auditTrail: appendAudit(existingAudit, auditEntry),
   };
 
+  await ensureOptionalColumns(sheet, [fields]);
   const patchRow = databaseRecordToRow(fields, await activeHeaderSet(sheet), await getTenantColumnAliases());
   const written = await writeRowsByCells(sheet, [
     { rowNumber: params.rowId, rowKey: params.existingRecord?.rowKey, patch: patchRow },
@@ -388,6 +415,7 @@ export async function bulkUpdateRecords(params: {
 }): Promise<{ success: boolean; updatedCount: number }> {
   await requireSession();
   const sheet = await getActiveWorksheet("database");
+  await ensureOptionalColumns(sheet, params.updates.map((u) => u.fields));
   const dbHeaders = await activeHeaderSet(sheet);
   const dbAliases = await getTenantColumnAliases();
   // Was capped at 10 with one API write per row; now every row in the batch is
@@ -664,6 +692,7 @@ export async function checkDatabaseColumns(): Promise<{ missing: string[]; error
     const extra = await getTenantColumnAliases();
     const missing: string[] = [];
     for (const [key, header] of Object.entries(DATABASE_HEADERS)) {
+      if (OPTIONAL_DATABASE_KEYS.has(key)) continue;
       if (have.has(header)) continue;
       const alts = [...(DATABASE_HEADER_ALIASES[key] ?? []), ...(extra[key] ?? [])];
       if (alts.some((a) => have.has(a))) continue;

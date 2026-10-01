@@ -17,6 +17,7 @@ import { AlertTriangle } from 'lucide-react';
 import { getSaleStatuses } from '@/lib/appConfig';
 import { computeOverdue } from '@/lib/reminders';
 import RemindersDialog from '@/components/RemindersDialog';
+import { PulloutPanel, CancelledItems } from './LiverPullout';
 
 /** Statuses that count as a sale for this customer (Settings → App Settings). */
 function isSale(r: DatabaseRowType): boolean {
@@ -75,9 +76,9 @@ function StatusSection({ status, items, copyRow, copiedId }: {
   copyRow: (r: DatabaseRowType) => void;
   copiedId: number | null;
 }) {
-  const [expanded, setExpanded] = useState(true);
+  // Collapsed by default — tap a status to see its items.
+  const [expanded, setExpanded] = useState(false);
   const grams = calcGrams(items);
-  const isCancelled = status === 'Cancelled';
 
   return (
     <div className="rounded-xl border border-border bg-card overflow-hidden">
@@ -318,7 +319,7 @@ export default function LiverDashboard({ records, searchQuery, onSearchChange, l
 
   const totalItems = filtered.length;
   const totalGrams = calcGrams(filtered);
-  const deliveredCount = filtered.filter(isSale).length;
+  const soldGrams = calcGrams(filtered.filter(isSale));
 
   const byStatus = useMemo(() => {
     const map = new Map<string, DatabaseRowType[]>();
@@ -388,6 +389,10 @@ export default function LiverDashboard({ records, searchQuery, onSearchChange, l
 
         {selectedLiver && (
           <>
+            {/* What to pull out, pullout requests to Dispatch, and what was cancelled */}
+            <PulloutPanel liver={selectedLiver} records={byLiver} allRecords={records} />
+            <CancelledItems records={byLiver} />
+
             {/* Date Range Filters */}
             <div>
               <p className="text-xs text-muted-foreground mb-1.5">Date range</p>
@@ -446,7 +451,7 @@ export default function LiverDashboard({ records, searchQuery, onSearchChange, l
                 accent="primary"
                 label="Total Items"
                 value={totalItems}
-                sub={`${deliveredCount} sold`}
+                sub={`${soldGrams.toFixed(2)}g sold`}
               />
               <StatCard
                 icon={<Weight className="h-3.5 w-3.5" />}
