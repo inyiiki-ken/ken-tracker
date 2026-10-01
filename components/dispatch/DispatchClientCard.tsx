@@ -3,8 +3,7 @@
 import { useState, useRef, memo, useCallback, useMemo } from 'react';
 import { autoStageDates, orderBox } from '@/lib/fulfilment';
 import { Checkbox } from '@/components/ui/checkbox';
-import { formatDate } from '@/lib/formatters';
-import { parseDateRobust } from '@/lib/calculations';
+import { formatDate, orderedRangeLabel } from '@/lib/formatters';
 import { FileText, Truck, Upload, History, ChevronDown, AlertTriangle, Pencil, Check, X, Scissors, StickyNote, Plus, Gift, MapPin, Phone, Copy } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -364,16 +363,7 @@ function DispatchClientCard({ minerName, records, allRecords, onUpdate, userEmai
   const deliverySummary = getDeliverySummary(records);
   // Order dates on this card, e.g. "Ordered Sep 26 – Sep 30", so a card filed
   // under its latest (or shipped) date still shows when each item was ordered.
-  const orderedRange = useMemo(() => {
-    const dated = records
-      .map(r => ({ s: r.dateOfLive, t: r.dateOfLive ? parseDateRobust(r.dateOfLive)?.getTime() : undefined }))
-      .filter((d): d is { s: string; t: number } => !!d.s && typeof d.t === 'number' && !isNaN(d.t))
-      .sort((a, b) => a.t - b.t);
-    if (dated.length === 0) return '';
-    const from = formatDate(dated[0].s);
-    const to = formatDate(dated[dated.length - 1].s);
-    return from === to ? `Ordered ${from}` : `Ordered ${from} – ${to}`;
-  }, [records]);
+  const orderedRange = useMemo(() => orderedRangeLabel(records), [records]);
   const { isCompact } = useCompactMode();
 
   // Milestone computation — use pre-computed if available, fallback to local
