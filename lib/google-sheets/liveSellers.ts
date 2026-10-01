@@ -18,6 +18,7 @@ import {
   type LiveSession,
   type LiveStockEntry,
 } from "@/lib/liveSellers";
+import { SESSION_H, ITEM_H, STOCK_H, LIVE_TABS as TAB } from "./liveSellerHeaders";
 
 /**
  * Live Sellers & Stock storage. Three app-owned tabs are auto-created in the
@@ -31,54 +32,6 @@ import {
 
 const ROLES = ["admin", "super_admin", "livesellers"];
 const PRICE_MARKER = "__LIVE_PRICELIST__";
-
-const SESSION_H = {
-  id: "Session ID",
-  date: "Date",
-  seller: "Seller",
-  weightOut: "Weight Out (g)",
-  weightBack: "Weight Back (g)",
-  status: "Status",
-  notes: "Notes",
-  outLog: "Out Log",
-  updatedBy: "Updated By",
-  updatedAt: "Updated At",
-} as const;
-
-const ITEM_H = {
-  id: "Item ID",
-  sessionId: "Session ID",
-  seller: "Seller",
-  liveDate: "Live Date",
-  description: "Description",
-  type: "Type",
-  grams: "Grams",
-  rate: "Rate",
-  amount: "Amount",
-  status: "Status",
-  pulloutDate: "Pullout Date",
-  paidAmount: "Paid Amount",
-  invoiceNo: "Invoice No",
-  cancelledDate: "Cancelled Date",
-  notes: "Notes",
-  recordKey: "Record Key",
-  customer: "Customer",
-  updatedBy: "Updated By",
-  updatedAt: "Updated At",
-} as const;
-
-const STOCK_H = {
-  id: "Entry ID",
-  date: "Date",
-  grams: "Grams",
-  pcs: "Pcs",
-  description: "Description",
-  note: "Note",
-  addedBy: "Added By",
-  deleted: "Deleted",
-} as const;
-
-const TAB = { sessions: "Live_Sessions", items: "Live_Items", stock: "Live_Stock" } as const;
 
 const inflight = new Map<string, Promise<GoogleSpreadsheetWorksheet>>();
 
