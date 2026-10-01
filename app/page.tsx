@@ -46,7 +46,7 @@ import DesignSettings from '@/components/settings/DesignSettings';
 import UploadMasterlistFAB from '@/components/UploadMasterlistFAB';
 import PreviewAsUser from '@/components/PreviewAsUser';
 import RateCalculatorWidget from '@/components/RateCalculatorWidget';
-import { autoStageDates } from '@/lib/fulfilment';
+import { autoStageDates, fulfilmentStage } from '@/lib/fulfilment';
 type TabKey = 'admin' | 'dispatch' | 'accounts' | 'bossing' | 'liver' | 'purchasing' | 'invoicing' | 'livesellers' | 'settings' | 'godmode';
 
 /** The tab a user lands on: the first of these they can see. */
@@ -65,6 +65,17 @@ function getVisibleTabs(roles: string[]): Set<TabKey> {
   if (roles.includes('liver')) visible.add('liver');
   if (roles.includes('purchasing')) visible.add('purchasing');
   return visible;
+}
+
+/**
+ * An item brought back from Cancelled / Returned loses its old cancel reason,
+ * so a later cancel never shows the reason from before.
+ */
+function clearedCancelReason(before: Partial<DatabaseRowType> | undefined, fields: Partial<DatabaseRowType>): Partial<DatabaseRowType> {
+  if (fields.status === undefined || fields.cancelReason !== undefined) return {};
+  if (!String(before?.cancelReason ?? '').trim()) return {};
+  const wasOut = fulfilmentStage(before?.status) === 'excluded';
+  return wasOut && fulfilmentStage(fields.status) !== 'excluded' ? { cancelReason: '' } : {};
 }
 
 function AppContent() {
@@ -194,6 +205,7 @@ function AppContent() {
     if (fields.status !== undefined && fields.status !== before?.status) {
       const stamps = autoStageDates({ ...before, ...fields }, fields.status);
       if (Object.keys(stamps).length) fields = { ...fields, ...stamps };
+      fields = { ...fields, ...clearedCancelReason(before, fields) };
     }
     const localAudit = fields.status !== undefined && fields.status !== before?.status
       ? trimAudit([...String(before?.auditTrail ?? '').split('\n').filter(Boolean), `${new Date().toISOString()} | ${user?.email || 'unknown'} | Updated: ${Object.keys(fields).join(', ')}`], 20).join('\n')
@@ -222,7 +234,7 @@ function AppContent() {
     updates = updates.map(u => {
       const existing = recordsRef.current.find(r => r.id === u.rowId);
       if (u.fields.status === undefined || u.fields.status === existing?.status) return u;
-      const stamps = autoStageDates({ ...existing, ...u.fields }, u.fields.status, now);
+      const stamps = { ...autoStageDates({ ...existing, ...u.fields }, u.fields.status, now), ...clearedCancelReason(existing, u.fields) };
       return Object.keys(stamps).length ? { ...u, fields: { ...u.fields, ...stamps } } : u;
     });
     const byId = new Map(updates.map(u => [u.rowId, u.fields]));
@@ -456,7 +468,7 @@ function AppContent() {
         <AdminPipeline onBulkUpdate={handleBulkUpdate} records={records} searchQuery={searchQueries.admin} onSearchChange={handleSearchChange} onUpdate={handleUpdate} userEmail={user.email} userFirstName={user.firstName} onRefresh={fetchData} />
       )}
       {shownTab === 'dispatch' && (
-        <DispatchBoard onBulkUpdate={handleBulkUpdate} records={records} searchQuery={searchQueries.dispatch} onSearchChange={handleSearchChange} onUpdate={handleUpdate} userEmail={user.email} clientMilestones={clientMilestones} />
+        <DispatchBoard onBulkUpdate={handleBulkUpdate} records={records} searchQuery={searchQueries.dispatch} onSearchChange={handleSearchChange} onUpdate={handleUpdate} userEmail={user.email} clientMilestones={clientMilestones} onRefresh={() => fetchData(true)} />
       )}
       {shownTab === 'accounts' && (
         <AccountsTracking records={records} searchQuery={searchQueries.accounts} onSearchChange={handleSearchChange} onUpdate={handleUpdate} userEmail={user.email} userFirstName={user.firstName} onRefresh={fetchData} />
@@ -474,7 +486,7 @@ function AppContent() {
         </div>
       )}
       {shownTab === 'liver' && (lockedLiverName || effectiveRoles.some(r => r === 'super_admin' || r === 'admin' || r === 'bossing' || r === 'accounts')) && (
-        <LiverDashboard records={records} searchQuery={searchQueries.liver} onSearchChange={handleSearchChange} onUpdate={handleUpdate} lockedLiverName={lockedLiverName} />
+        <LiverDashboard records={records} searchQuery={searchQueries.liver} onSearchChange={handleSearchChange} onUpdate={handleUpdate} lockedLiverName={lockedLiverName} onRefresh={() => fetchData(true)} previewing={previewing} />
       )}
       {shownTab === 'purchasing' && (
         <PurchasingTab userEmail={user.email} />

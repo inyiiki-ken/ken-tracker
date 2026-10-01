@@ -118,7 +118,7 @@ export function boxFromStatus(status?: string): OrderBox | null {
 }
 
 /** The box that matches how the order is paid for / delivered. */
-function boxFromDelivery(r: DatabaseRowType): OrderBox {
+export function boxFromDelivery(r: DatabaseRowType): OrderBox {
   const where = `${r.locationOfMiner ?? ''} ${r.regions ?? ''} ${r.modeOfPayment ?? ''}`.toLowerCase();
   if (/international|pinas/.test(where)) return 'intl';
   const mop = String(r.modeOfPayment ?? '').toLowerCase();

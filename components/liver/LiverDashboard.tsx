@@ -241,7 +241,7 @@ function MaterialSplit({ records }: { records: DatabaseRowType[] }) {
 }
 
 // ─── Main Component ───────────────────────────────────────────────────────────
-export default function LiverDashboard({ records, searchQuery, onSearchChange, lockedLiverName }: TabProps) {
+export default function LiverDashboard({ records, searchQuery, onSearchChange, lockedLiverName, onRefresh, previewing }: TabProps) {
   const [selectedLiver, setSelectedLiver] = useState<string>(() => {
     if (lockedLiverName) return lockedLiverName;
     try { return localStorage.getItem(LIVER_STORAGE_KEY) || ''; } catch { return ''; }
@@ -252,6 +252,18 @@ export default function LiverDashboard({ records, searchQuery, onSearchChange, l
   const [materialFilter, setMaterialFilter] = useState<MaterialFilter>('all');
   const [copiedId, setCopiedId] = useState<number | null>(null);
   const [showReminders, setShowReminders] = useState(false);
+  // "Now" for the date filters and overdue items, so a screen left open
+  // overnight moves on (ticks every minute and when the app comes back).
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const tick = () => { if (!document.hidden) setNow(Date.now()); };
+    const t = setInterval(tick, 60_000);
+    document.addEventListener('visibilitychange', tick);
+    return () => {
+      clearInterval(t);
+      document.removeEventListener('visibilitychange', tick);
+    };
+  }, []);
 
   const copyRow = useCallback((r: DatabaseRowType) => {
     const text = [r.minerName, r.itemDescription, r.grams ? `${r.grams}g` : ''].filter(Boolean).join(' · ');
@@ -294,11 +306,11 @@ export default function LiverDashboard({ records, searchQuery, onSearchChange, l
 
     // Date range filter
     if (range !== 'all') {
-      const now = new Date();
+      const today = new Date(now);
       let from: Date;
       let to: Date | undefined;
-      if (range === 'week') from = startOfWeek(now, { weekStartsOn: 1 });
-      else if (range === 'month') from = startOfMonth(now);
+      if (range === 'week') from = startOfWeek(today, { weekStartsOn: 1 });
+      else if (range === 'month') from = startOfMonth(today);
       else {
         from = customStart ? new Date(customStart) : new Date(0);
         to = customEnd ? new Date(customEnd) : undefined;
@@ -322,10 +334,11 @@ export default function LiverDashboard({ records, searchQuery, onSearchChange, l
     else if (materialFilter === 'silver') base = base.filter(r => isSilverItem(r));
 
     return base;
-  }, [byLiver, range, customStart, customEnd, materialFilter]);
+  }, [byLiver, range, customStart, customEnd, materialFilter, now]);
 
   // Her own overdue items (status deadlines) — pops up once when she opens the tab.
-  const myOverdue = useMemo(() => computeOverdue(byLiver, undefined, records), [byLiver, records]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- `now`: re-check deadlines as time passes
+  const myOverdue = useMemo(() => computeOverdue(byLiver, undefined, records), [byLiver, records, now]);
   const overdueCount = myOverdue.reduce((n, sec) => n + sec.items.length, 0);
   useEffect(() => {
     if (selectedLiver && overdueCount > 0 && !remindersSeen(selectedLiver)) {
@@ -407,8 +420,8 @@ export default function LiverDashboard({ records, searchQuery, onSearchChange, l
         {selectedLiver && (
           <>
             {/* What to pull out, pullout requests to Dispatch, and what was cancelled */}
-            <PulloutPanel liver={selectedLiver} records={byLiver} allRecords={records} />
-            <CancelledItems records={byLiver} />
+            <PulloutPanel key={selectedLiver} liver={selectedLiver} records={byLiver} allRecords={records} onRefresh={onRefresh} previewing={previewing} />
+            <CancelledItems key={selectedLiver} records={byLiver} />
 
             {/* Date Range Filters */}
             <div>

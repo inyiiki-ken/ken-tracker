@@ -286,6 +286,8 @@ function PromoSfToggle({ record, onGroupUpdate }: {
 function AdminItemRow({ record, onUpdate, onGroupUpdate, onDateGroupUpdate, onDpGroupUpdate, groupHasDP, userEmail }: Props) {
   const [showCancel, setShowCancel] = useState(false);
   const [cancelReason, setCancelReason] = useState('');
+  // The cancel status picked ("Cancelled", "Canceled"…), written as chosen.
+  const [cancelStatus, setCancelStatus] = useState('Cancelled');
   const [showEdit, setShowEdit] = useState(false);
   const [showSplit, setShowSplit] = useState(false);
   const [copiedInvoice, setCopiedInvoice] = useState(false);
@@ -404,7 +406,7 @@ function AdminItemRow({ record, onUpdate, onGroupUpdate, onDateGroupUpdate, onDp
 
   const handleStatusChange = async (newStatus: string) => {
     setResetKey(Date.now());
-    if (newStatus === 'Cancelled') { setCancelReason(''); setShowCancel(true); return; }
+    if (/cancel/i.test(newStatus)) { setCancelStatus(newStatus); setCancelReason(''); setShowCancel(true); return; }
     if (dpLocked) {
       toast.error('Enter a downpayment amount to enable other status options');
       return;
@@ -714,7 +716,7 @@ function AdminItemRow({ record, onUpdate, onGroupUpdate, onDateGroupUpdate, onDp
           <CancelReasonField value={cancelReason} onChange={setCancelReason} />
           <AlertDialogFooter>
             <AlertDialogCancel>Keep it</AlertDialogCancel>
-            <AlertDialogAction className="bg-destructive text-destructive-foreground" onClick={async () => { await onUpdate(record.id, { status: 'Cancelled', cancelReason: cancelReason.trim() }); toast.success('Item cancelled'); }}>
+            <AlertDialogAction className="bg-destructive text-destructive-foreground" onClick={async () => { await onUpdate(record.id, { status: cancelStatus, cancelReason: cancelReason.trim() }); toast.success('Item cancelled'); }}>
               Cancel Item
             </AlertDialogAction>
           </AlertDialogFooter>

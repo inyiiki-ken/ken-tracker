@@ -107,3 +107,13 @@ export async function getSessionAccess(): Promise<{ all: boolean; email: string;
     liverName: String(mine?.name || fromMap || "").toUpperCase().trim(),
   };
 }
+
+/** Someone's liver name (Roles tab "name", upper-cased), or "" when unknown. */
+export async function liverNameForEmail(email: string): Promise<string> {
+  const me = String(email ?? "").toLowerCase().trim();
+  if (!me) return "";
+  const rows = (await loadRolesData()) ?? [];
+  const row = rows.find((r) => r.email.toLowerCase().trim() === me);
+  const fromMap = Object.entries(EMAIL_TO_LIVER_NAME).find(([k]) => k.toLowerCase() === me)?.[1];
+  return String(row?.name || fromMap || "").toUpperCase().trim();
+}

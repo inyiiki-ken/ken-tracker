@@ -84,7 +84,7 @@ function QueueButton({
   );
 }
 
-export default function DispatchBoard({ records, searchQuery, onSearchChange, onUpdate, onBulkUpdate, userEmail, clientMilestones }: TabProps) {
+export default function DispatchBoard({ records, searchQuery, onSearchChange, onUpdate, onBulkUpdate, userEmail, clientMilestones, onRefresh }: TabProps) {
   const [showReport, setShowReport] = useState(false);
   const [showCancelReport, setShowCancelReport] = useState(false);
   const [showReminders, setShowReminders] = useState(() => computeOverdue(records).length > 0);
@@ -276,7 +276,7 @@ export default function DispatchBoard({ records, searchQuery, onSearchChange, on
         }
       />
 
-      <PulloutRequestsPanel records={records} onBulkUpdate={onBulkUpdate} onUpdate={onUpdate} />
+      <PulloutRequestsPanel records={records} onRefresh={onRefresh} />
 
       {/* Work queue: pick a queue on the left, work it on the right. Replaces the
           six stacked accordions — one click instead of expand/collapse, and the

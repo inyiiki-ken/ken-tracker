@@ -102,4 +102,8 @@ export {
   createPulloutRequest,
   updatePulloutRequest,
   setPulloutRequestStatus,
+  addItemsToPulloutRequest,
+  completePulloutRequest,
+  undoCompletePulloutRequest,
+  ensurePulloutRowKeys,
 } from "./google-sheets/pulloutRequests";

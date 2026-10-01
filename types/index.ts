@@ -74,6 +74,8 @@ export type TabProps = {
   userFirstName?: string;
   onRefresh?: () => void;
   lockedLiverName?: string; // Set for liver-role users — they can only see their own name
+  /** An admin is previewing someone else's view: actions that write are disabled. */
+  previewing?: boolean;
   /** Pre-computed client milestones (computed once in App.tsx) */
   clientMilestones?: Map<string, import('@/lib/milestones').ClientMilestone>;
 };
