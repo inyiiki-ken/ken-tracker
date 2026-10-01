@@ -1,5 +1,5 @@
 /**
- * Pullout requests — a liver tells Dispatch which "For Pullout" items they will
+ * Pullout requests — a liver tells Dispatch which "For Pullout" / Outsource items they will
  * pull out, on which day, and whether they go For COD or For Pick Up, so the
  * items are prepared before the liver comes to the office.
  *
@@ -53,9 +53,11 @@ export interface PulloutRequestInput {
   note: string;
 }
 
-/** Statuses that make an item show in the liver's "Items to pull out" list. */
+/** Statuses that make an item show in the liver's "Items to pull out" list:
+ * For Pullout, and Outsource items (Dispatch gets them in before the liver comes). */
 export function isToPullOut(r: DatabaseRowType): boolean {
-  return String(r.status ?? "").trim().toLowerCase() === "for pullout";
+  const s = String(r.status ?? "").trim().toLowerCase();
+  return s === "for pullout" || /outsourc/.test(s);
 }
 
 export function isCancelledItem(r: DatabaseRowType): boolean {
