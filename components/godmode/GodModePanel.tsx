@@ -12,6 +12,7 @@ import { backfillRowKeys } from "@/lib/api";
 import type { MyContext, Tenant } from "@/lib/tenancy-types";
 import NewCustomerWizard from "@/components/godmode/NewCustomerWizard";
 import MasterlistImportSetup from "@/components/godmode/MasterlistImportSetup";
+import DemoWorkspaceCard from "@/components/godmode/DemoWorkspaceCard";
 
 /**
  * Developer-only console: manage every customer (tenant) from one place, switch
@@ -123,6 +124,9 @@ export default function GodModePanel() {
 
       {/* Per-customer masterlist import setup (auto-detect columns from a sample). */}
       <MasterlistImportSetup activeName={ctx.activeTenant?.displayName} />
+
+      {/* Demo accounts: made-up data + every feature on, for showing prospects. */}
+      {ctx.multiTenant && <DemoWorkspaceCard tenantId={ctx.activeTenant?.tenantId} />}
 
       {/* Data safety: stable row identity */}
       <div className="rounded-lg border border-border bg-card p-4 space-y-2">
