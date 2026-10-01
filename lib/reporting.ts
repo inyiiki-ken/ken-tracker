@@ -5,6 +5,7 @@ import {
   calcProfitAED,
   calcRemainingBalance,
 } from "@/lib/calculations";
+import { orderBox, boxLabel, shipmentDay } from "@/lib/fulfilment";
 
 /**
  * Data export helpers for the Bossing dashboard. Produces a spreadsheet-ready
@@ -27,6 +28,8 @@ const EXPORT_COLUMNS: { header: string; value: (r: DatabaseRowType) => string | 
   { header: "Grams", value: (r) => r.grams ?? "" },
   { header: "QTY", value: (r) => r.qty ?? "" },
   { header: "Status", value: (r) => r.status ?? "" },
+  { header: "Box", value: (r) => boxLabel(orderBox(r)) },
+  { header: "Shipment Date", value: (r) => (r.dispatchDate || r.deliveredDate ? shipmentDay(r) : "") },
   { header: "Mode of Payment", value: (r) => r.modeOfPayment ?? "" },
   { header: "Price AED", value: (r) => round2(calcItemPriceAED(r)) },
   { header: "Cost AED", value: (r) => round2(calcItemCostAED(r)) },

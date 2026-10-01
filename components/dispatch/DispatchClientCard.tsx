@@ -618,7 +618,8 @@ function DispatchClientCard({ minerName, records, allRecords, onUpdate, userEmai
 
       {showInvoice && (
         <InvoiceModal
-          records={allRecords.filter(r => r.minerName?.trim().toLowerCase() === minerName.trim().toLowerCase())}
+          // Only this card's items: the For Pullout card invoices its own items, not the whole customer.
+          records={records}
           onClose={() => setShowInvoice(false)}
         />
       )}

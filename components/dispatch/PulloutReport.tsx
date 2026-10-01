@@ -7,7 +7,7 @@ import { Printer, ClipboardList, DollarSign } from 'lucide-react';
 import { DatabaseRowType } from '@/types';
 import { formatDate } from '@/lib/formatters';
 import { calcProfitAED, calcItemPriceAED, calcItemCostAED, getQty } from '@/lib/calculations';
-import { getPulloutStatuses } from '@/lib/appConfig';
+import { OrderBox, orderBox, boxLabel, isStillWithAdmin } from '@/lib/fulfilment';
 import { computeToCancel, hoursInStatus } from '@/lib/reminders';
 
 interface Props {
@@ -15,17 +15,22 @@ interface Props {
   onClose: () => void;
 }
 
+/** Boxes whose items go out, in the order they're printed. */
+const REPORT_BOXES: OrderBox[] = ['intl', 'cod', 'pickup', 'reseller'];
+
+/** Box → source → client. Each block is one box + source, e.g. "FOR COD · Main Store". */
 function groupBySourceThenMiner(records: DatabaseRowType[]) {
   const grouped = new Map<string, Map<string, DatabaseRowType[]>>();
-  for (const r of records) {
-    const source = r.source?.trim() || r.liverName?.trim() || 'Main Store';
+  const sorted = [...records].sort((a, b) => REPORT_BOXES.indexOf(orderBox(a)) - REPORT_BOXES.indexOf(orderBox(b)));
+  for (const r of sorted) {
+    const source = `${boxLabel(orderBox(r)).toUpperCase()} · ${r.source?.trim() || r.liverName?.trim() || 'Main Store'}`;
     const miner = r.minerName?.trim() || 'Unknown Client';
     if (!grouped.has(source)) grouped.set(source, new Map());
     const bySource = grouped.get(source)!;
     if (!bySource.has(miner)) bySource.set(miner, []);
     bySource.get(miner)!.push(r);
   }
-  return new Map([...grouped.entries()].sort((a, b) => a[0].localeCompare(b[0])));
+  return grouped;
 }
 
 function gramsDisplay(r: DatabaseRowType): string {
@@ -66,8 +71,9 @@ const SHARED_STYLES = `
 
 export default function PulloutReport({ records, onClose }: Props) {
   const [activePreview, setActivePreview] = useState<'dispatch' | 'financial' | null>(null);
-  const pulloutSet = new Set(getPulloutStatuses().map(s => s.toLowerCase()));
-  const forPullout = records.filter(r => pulloutSet.has(String(r.status || '').trim().toLowerCase()));
+  // Everything in a box that's going out (International Shipment, COD, Pick Up, Reseller).
+  const forPullout = records.filter(r =>
+    String(r.status || '').trim() && !isStillWithAdmin(r.status) && REPORT_BOXES.includes(orderBox(r)));
   // Items past their status deadline (Settings → App Settings → Status deadlines).
   const toCancel = computeToCancel(records);
   const toCancelCount = toCancel.reduce((n, s) => n + s.items.length, 0);
@@ -106,7 +112,7 @@ export default function PulloutReport({ records, onClose }: Props) {
 
       html += `<div class="source-block">
         <div class="source-header">
-          <span class="source-title">📦 SOURCE: ${source}</span>
+          <span class="source-title">📦 ${source}</span>
           <div class="source-math">
             <span>Items: ${allItems.length}</span>
             <span>Total Grams: ${totalGrams.toFixed(2)}g</span>
@@ -183,7 +189,7 @@ export default function PulloutReport({ records, onClose }: Props) {
 
       html += `<div class="source-block">
         <div class="source-header">
-          <span class="source-title">📦 SOURCE: ${source}</span>
+          <span class="source-title">📦 ${source}</span>
           <div class="source-math">
             <span>Grams: ${sGrams.toFixed(2)}g</span>
             <span class="highlight-pay">To Pay: AED ${sCost.toFixed(2)}</span>
@@ -269,10 +275,10 @@ export default function PulloutReport({ records, onClose }: Props) {
         {/* Summary */}
         <div className="rounded-lg border border-border bg-secondary/30 p-3 space-y-1">
           <p className="text-xs text-muted-foreground font-medium">
-            {forPullout.length} items ready for pullout across {grouped.size} source{grouped.size !== 1 ? 's' : ''}
+            {forPullout.length} items ready for pullout: {REPORT_BOXES.map(b => `${boxLabel(b)} ${forPullout.filter(r => orderBox(r) === b).length}`).join(' · ')}
           </p>
           {forPullout.length === 0 && (
-            <p className="text-xs text-muted-foreground">No items currently marked {getPulloutStatuses().map(s => `"${s}"`).join(" / ")}.</p>
+            <p className="text-xs text-muted-foreground">No items in For International Shipment, For COD, For Pick Up or Reseller.</p>
           )}
         </div>
 
