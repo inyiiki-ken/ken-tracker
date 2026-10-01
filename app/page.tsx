@@ -371,7 +371,7 @@ function AppContent() {
             {canPreview && dynamicRoles && (
               <PreviewAsUser users={dynamicRoles} value={previewEmail} onChange={setPreviewEmail} />
             )}
-            {(effectiveRoles.includes('super_admin') || effectiveRoles.includes('admin')) && <UploadMasterlistFAB onRefresh={fetchData} />}
+            {(effectiveRoles.includes('super_admin') || effectiveRoles.includes('admin')) && <UploadMasterlistFAB onRefresh={fetchData} records={records} />}
             <button
               onClick={() => logout({ returnTo: window.location.origin })}
               className="kt-avatar flex items-center justify-center w-7 h-7 font-cinzel text-[10px] border border-border rounded-md transition-colors hover:bg-accent text-primary"
