@@ -229,6 +229,20 @@ function findHeader(lines: OcrLine[]): number {
   return best;
 }
 
+/** The "RATE 383.25" figure in the header block above the table, or 0. */
+function readHeaderRate(lines: OcrLine[]): number {
+  for (const l of lines) {
+    const i = l.words.findIndex((w) => /^RATE:?$/.test(clean(w.text)));
+    if (i < 0) continue;
+    const w = l.words.slice(i + 1).find((x) => isNumeric(x.text));
+    if (!w) continue;
+    let v = readNumber(w.text);
+    if (v > 0 && v < 10 && v * 100 >= 15) v = Math.round(v * 100);
+    if (v > 0) return v;
+  }
+  return 0;
+}
+
 const MONTHS = ["JANUARY", "FEBRUARY", "MARCH", "APRIL", "MAY", "JUNE", "JULY", "AUGUST", "SEPTEMBER", "OCTOBER", "NOVEMBER", "DECEMBER"];
 function findDate(text: string): string {
   const m = text.match(/(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)[A-Z]*\.?\s+(\d{1,2})\s*,?\s*(20\d{2})/i);
@@ -264,7 +278,8 @@ function fixCodes(codes: string[]): string[] {
   parsed.forEach((p) => p.prefix && prefixCount.set(p.prefix, (prefixCount.get(p.prefix) || 0) + 1));
   const prefix = [...prefixCount.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || "";
   const width = Math.max(2, ...parsed.map((p) => (Number.isFinite(p.num) ? String(p.num).length : 0)));
-  const start = Number.isFinite(parsed[0]?.num) ? parsed[0].num : 1;
+  // Runs start at 01: a first code read as 00 ("BELLAOY") is 01.
+  const start = Number.isFinite(parsed[0]?.num) ? Math.max(1, parsed[0].num) : 1;
   // Keep every number that reads in order, so a row the OCR missed shows up as
   // a gap (AMB13 → AMB15) instead of every later code shifting down by one.
   // Only an unreadable or out-of-order number is replaced by previous + 1.
@@ -367,12 +382,6 @@ export async function parseMasterlistImage(file: File, mapping?: MasterlistMappi
   for (const r of raw) {
     if (r.nums[1] > 0 && r.nums[1] < 10 && r.nums[1] * 100 >= 15) r.nums[1] = Math.round(r.nums[1] * 100);
   }
-  // Numbers in sheet order: grams, rate, MC, amount (MC may be absent).
-  const rateMode = (() => {
-    const counts = new Map<number, number>();
-    raw.forEach((r) => r.nums[1] > 0 && counts.set(r.nums[1], (counts.get(r.nums[1]) || 0) + 1));
-    return [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? 0;
-  })();
   // MC takes only a few values per sheet (e.g. 25 and 30). A value seen on one
   // row only, within 2 of a common one, is a misread ("26" for 25).
   const mcCount = new Map<number, number>();
@@ -388,28 +397,66 @@ export async function parseMasterlistImage(file: File, mapping?: MasterlistMappi
     const x = a.toFixed(2), y = b.toFixed(2);
     return x.length === y.length && [...x].filter((c, k) => c !== y[k]).length === 1;
   };
-  const fixed = raw.map((r, i) => {
-    let [grams, rate, mc, amount] = r.nums;
-    if (r.nums.length === 3) { amount = r.nums[2]; mc = 0; }
-    // The rate is the same on every row of one sheet — trust the common value.
-    if (rateMode && Math.abs(rate - rateMode) > 0.01) rate = rateMode;
-    mc = snapMc(mc || 0);
-    const per = rate + mc;
-    const ok = (g: number) => per > 0 && amount > 0 && Math.abs(g * per - amount) <= Math.max(0.6, amount * 0.002);
+  // Numbers in sheet order: grams, rate, MC, amount (MC may be absent).
+  const rows0 = raw.map((r) => {
+    const [grams, rate, mc, amount] = r.nums;
+    return r.nums.length === 3 ? { grams, rate, mc: 0, amount: r.nums[2] } : { grams, rate, mc: snapMc(mc || 0), amount: amount ?? 0 };
+  });
+  const near = (a: number, b: number) => Math.abs(a - b) <= Math.max(0.6, b * 0.002);
+  const round2 = (n: number) => Math.round(n * 100) / 100;
+  /**
+   * How one row reads at a given gold rate: as is, with one misread digit in
+   * the grams (3.34 for 3.31), or with one misread digit in the amount
+   * (672.36 for 572.36). Anything else doesn't add up.
+   */
+  const check = (r: (typeof rows0)[number], rate: number) => {
+    const per = rate + r.mc;
+    if (!(per > 0 && r.amount > 0 && r.grams > 0)) return null;
+    if (near(r.grams * per, r.amount)) return { grams: r.grams, amount: r.amount };
+    const g2 = round2(r.amount / per);
+    if (near(g2 * per, r.amount) && oneDigitApart(r.grams, g2)) return { grams: g2, amount: r.amount };
+    const a2 = round2(r.grams * per);
+    if (oneDigitApart(r.amount, a2)) return { grams: r.grams, amount: a2 };
+    return null;
+  };
+  // The gold rate is the same on every row and is also printed in the header
+  // ("RATE 383.25"). Any of those can be misread (2026-10-01: BELLA's 383.25
+  // read as 183.25 on one row, and that wrong value was used for every row), so
+  // try each reading, plus the rate the amounts imply (amount ÷ grams − MC), and
+  // keep the one that makes the most rows add up.
+  const headerRate = readHeaderRate(lines.slice(0, headerIdx));
+  const candidates = new Map<number, number>(); // rate → how strongly it was read
+  const addCand = (v: number, w = 1) => { if (v > 0) candidates.set(round2(v), (candidates.get(round2(v)) || 0) + w); };
+  if (headerRate) addCand(headerRate, 1.5);
+  rows0.forEach((r) => addCand(r.rate));
+  const implied = rows0.filter((r) => r.grams > 0 && r.amount > 0).map((r) => round2(r.amount / r.grams - r.mc));
+  implied.forEach((v, i) => { if (implied.some((u, j) => j !== i && Math.abs(u - v) <= 0.05)) addCand(v, 0.5); });
+  let rateMode = 0, bestScore = -1;
+  for (const [v, reads] of candidates) {
+    const score = rows0.reduce((n, r) => n + (check(r, v) ? 1 : 0), 0) * 10 + reads;
+    if (score > bestScore) { bestScore = score; rateMode = v; }
+  }
+  const misreadRates = rows0.map((r, i) => (r.rate > 0 && Math.abs(r.rate - rateMode) > 0.01 ? `${codes[i]} ${r.rate}` : "")).filter(Boolean);
+  if (headerRate && Math.abs(headerRate - rateMode) > 0.01) misreadRates.unshift(`header ${headerRate}`);
+  const rateNote = misreadRates.length
+    ? `Gold rate ${rateMode} used for every row (the photo reader read ${misreadRates.join(", ")}, which doesn't match the amounts). Check against the photo.`
+    : "";
+
+  const fixed = rows0.map((r, i) => {
+    let { grams, amount } = r;
+    const rate = rateMode || r.rate;
+    const mc = r.mc;
     // Grams and amount disagree: one of them was misread, and either can be.
-    // Keep the grams as read and flag the row; replacing grams with
-    // amount ÷ rate silently priced 3.69 g as 3.93 g when the amount was misread.
-    // Exception: when amount ÷ rate differs from the grams in ONE digit only
-    // (1.66 vs 1.65, 1.42 vs 1.12) the grams digit is the likely slip, so use it
-    // and say so.
-    if (!ok(grams) && per > 0 && amount > 0) {
-      const g2 = Math.round((amount / per) * 100) / 100;
-      if (ok(g2) && oneDigitApart(grams, g2)) {
-        corrected.push(`${codes[i]} ${grams} → ${g2} g`);
-        grams = g2;
-      } else flagged.push(i);
-    }
-    return { code: codes[i], name: r.name, desc: r.desc, grams, rate, mc, amount };
+    // Only a single misread digit is corrected (and listed); anything else is
+    // kept as read and flagged. Replacing grams with amount ÷ rate wholesale
+    // silently priced 3.69 g as 3.93 g when the amount was misread.
+    const c = check({ ...r, rate }, rate);
+    if (c) {
+      if (c.grams !== grams) corrected.push(`${codes[i]} weight ${grams} → ${c.grams} g`);
+      if (c.amount !== amount) corrected.push(`${codes[i]} amount ${amount} → ${c.amount}`);
+      grams = c.grams; amount = c.amount;
+    } else if (rate + mc > 0 && amount > 0) flagged.push(i);
+    return { code: codes[i], name: raw[i].name, desc: raw[i].desc, grams, rate, mc, amount };
   });
 
   const liveDate = findDate(text.toUpperCase());
@@ -464,7 +511,8 @@ export async function parseMasterlistImage(file: File, mapping?: MasterlistMappi
   for (const sk of parsed.skipped) warnings.push(`Not imported: ${sk.replace(/^row \d+ \((.+?)\)/, "$1")}. Add it by hand.`);
   const gaps = missingCodes(codes);
   if (gaps.length) warnings.push(`${gaps.join(", ")} ${gaps.length === 1 ? "is" : "are"} missing from the photo reading. Add ${gaps.length === 1 ? "it" : "them"} by hand.`);
-  if (corrected.length) warnings.push(`Weight corrected from the amount column: ${corrected.join("; ")}. Check against the photo.`);
+  if (rateNote) warnings.push(rateNote);
+  if (corrected.length) warnings.push(`Fixed one misread digit so the row adds up: ${corrected.join("; ")}. Check against the photo.`);
   if (flagged.length) {
     const detail = flagged.map((i) => {
       const r = fixed[i];
