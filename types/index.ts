@@ -47,6 +47,8 @@ export type DatabaseRowType = {
   zohoInvoice?: string;
   /** Zoho customer id, so a client is never duplicated in their accounts. */
   zohoContactId?: string;
+  /** Why the item was cancelled (free note, typed by Dispatch when cancelling). */
+  cancelReason?: string;
   id: number;
 };
 

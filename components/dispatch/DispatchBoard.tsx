@@ -10,6 +10,8 @@ import CollapsibleGroup from '@/components/CollapsibleGroup';
 import TabHeader from '@/components/TabHeader';
 import DispatchClientCard from './DispatchClientCard';
 import PulloutReport from './PulloutReport';
+import PulloutRequestsPanel from './PulloutRequestsPanel';
+import CancelReasonField from '@/components/CancelReasonField';
 import RemindersDialog from '@/components/RemindersDialog';
 import { computeOverdue } from '@/lib/reminders';
 import { parseDateRobust } from '@/lib/calculations';
@@ -127,6 +129,9 @@ export default function DispatchBoard({ records, searchQuery, onSearchChange, on
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [bulkStatus, setBulkStatus] = useState('');
   const [bulkSaving, setBulkSaving] = useState(false);
+  // Cancelling asks for a reason first (the liver sees it on their tab).
+  const [bulkCancelOpen, setBulkCancelOpen] = useState(false);
+  const [bulkCancelReason, setBulkCancelReason] = useState('');
   const toggleSelect = useCallback((ids: number[], on: boolean) => {
     setSelected(prev => {
       const next = new Set(prev);
@@ -134,10 +139,19 @@ export default function DispatchBoard({ records, searchQuery, onSearchChange, on
       return next;
     });
   }, []);
-  const applyBulkStatus = async () => {
+  const applyBulkStatus = async (cancelReason?: string) => {
     if (!bulkStatus || selected.size === 0) return;
-    if (/cancel/i.test(bulkStatus) && !window.confirm(`Cancel ${selected.size} item${selected.size !== 1 ? 's' : ''}?`)) return;
-    const updates = [...selected].map(rowId => ({ rowId, fields: { status: bulkStatus } as Partial<DatabaseRowType> }));
+    const cancelling = /cancel/i.test(bulkStatus);
+    if (cancelling && cancelReason === undefined) {
+      setBulkCancelReason('');
+      setBulkCancelOpen(true);
+      return;
+    }
+    setBulkCancelOpen(false);
+    const fields: Partial<DatabaseRowType> = cancelling
+      ? { status: bulkStatus, cancelReason: (cancelReason ?? '').trim() }
+      : { status: bulkStatus };
+    const updates = [...selected].map(rowId => ({ rowId, fields }));
     setBulkSaving(true);
     try {
       if (onBulkUpdate) await onBulkUpdate(updates);
@@ -256,6 +270,8 @@ export default function DispatchBoard({ records, searchQuery, onSearchChange, on
         }
       />
 
+      <PulloutRequestsPanel records={records} onBulkUpdate={onBulkUpdate} onUpdate={onUpdate} />
+
       {/* Work queue: pick a queue on the left, work it on the right. Replaces the
           six stacked accordions — one click instead of expand/collapse, and the
           customer's courier statuses finally have somewhere to live. */}
@@ -328,12 +344,27 @@ export default function DispatchBoard({ records, searchQuery, onSearchChange, on
               {getEffectiveStatuses('dispatch').map(st => <SelectItem key={st} value={st} className="text-xs">{st}</SelectItem>)}
             </SelectContent>
           </Select>
-          <Button size="sm" className="h-8 text-xs" disabled={!bulkStatus || bulkSaving} onClick={applyBulkStatus}>
+          <Button size="sm" className="h-8 text-xs" disabled={!bulkStatus || bulkSaving} onClick={() => applyBulkStatus()}>
             {bulkSaving ? 'Saving…' : 'Apply'}
           </Button>
           <Button variant="ghost" size="sm" className="h-8 text-xs" onClick={() => setSelected(new Set())}>Clear</Button>
         </div>
       )}
+
+      <Dialog open={bulkCancelOpen} onOpenChange={setBulkCancelOpen}>
+        <DialogContent className="bg-card border-border max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Cancel {selected.size} item{selected.size !== 1 ? 's' : ''}?</DialogTitle>
+          </DialogHeader>
+          <CancelReasonField value={bulkCancelReason} onChange={setBulkCancelReason} />
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="ghost" size="sm" onClick={() => setBulkCancelOpen(false)}>Keep them</Button>
+            <Button size="sm" className="bg-destructive text-destructive-foreground" onClick={() => applyBulkStatus(bulkCancelReason)}>
+              Cancel items
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {showReport && <PulloutReport records={records} onClose={() => setShowReport(false)} />}
 

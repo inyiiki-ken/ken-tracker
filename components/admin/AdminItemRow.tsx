@@ -9,6 +9,7 @@ import SplitItemDialog from '@/components/SplitItemDialog';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
+import CancelReasonField from '@/components/CancelReasonField';
 import { Input } from '@/components/ui/input';
 import { Switch } from '@/components/ui/switch';
 import { Label } from '@/components/ui/label';
@@ -284,6 +285,7 @@ function PromoSfToggle({ record, onGroupUpdate }: {
 
 function AdminItemRow({ record, onUpdate, onGroupUpdate, onDateGroupUpdate, onDpGroupUpdate, groupHasDP, userEmail }: Props) {
   const [showCancel, setShowCancel] = useState(false);
+  const [cancelReason, setCancelReason] = useState('');
   const [showEdit, setShowEdit] = useState(false);
   const [showSplit, setShowSplit] = useState(false);
   const [copiedInvoice, setCopiedInvoice] = useState(false);
@@ -402,7 +404,7 @@ function AdminItemRow({ record, onUpdate, onGroupUpdate, onDateGroupUpdate, onDp
 
   const handleStatusChange = async (newStatus: string) => {
     setResetKey(Date.now());
-    if (newStatus === 'Cancelled') { setShowCancel(true); return; }
+    if (newStatus === 'Cancelled') { setCancelReason(''); setShowCancel(true); return; }
     if (dpLocked) {
       toast.error('Enter a downpayment amount to enable other status options');
       return;
@@ -709,9 +711,10 @@ function AdminItemRow({ record, onUpdate, onGroupUpdate, onDateGroupUpdate, onDp
             <AlertDialogTitle>Cancel this item?</AlertDialogTitle>
             <AlertDialogDescription>This cannot be undone from the app.</AlertDialogDescription>
           </AlertDialogHeader>
+          <CancelReasonField value={cancelReason} onChange={setCancelReason} />
           <AlertDialogFooter>
             <AlertDialogCancel>Keep it</AlertDialogCancel>
-            <AlertDialogAction className="bg-destructive text-destructive-foreground" onClick={async () => { await onUpdate(record.id, { status: 'Cancelled' }); toast.success('Item cancelled'); }}>
+            <AlertDialogAction className="bg-destructive text-destructive-foreground" onClick={async () => { await onUpdate(record.id, { status: 'Cancelled', cancelReason: cancelReason.trim() }); toast.success('Item cancelled'); }}>
               Cancel Item
             </AlertDialogAction>
           </AlertDialogFooter>

@@ -12,6 +12,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { Badge } from '@/components/ui/badge';
 import { Textarea } from '@/components/ui/textarea';
+import CancelReasonField from '@/components/CancelReasonField';
 import { toast } from 'sonner';
 import { DatabaseRowType } from '@/types';
 import { useCompactMode } from '@/lib/compactMode';
@@ -293,6 +294,7 @@ function DispatchClientCard({ minerName, records, allRecords, onUpdate, userEmai
   const [isExpanded, setIsExpanded] = useState(false);
   const [showInvoice, setShowInvoice] = useState(false);
   const [cancelRecord, setCancelRecord] = useState<DatabaseRowType | null>(null);
+  const [cancelReason, setCancelReason] = useState('');
   const [resetKeys, setResetKeys] = useState<Record<number, number>>({});
   const [showHistory, setShowHistory] = useState(false);
   const [splitRecord, setSplitRecord] = useState<DatabaseRowType | null>(null);
@@ -374,7 +376,7 @@ function DispatchClientCard({ minerName, records, allRecords, onUpdate, userEmai
 
   const handleStatusChange = async (record: DatabaseRowType, newStatus: string) => {
     setResetKeys(prev => ({ ...prev, [record.id]: (prev[record.id] || 0) + 1 }));
-    if (newStatus === 'Cancelled') { setCancelRecord(record); return; }
+    if (newStatus === 'Cancelled') { setCancelReason(''); setCancelRecord(record); return; }
     // Dispatch / Delivered dates fill in on their own for any shipping status
     // (Shipment International, couriers…), never overwriting one already set.
     const fields: Partial<DatabaseRowType> = { status: newStatus, ...autoStageDates(getEffective(record), newStatus) };
@@ -676,11 +678,12 @@ function DispatchClientCard({ minerName, records, allRecords, onUpdate, userEmai
             <AlertDialogTitle>Cancel this item?</AlertDialogTitle>
             <AlertDialogDescription>This cannot be undone from the app.</AlertDialogDescription>
           </AlertDialogHeader>
+          <CancelReasonField value={cancelReason} onChange={setCancelReason} />
           <AlertDialogFooter>
             <AlertDialogCancel>Keep it</AlertDialogCancel>
             <AlertDialogAction className="bg-destructive text-destructive-foreground" onClick={async () => {
               if (cancelRecord) {
-                await queueUpdate(cancelRecord, { status: 'Cancelled' });
+                await queueUpdate(cancelRecord, { status: 'Cancelled', cancelReason: cancelReason.trim() });
                 toast.success('Cancelled');
                 setCancelRecord(null);
               }
