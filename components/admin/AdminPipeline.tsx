@@ -14,7 +14,9 @@ import MergeClientsModal from '@/components/admin/MergeClientsModal';
 import { Button } from '@/components/ui/button';
 import { toast } from 'sonner';
 import { isFieldHidden } from '@/lib/appConfig';
-import { getMasterlistTemplate } from '@/lib/api';
+import { getMasterlistTemplate, getDataOptions } from '@/lib/api';
+import { getMasterlistMapping } from '@/lib/masterlistMapping';
+import { masterlistTemplateBlob } from '@/lib/masterlistExport';
 import { base64ToBlob, downloadBlob } from '@/lib/fileBase64';
 import { XLSX_MIME } from '@/components/settings/MasterlistTemplateSettings';
 
@@ -25,7 +27,9 @@ const WFDP_LABEL = 'Waiting for DP / Pending Tamara & Tabby';
 
 export default function AdminPipeline({ records, searchQuery, onSearchChange, onUpdate, onBulkUpdate, userEmail, userFirstName, onRefresh }: TabProps) {
   // Prefer this customer's own uploaded template (Settings → Masterlist
-  // Template); fall back to the bundled default. Preserves exact styling.
+  // Template), which preserves their exact styling. Otherwise build a blank one
+  // from THIS customer's import mapping and DATA'S lists. Never a file bundled
+  // with the app: that was one customer's form and leaked to everyone else.
   const handleExportMasterlist = async () => {
     const filename = `Masterlist-Template-${new Date().toISOString().split('T')[0]}.xlsx`;
     try {
@@ -33,9 +37,8 @@ export default function AdminPipeline({ records, searchQuery, onSearchChange, on
       if (res.dataUrl) {
         downloadBlob(base64ToBlob(res.dataUrl, XLSX_MIME), filename);
       } else {
-        const f = await fetch('/masterlist-template.xlsx');
-        if (!f.ok) throw new Error('Template file not found.');
-        downloadBlob(await f.blob(), filename);
+        const options = await getDataOptions();
+        downloadBlob(masterlistTemplateBlob(options, getMasterlistMapping()), filename);
       }
       toast.success('Masterlist template downloaded.');
     } catch (err) {

@@ -12,7 +12,7 @@ const XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.s
 /**
  * Per-customer masterlist template. Upload this workspace's own styled .xlsx;
  * the Admin tab's "Export Masterlist" then hands out THIS file. If none is set,
- * the app falls back to the bundled default template.
+ * the app builds a blank one from this workspace's masterlist import mapping.
  */
 export default function MasterlistTemplateSettings() {
   const [hasCustom, setHasCustom] = useState(false);
@@ -47,7 +47,7 @@ export default function MasterlistTemplateSettings() {
     setBusy(true);
     try {
       await clearMasterlistTemplate({});
-      toast.success("Reverted to the default template.");
+      toast.success("Removed. Export now builds a blank form from this customer's columns.");
       setHasCustom(false);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed");
@@ -71,8 +71,8 @@ export default function MasterlistTemplateSettings() {
       </h2>
       <p className="text-xs text-muted-foreground">
         Upload this customer&apos;s own styled masterlist (.xlsx). The Admin tab&apos;s
-        “Export Masterlist” button will hand out this exact file. Leave empty to use
-        the built-in default.
+        “Export Masterlist” button will hand out this exact file. Leave empty to get a
+        blank form built from this customer&apos;s masterlist import columns.
       </p>
 
       <div className="flex items-center gap-2">
@@ -81,12 +81,12 @@ export default function MasterlistTemplateSettings() {
             <CheckCircle2 className="h-3.5 w-3.5" /> Custom template set
           </span>
         ) : (
-          <span className="text-xs text-muted-foreground">Using default template</span>
+          <span className="text-xs text-muted-foreground">Using generated template</span>
         )}
         <div className="flex-1" />
         {hasCustom && (
           <Button size="sm" variant="ghost" className="text-xs text-destructive" onClick={remove} disabled={busy}>
-            <Trash2 className="h-3.5 w-3.5 mr-1" /> Revert to default
+            <Trash2 className="h-3.5 w-3.5 mr-1" /> Remove
           </Button>
         )}
         <Button size="sm" variant="outline" onClick={() => fileRef.current?.click()} disabled={busy}>
