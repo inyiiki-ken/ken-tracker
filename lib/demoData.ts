@@ -586,3 +586,70 @@ export function buildDemoLive(today: Date = new Date()): DemoLive {
   });
   return out;
 }
+
+// ── Copying a real customer's setup (not their data) ──────────────────────────
+
+/**
+ * Settings copied from the chosen customer (e.g. Crown), so the demo works
+ * exactly like they do. Their brand, logos, resellers, live seller price list
+ * and rates are NOT copied: those are theirs, or would show real names.
+ */
+export const COPYABLE_SETUP_MARKERS = [
+  "__TAB_CONFIG__",
+  "__APP_CONFIG__",
+  "__OPTIONS_CONFIG__",
+  "__CUSTOM_TOGGLES__",
+  "__BUSINESS_CONFIG__",
+  "__PRICING_CONFIG__",
+  "__LABEL_CONFIG__",
+  "__MASTERLIST_MAPPING__",
+] as const;
+
+function parseObj(json: string | undefined): Record<string, unknown> | null {
+  if (!json) return null;
+  try {
+    const p = JSON.parse(json);
+    return p && typeof p === "object" && !Array.isArray(p) ? (p as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Demo settings on top of a customer's copied setup. The customer's setup wins,
+ * except: every tab stays visible with its default name, reminders count from 30 days ago (so the demo
+ * shows some), column aliases are dropped (the demo sheet uses the standard
+ * column names), and page / source lists are the demo's made-up ones.
+ */
+export function mergeCopiedSetup(copied: Record<string, string>, demo: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = { ...demo };
+  for (const marker of COPYABLE_SETUP_MARKERS) {
+    const v = copied[marker];
+    if (v && v.trim()) out[marker] = v;
+  }
+
+  const tabs = parseObj(out.__TAB_CONFIG__) ?? {};
+  const overrides = (tabs.overrides && typeof tabs.overrides === "object" ? tabs.overrides : {}) as Record<string, Record<string, unknown>>;
+  for (const k of ["admin", "dispatch", "accounts", "bossing", "liver", "purchasing", "invoicing", "livesellers"]) {
+    // Tab labels are dropped: customers often rename tabs after staff (real names).
+    overrides[k] = { visible: true };
+  }
+  out.__TAB_CONFIG__ = JSON.stringify({ ...tabs, overrides });
+
+  const app = parseObj(out.__APP_CONFIG__);
+  const demoApp = parseObj(demo.__APP_CONFIG__) ?? {};
+  if (app) {
+    app.columnAliases = {};
+    app.deadlinesStartedAt = demoApp.deadlinesStartedAt;
+    if (!Array.isArray(app.statusDeadlines) || !app.statusDeadlines.length) app.statusDeadlines = demoApp.statusDeadlines;
+    out.__APP_CONFIG__ = JSON.stringify(app);
+  }
+
+  const opts = parseObj(out.__OPTIONS_CONFIG__);
+  if (opts) {
+    opts.page = DEMO_PAGES;
+    opts.source = ["Shop Stock", ...DEMO_OUTSOURCE];
+    out.__OPTIONS_CONFIG__ = JSON.stringify(opts);
+  }
+  return out;
+}
