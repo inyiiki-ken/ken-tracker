@@ -125,9 +125,12 @@ function boxFromDelivery(r: DatabaseRowType): OrderBox {
  * otherwise (For Pullout, Pending, Waiting for…, Paid/DP but Item Hold,
  * Payment for Verification…) the delivery details decide.
  */
-/** Outsource supplier of an item (its Source), shown before the date on the Outsource queue. */
+/**
+ * Outsource supplier of an item, shown before the date on the Outsource queue:
+ * its Source, else whoever uploaded it (the outsource's own masterlist, e.g. BELLA).
+ */
 export function outsourceName(r: DatabaseRowType): string {
-  return String(r.source ?? '').trim() || 'No outsource name';
+  return String(r.source ?? '').trim() || String(r.liverName ?? '').trim() || 'No outsource name';
 }
 
 export function orderBox(r: DatabaseRowType): OrderBox {
