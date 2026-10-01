@@ -17,6 +17,8 @@
 
 import { getMasterlistMapping, colToIndex, cellToRC, type MasterlistMapping } from "./masterlistMapping";
 import { parseMasterlistGrid, type ParsedMasterlistRow } from "./masterlistImport";
+import { getRatesForDate } from "./ratesStore";
+import type { DatabaseRowType } from "@/types";
 
 export interface PhotoParseResult {
   rows: ParsedMasterlistRow[];
@@ -26,6 +28,8 @@ export interface PhotoParseResult {
   globalRate: number;
   /** Codes of rows whose numbers didn't add up and should be checked. */
   flagged: string[];
+  /** Per code: what the app corrected on that row ("weight 3.34 → 3.31 g"), shown on the row. */
+  rowNotes: Record<string, string>;
   warnings: string[];
 }
 
@@ -203,6 +207,32 @@ async function ocrLines(canvas: HTMLCanvasElement): Promise<{ lines: OcrLine[]; 
   return { lines, text: String(data.text || "") };
 }
 
+/**
+ * Reads one region of the cleaned image again, enlarged, for a second, closer
+ * look (header figures, or a row whose numbers didn't add up). `digits` limits
+ * the reading to numbers, which stops 3 / 1 / 7 being read as letters.
+ */
+async function ocrRegion(src: HTMLCanvasElement, box: { x0: number; y0: number; x1: number; y1: number }, digits: boolean, scale = 2): Promise<OcrLine[]> {
+  const x0 = Math.max(0, Math.floor(box.x0)), y0 = Math.max(0, Math.floor(box.y0));
+  const w = Math.min(src.width, Math.ceil(box.x1)) - x0, h = Math.min(src.height, Math.ceil(box.y1)) - y0;
+  if (w < 8 || h < 8) return [];
+  const pad = 20;
+  const c = document.createElement("canvas");
+  c.width = Math.round(w * scale) + pad * 2; c.height = Math.round(h * scale) + pad * 2;
+  const ctx = c.getContext("2d")!;
+  ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, c.width, c.height);
+  ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(src, x0, y0, w, h, pad, pad, w * scale, h * scale);
+  const worker = await getWorker();
+  if (digits) await worker.setParameters({ tessedit_char_whitelist: "0123456789.,- ", tessedit_pageseg_mode: "6" });
+  try {
+    const { lines } = await ocrLines(c);
+    return lines.map((l) => ({ ...l, words: l.words.map((wd) => ({ ...wd, x0: x0 + (wd.x0 - pad) / scale, x1: x0 + (wd.x1 - pad) / scale, y0: y0 + (wd.y0 - pad) / scale, y1: y0 + (wd.y1 - pad) / scale })) }));
+  } finally {
+    if (digits) await worker.setParameters({ tessedit_char_whitelist: "", tessedit_pageseg_mode: "3" });
+  }
+}
+
 // ── 3. Reading the table ─────────────────────────────────────────────────────
 
 const clean = (t: string) => t.toUpperCase().replace(/[^A-Z0-9./,:-]/g, "");
@@ -241,6 +271,81 @@ function readHeaderRate(lines: OcrLine[]): number {
     if (v > 0) return v;
   }
   return 0;
+}
+
+let greyCache: { src: ImageData; canvas: HTMLCanvasElement } | null = null;
+/** The photo in plain grey, same size as the cleaned image. */
+function greyOf(orig: ImageData): HTMLCanvasElement {
+  if (greyCache?.src === orig) return greyCache.canvas;
+  const c = document.createElement("canvas");
+  c.width = orig.width; c.height = orig.height;
+  const out = new ImageData(orig.width, orig.height);
+  for (let p = 0; p < orig.data.length; p += 4) {
+    // Darkest channel: black text stays black on white, green, yellow or red.
+    const v = Math.min(orig.data[p], orig.data[p + 1], orig.data[p + 2]);
+    out.data[p] = out.data[p + 1] = out.data[p + 2] = v;
+    out.data[p + 3] = 255;
+  }
+  c.getContext("2d")!.putImageData(out, 0, 0);
+  greyCache = { src: orig, canvas: c };
+  return c;
+}
+
+interface HeaderFigures { rate: number; totalGrams: number; balance: number; }
+
+/** TOTAL GRAMS / BALANCE / RATE from the header block (first number after each label). */
+function readHeaderFigures(lines: OcrLine[]): HeaderFigures {
+  const out: HeaderFigures = { rate: 0, totalGrams: 0, balance: 0 };
+  const after = (l: OcrLine, i: number) => {
+    const w = l.words.slice(i + 1).find((x) => isNumeric(x.text));
+    return w ? readNumber(w.text) : 0;
+  };
+  for (const l of lines) {
+    const t = l.words.map((w) => clean(w.text));
+    const gi = t.findIndex((x) => /^(TOTAL)?GRAMS?$/.test(x));
+    if (gi >= 0 && !out.totalGrams) out.totalGrams = after(l, gi);
+    const bi = t.findIndex((x) => /ALANCE$|^BALAN/.test(x));
+    if (bi >= 0 && !out.balance) out.balance = after(l, bi);
+    const ri = t.findIndex((x) => /^RATE:?$/.test(x));
+    if (ri >= 0 && !out.rate) {
+      let v = after(l, ri);
+      if (v > 0 && v < 10 && v * 100 >= 15) v = Math.round(v * 100);
+      out.rate = v;
+    }
+  }
+  return out;
+}
+
+/** Levenshtein distance, for spotting a misread customer name. */
+function editDistance(a: string, b: string): number {
+  const d = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)]);
+  for (let j = 1; j <= b.length; j++) d[0][j] = j;
+  for (let i = 1; i <= a.length; i++) for (let j = 1; j <= b.length; j++) {
+    d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+  }
+  return d[a.length][b.length];
+}
+
+/**
+ * The outsource's earlier orders (matched by liver name, or by the code
+ * prefix, e.g. BELLA01): the gold rate used most recently, the MCs they use
+ * and the customer names already on file.
+ */
+function pastFor(history: DatabaseRowType[], title: string, codes: string[]) {
+  const prefix = (codes[0] || "").replace(/\d+$/, "");
+  const key = (title || prefix).toUpperCase();
+  const mine = key
+    ? history.filter((r) => String(r.liverName ?? "").toUpperCase().trim() === key || (prefix.length >= 3 && String(r.orderId ?? "").toUpperCase().startsWith(prefix)))
+    : [];
+  const dated = mine
+    .map((r) => ({ r, t: Date.parse(String(r.dateOfLive ?? "")) }))
+    .filter((x) => Number.isFinite(x.t) && Number(x.r.goldRate) > 0)
+    .sort((a, b) => b.t - a.t);
+  const mcs = new Set<number>();
+  mine.forEach((r) => { const v = parseFloat(String(r.mc ?? "")); if (v > 0) mcs.add(v); });
+  const names = new Set<string>();
+  mine.forEach((r) => { const n = String(r.minerName ?? "").toUpperCase().replace(/\s+/g, " ").trim(); if (n) names.add(n); });
+  return { liver: key, rate: dated.length ? Number(dated[0].r.goldRate) : 0, mcs, names };
 }
 
 const MONTHS = ["JANUARY", "FEBRUARY", "MARCH", "APRIL", "MAY", "JUNE", "JULY", "AUGUST", "SEPTEMBER", "OCTOBER", "NOVEMBER", "DECEMBER"];
@@ -306,7 +411,11 @@ export function missingCodes(codes: string[]): string[] {
   return out;
 }
 
-export async function parseMasterlistImage(file: File, mapping?: MasterlistMapping): Promise<PhotoParseResult> {
+/**
+ * `history` is the customer's existing records; the photo is checked against
+ * the same outsource's earlier orders (usual gold rate, MC, customer names).
+ */
+export async function parseMasterlistImage(file: File, mapping?: MasterlistMapping, history: DatabaseRowType[] = []): Promise<PhotoParseResult> {
   const m = mapping ?? getMasterlistMapping();
   const { canvas, colLines, orig } = await prepareImage(file);
   const { lines, text } = await ocrLines(canvas);
@@ -340,7 +449,7 @@ export async function parseMasterlistImage(file: File, mapping?: MasterlistMappi
     numBorder = left.length ? left[left.length - 1] : gramsHead.x0 - (gramsHead.x1 - gramsHead.x0) * 0.5;
   }
 
-  type Row = { code: string; name: string; desc: string; nums: number[] };
+  type Row = { code: string; name: string; desc: string; nums: number[]; y0: number; y1: number; nx: number };
   const raw: Row[] = [];
   for (const l of lines.slice(headerIdx + 1)) {
     const words = l.words.filter((w) => !/^[|~_\-—'"()]+$/.test(w.text));
@@ -370,7 +479,7 @@ export async function parseMasterlistImage(file: File, mapping?: MasterlistMappi
       name = textWords.slice(0, gi); desc = textWords.slice(gi);
     }
     const join = (ws: OcrWord[]) => ws.map((w) => w.text.replace(/[^A-Za-z0-9&'.\-/ ]/g, "")).join(" ").replace(/\s+/g, " ").trim().toUpperCase();
-    raw.push({ code: words[0].text, name: join(name), desc: join(desc), nums });
+    raw.push({ code: words[0].text, name: join(name), desc: join(desc), nums, y0: l.y0, y1: l.y1, nx: words[firstNum]?.x0 ?? numBorder });
   }
   if (!raw.length) throw new Error("Found the header but no item rows. Try a clearer screenshot.");
 
@@ -378,10 +487,7 @@ export async function parseMasterlistImage(file: File, mapping?: MasterlistMappi
   const flagged: number[] = [];
 
   // A gold/silver rate shown without decimals ("390") gets a decimal point
-  // inserted by readNumber (3.90). No rate is that small — undo it.
-  for (const r of raw) {
-    if (r.nums[1] > 0 && r.nums[1] < 10 && r.nums[1] * 100 >= 15) r.nums[1] = Math.round(r.nums[1] * 100);
-  }
+  // inserted by readNumber (3.90); toNums below undoes it.
   // MC takes only a few values per sheet (e.g. 25 and 30). A value seen on one
   // row only, within 2 of a common one, is a misread ("26" for 25).
   const mcCount = new Map<number, number>();
@@ -397,59 +503,117 @@ export async function parseMasterlistImage(file: File, mapping?: MasterlistMappi
     const x = a.toFixed(2), y = b.toFixed(2);
     return x.length === y.length && [...x].filter((c, k) => c !== y[k]).length === 1;
   };
-  // Numbers in sheet order: grams, rate, MC, amount (MC may be absent).
-  const rows0 = raw.map((r) => {
-    const [grams, rate, mc, amount] = r.nums;
-    return r.nums.length === 3 ? { grams, rate, mc: 0, amount: r.nums[2] } : { grams, rate, mc: snapMc(mc || 0), amount: amount ?? 0 };
-  });
-  const near = (a: number, b: number) => Math.abs(a - b) <= Math.max(0.6, b * 0.002);
   const round2 = (n: number) => Math.round(n * 100) / 100;
+  const near = (a: number, b: number) => Math.abs(a - b) <= Math.max(0.6, b * 0.002);
+  type Nums = { grams: number; rate: number; mc: number; amount: number };
+  // Numbers in sheet order: grams, rate, MC, amount (MC may be absent).
+  const toNums = (nums: number[]): Nums => {
+    const n = [...nums];
+    if (n[1] > 0 && n[1] < 10 && n[1] * 100 >= 15) n[1] = Math.round(n[1] * 100);
+    return n.length === 3 ? { grams: n[0], rate: n[1], mc: 0, amount: n[2] } : { grams: n[0], rate: n[1], mc: snapMc(n[2] || 0), amount: n[3] ?? 0 };
+  };
+  const rows0 = raw.map((r) => toNums(r.nums));
   /**
    * How one row reads at a given gold rate: as is, with one misread digit in
    * the grams (3.34 for 3.31), or with one misread digit in the amount
    * (672.36 for 572.36). Anything else doesn't add up.
    */
-  const check = (r: (typeof rows0)[number], rate: number) => {
+  const check = (r: Nums, rate: number): { grams: number; amount: number; exact: boolean } | null => {
     const per = rate + r.mc;
     if (!(per > 0 && r.amount > 0 && r.grams > 0)) return null;
-    if (near(r.grams * per, r.amount)) return { grams: r.grams, amount: r.amount };
+    if (near(r.grams * per, r.amount)) return { grams: r.grams, amount: r.amount, exact: true };
     const g2 = round2(r.amount / per);
-    if (near(g2 * per, r.amount) && oneDigitApart(r.grams, g2)) return { grams: g2, amount: r.amount };
+    if (near(g2 * per, r.amount) && oneDigitApart(r.grams, g2)) return { grams: g2, amount: r.amount, exact: false };
     const a2 = round2(r.grams * per);
-    if (oneDigitApart(r.amount, a2)) return { grams: r.grams, amount: a2 };
+    if (oneDigitApart(r.amount, a2)) return { grams: r.grams, amount: a2, exact: false };
     return null;
   };
-  // The gold rate is the same on every row and is also printed in the header
-  // ("RATE 383.25"). Any of those can be misread (2026-10-01: BELLA's 383.25
-  // read as 183.25 on one row, and that wrong value was used for every row), so
-  // try each reading, plus the rate the amounts imply (amount ÷ grams − MC), and
-  // keep the one that makes the most rows add up.
-  const headerRate = readHeaderRate(lines.slice(0, headerIdx));
-  const candidates = new Map<number, number>(); // rate → how strongly it was read
-  const addCand = (v: number, w = 1) => { if (v > 0) candidates.set(round2(v), (candidates.get(round2(v)) || 0) + w); };
-  if (headerRate) addCand(headerRate, 1.5);
-  rows0.forEach((r) => addCand(r.rate));
-  const implied = rows0.filter((r) => r.grams > 0 && r.amount > 0).map((r) => round2(r.amount / r.grams - r.mc));
-  implied.forEach((v, i) => { if (implied.some((u, j) => j !== i && Math.abs(u - v) <= 0.05)) addCand(v, 0.5); });
-  let rateMode = 0, bestScore = -1;
-  for (const [v, reads] of candidates) {
-    const score = rows0.reduce((n, r) => n + (check(r, v) ? 1 : 0), 0) * 10 + reads;
-    if (score > bestScore) { bestScore = score; rateMode = v; }
-  }
-  const misreadRates = rows0.map((r, i) => (r.rate > 0 && Math.abs(r.rate - rateMode) > 0.01 ? `${codes[i]} ${r.rate}` : "")).filter(Boolean);
-  if (headerRate && Math.abs(headerRate - rateMode) > 0.01) misreadRates.unshift(`header ${headerRate}`);
-  const rateNote = misreadRates.length
-    ? `Gold rate ${rateMode} used for every row (the photo reader read ${misreadRates.join(", ")}, which doesn't match the amounts). Check against the photo.`
-    : "";
 
-  const fixed = rows0.map((r, i) => {
+  // ── What the rate should be, from everything the app knows ──
+  // The header block (TOTAL GRAMS / BALANCE / RATE), read a second time on its
+  // own and enlarged, which reads far better than the whole-page pass.
+  let head: HeaderFigures = { rate: 0, totalGrams: 0, balance: 0 };
+  try {
+    head = readHeaderFigures(await ocrRegion(canvas, { x0: descW ? descW.x1 : canvas.width * 0.3, y0: 0, x1: canvas.width, y1: header.y0 }, false, 1.5));
+  } catch { /* header pass is a bonus */ }
+  if (!head.rate) head.rate = readHeaderRate(lines.slice(0, headerIdx));
+  // This outsource's earlier orders: the rates, MCs and customer names it used.
+  const photoDate = findDate(text.toUpperCase());
+  const titleGuess = findTitle(lines, headerIdx);
+  const past = pastFor(history, titleGuess, codes);
+  // Today's gold rate saved in the app (Rates), if any.
+  let dailyGold = 0;
+  try { dailyGold = photoDate ? getRatesForDate(photoDate).goldRate || 0 : 0; } catch { /* no rates saved */ }
+  const expected = [dailyGold, past.rate].filter((v) => v > 0);
+  // A gold rate miles away from every rate we know (183 when gold is ~380)
+  // is a misread, whatever the photo says.
+  const plausible = (v: number) => !expected.length || expected.some((e) => Math.abs(v - e) <= e * 0.2);
+
+  // The gold rate is the same on every row and is printed in the header. Any
+  // of those can be misread (2026-10-01: BELLA's 383.25 read as 183.25 on one
+  // row and then used for every row), so try each reading, plus the rate the
+  // amounts imply (amount ÷ grams − MC), and keep the one that makes the most
+  // rows add up. Header readings break ties; impossible rates lose.
+  const chooseRate = (rows: Nums[]) => {
+    const candidates = new Map<number, number>();
+    const add = (v: number, w = 1) => { if (v > 0) candidates.set(round2(v), (candidates.get(round2(v)) || 0) + w); };
+    if (head.rate) add(head.rate, 1.5);
+    rows.forEach((r) => add(r.rate));
+    const implied = rows.filter((r) => r.grams > 0 && r.amount > 0).map((r) => round2(r.amount / r.grams - r.mc));
+    implied.forEach((v, i) => { if (implied.some((u, j) => j !== i && Math.abs(u - v) <= 0.05)) add(v, 0.5); });
+    let best = 0, bestScore = -Infinity;
+    for (const [v, reads] of candidates) {
+      const score = rows.reduce((n, r) => n + (check(r, v) ? 1 : 0), 0) * 10 + reads - (plausible(v) ? 0 : 1000);
+      if (score > bestScore) { bestScore = score; best = v; }
+    }
+    return best;
+  };
+  let rateMode = chooseRate(rows0);
+
+  // ── Second, closer read of any row that doesn't add up as read ──
+  const rows1 = [...rows0];
+  const reread: string[] = [];
+  for (let i = 0; i < raw.length; i++) {
+    if (check(rows1[i], rateMode)?.exact) continue;
+    const r = raw[i];
+    const pad = (r.y1 - r.y0) * 0.35;
+    const box = { x0: r.nx - 6, y0: r.y0 - pad, x1: canvas.width, y1: r.y1 + pad };
+    const merged = { ...rows1[i] };
+    let good: Nums | undefined;
+    // Cleaned image first, then the original colours (a 5 can lose its top
+    // stroke in the clean-up and read as 6).
+    for (const src of [canvas, greyOf(orig)]) {
+      let again: number[] = [];
+      try {
+        const ls = await ocrRegion(src, box, true, 3);
+        again = ls.flatMap((l) => l.words).filter((w) => isNumeric(w.text)).map((w) => readNumber(w.text)).filter(Number.isFinite);
+      } catch { continue; }
+      if (again.length < 3) continue;
+      const n2 = toNums(again);
+      // Take each number from the second read only where it makes the row add up.
+      const tries: Nums[] = [{ ...merged, grams: n2.grams }, { ...merged, amount: n2.amount }, { ...merged, grams: n2.grams, amount: n2.amount }];
+      good = tries.find((t) => t.grams > 0 && check(t, rateMode)?.exact);
+      if (good) break;
+    }
+    if (good) {
+      const before = rows1[i];
+      if (round2(good.grams) !== round2(before.grams)) reread.push(`${codes[i]} weight ${before.grams} → ${good.grams} g`);
+      if (round2(good.amount) !== round2(before.amount)) reread.push(`${codes[i]} amount ${before.amount} → ${good.amount}`);
+      rows1[i] = { ...before, grams: good.grams, amount: good.amount };
+    }
+  }
+  if (reread.length) rateMode = chooseRate(rows1);
+
+  const misreadRates = rows1.map((r, i) => (r.rate > 0 && Math.abs(r.rate - rateMode) > 0.01 ? `${codes[i]} ${r.rate}` : "")).filter(Boolean);
+  if (head.rate && Math.abs(head.rate - rateMode) > 0.01) misreadRates.unshift(`header ${head.rate}`);
+
+  const fixed = rows1.map((r, i) => {
     let { grams, amount } = r;
     const rate = rateMode || r.rate;
     const mc = r.mc;
-    // Grams and amount disagree: one of them was misread, and either can be.
-    // Only a single misread digit is corrected (and listed); anything else is
-    // kept as read and flagged. Replacing grams with amount ÷ rate wholesale
-    // silently priced 3.69 g as 3.93 g when the amount was misread.
+    // Still off: correct a single misread digit (and list it); anything else
+    // stays as read and is flagged. Replacing grams with amount ÷ rate
+    // wholesale once priced 3.69 g as 3.93 g when the amount was misread.
     const c = check({ ...r, rate }, rate);
     if (c) {
       if (c.grams !== grams) corrected.push(`${codes[i]} weight ${grams} → ${c.grams} g`);
@@ -458,6 +622,51 @@ export async function parseMasterlistImage(file: File, mapping?: MasterlistMappi
     } else if (rate + mc > 0 && amount > 0) flagged.push(i);
     return { code: codes[i], name: raw[i].name, desc: raw[i].desc, grams, rate, mc, amount };
   });
+
+  // ── Header TOTAL GRAMS: the rows must add up to it ──
+  const headTotal = head.totalGrams || head.balance;
+  const sumGrams = () => round2(fixed.reduce((s, r) => s + (r.grams || 0), 0));
+  if (headTotal > 0 && Math.abs(sumGrams() - headTotal) > 0.011 && flagged.length === 1) {
+    // One row is still off: the header total says what its weight must be.
+    const i = flagged[0], r = fixed[i];
+    const g = round2(headTotal - (sumGrams() - r.grams));
+    if (g > 0 && near(g * (r.rate + r.mc), r.amount)) {
+      corrected.push(`${r.code} weight ${r.grams} → ${g} g (from TOTAL GRAMS ${headTotal})`);
+      r.grams = g;
+      flagged.splice(0, 1);
+    }
+  }
+  const totalNote = headTotal > 0 && Math.abs(sumGrams() - headTotal) > 0.011
+    ? `The rows add up to ${sumGrams()} g but the header says ${headTotal} g. A weight is misread or a row is missing.`
+    : "";
+
+  // ── Format: realistic weights ──
+  const oddWeights = fixed.filter((r) => !(r.grams >= 0.1 && r.grams <= 200)).map((r) => `${r.code} ${r.grams} g`);
+
+  // ── Codes: no repeats ──
+  const seen = new Map<string, number>();
+  codes.forEach((c) => seen.set(c, (seen.get(c) || 0) + 1));
+  const dupCodes = [...seen.entries()].filter(([, n]) => n > 1).map(([c]) => c);
+
+  // ── MC this outsource doesn't normally use ──
+  const oddMc = past.mcs.size >= 1
+    ? [...new Set(fixed.filter((r) => r.mc > 0 && !past.mcs.has(r.mc)).map((r) => r.mc))]
+    : [];
+
+  // ── Customer names close to (but not the same as) earlier orders ──
+  const nameHints: string[] = [];
+  for (const r of fixed) {
+    if (!r.name || past.names.has(r.name)) continue;
+    const match = [...past.names].find((n) => Math.abs(n.length - r.name.length) <= 2 && editDistance(n, r.name) <= 2);
+    if (match) nameHints.push(`${r.code} "${r.name}" looks like "${match}" from earlier orders`);
+  }
+
+  const rateNotes: string[] = [];
+  if (misreadRates.length) rateNotes.push(`Gold rate ${rateMode} used for every row (the photo reader read ${misreadRates.join(", ")}, which doesn't match the amounts). Check against the photo.`);
+  if (rateMode && dailyGold && Math.abs(dailyGold - rateMode) > 0.01 && !fixed.some((r) => Math.abs(r.rate + r.mc - dailyGold) <= 0.01)) {
+    rateNotes.push(`The photo's gold rate ${rateMode} is different from the gold rate saved in Rates for that day (${dailyGold}).`);
+  }
+  if (rateMode && !plausible(rateMode)) rateNotes.push(`Gold rate ${rateMode} is far from the usual rate (${expected.join(" / ")}). Check against the photo.`);
 
   const liveDate = findDate(text.toUpperCase());
   if (!liveDate) warnings.push("Couldn't read the date — set it below.");
@@ -511,8 +720,14 @@ export async function parseMasterlistImage(file: File, mapping?: MasterlistMappi
   for (const sk of parsed.skipped) warnings.push(`Not imported: ${sk.replace(/^row \d+ \((.+?)\)/, "$1")}. Add it by hand.`);
   const gaps = missingCodes(codes);
   if (gaps.length) warnings.push(`${gaps.join(", ")} ${gaps.length === 1 ? "is" : "are"} missing from the photo reading. Add ${gaps.length === 1 ? "it" : "them"} by hand.`);
-  if (rateNote) warnings.push(rateNote);
+  warnings.push(...rateNotes);
+  if (reread.length) warnings.push(`Read again more closely: ${reread.join("; ")}. Check against the photo.`);
   if (corrected.length) warnings.push(`Fixed one misread digit so the row adds up: ${corrected.join("; ")}. Check against the photo.`);
+  if (totalNote) warnings.push(totalNote);
+  if (dupCodes.length) warnings.push(`${dupCodes.join(", ")} appears more than once. Check the codes against the photo.`);
+  if (oddWeights.length) warnings.push(`Weight looks wrong: ${oddWeights.join("; ")}.`);
+  if (oddMc.length) warnings.push(`MC ${oddMc.join(", ")} is not what ${past.liver} usually has (${[...past.mcs].join(", ")}). Check against the photo.`);
+  if (nameHints.length) warnings.push(`Possible misspelling: ${nameHints.join("; ")}.`);
   if (flagged.length) {
     const detail = flagged.map((i) => {
       const r = fixed[i];
@@ -522,6 +737,11 @@ export async function parseMasterlistImage(file: File, mapping?: MasterlistMappi
     warnings.push(`${flagged.length} row(s) don't add up (grams × (rate + MC) ≠ amount), check the weight against the photo: ${detail.join("; ")}.`);
   }
 
+  const rowNotes: Record<string, string> = {};
+  for (const n of [...reread, ...corrected]) {
+    const [code, ...rest] = n.split(" ");
+    rowNotes[code] = rowNotes[code] ? `${rowNotes[code]}; ${rest.join(" ")}` : `Corrected: ${rest.join(" ")}`;
+  }
   const liver = parsed.liverName !== "Unknown" ? parsed.liverName : title;
   const rows = parsed.rows.map((r) => ({ ...r, liverName: r.liverName === "Unknown" ? liver : r.liverName }));
   return {
@@ -531,6 +751,7 @@ export async function parseMasterlistImage(file: File, mapping?: MasterlistMappi
     liveDate: parsed.liveDate || liveDate,
     globalRate: parsed.globalRate || rateMode,
     flagged: flagged.map((i) => fixed[i]?.code).filter(Boolean),
+    rowNotes,
     warnings,
   };
 }

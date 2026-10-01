@@ -14,9 +14,12 @@ import { parseMasterlistImage, isImageFile } from '@/lib/masterlistOcr';
 import { getMasterlistMapping, categoryForMc } from '@/lib/masterlistMapping';
 import { Input } from '@/components/ui/input';
 import { useDataOptions } from '@/lib/dataOptions';
+import type { DatabaseRowType } from '@/types';
 
 interface Props {
   onRefresh: () => void;
+  /** Existing records: photos are checked against the outsource's earlier orders. */
+  records?: DatabaseRowType[];
 }
 
 interface Group extends ParsedSheetSummary {
@@ -35,6 +38,8 @@ interface Parsed {
   sheets: Group[];
   /** orderId@groupIndex of photo rows whose numbers didn't add up. */
   flagged: Set<string>;
+  /** orderId@groupIndex → what the photo reader corrected on that row. */
+  notes: Map<string, string>;
 }
 
 /**
@@ -42,7 +47,7 @@ interface Parsed {
  * sample rows + validation warnings) and only writes to the sheet after the
  * user confirms — so a malformed file can't silently import bad rows.
  */
-export default function UploadMasterlistFAB({ onRefresh }: Props) {
+export default function UploadMasterlistFAB({ onRefresh, records = [] }: Props) {
   const [open, setOpen] = useState(false);
   const [parsing, setParsing] = useState(false);
   const [importing, setImporting] = useState(false);
@@ -96,14 +101,16 @@ export default function UploadMasterlistFAB({ onRefresh }: Props) {
       const rows: ParsedMasterlistRow[] = [];
       const sheets: Group[] = [];
       const flagged = new Set<string>();
+      const notes = new Map<string, string>();
       for (let fi = 0; fi < selectedFiles.length; fi++) {
         const f = selectedFiles[fi];
         if (isImageFile(f)) {
           setProgress(`Reading photo ${fi + 1} of ${selectedFiles.length}…`);
-          const res = await parseMasterlistImage(f);
+          const res = await parseMasterlistImage(f, undefined, records);
           const gi = sheets.length;
           sheets.push({ sheetName: f.name, page: res.pageName, liverName: res.liverName, liveDate: res.liveDate, globalRate: res.globalRate, rowCount: res.rows.length, start: rows.length, isPhoto: true, warnings: res.warnings });
           res.flagged.forEach((code) => flagged.add(`${code}@${gi}`));
+          Object.entries(res.rowNotes).forEach(([code, note]) => notes.set(`${code}@${gi}`, note));
           rows.push(...res.rows);
         } else {
           const res = await parseMasterlistFile(f);
@@ -115,7 +122,7 @@ export default function UploadMasterlistFAB({ onRefresh }: Props) {
         toast.error('No valid rows found. Check the file matches this customer\'s masterlist setup.');
         return;
       }
-      setParsed({ rows, liverName: sheets[0]?.liverName ?? '', pageName: sheets[0]?.page ?? '', sheets, flagged });
+      setParsed({ rows, liverName: sheets[0]?.liverName ?? '', pageName: sheets[0]?.page ?? '', sheets, flagged, notes });
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Could not read file');
     } finally {
@@ -414,12 +421,13 @@ export default function UploadMasterlistFAB({ onRefresh }: Props) {
                     const gi = groupOf(i);
                     // Photo rows and rows with a warning can be corrected before importing.
                     const photo = !!parsed.sheets[gi]?.isPhoto || !!r.warning;
-                    const bad = parsed.flagged.has(`${r.orderId}@${gi}`) || !!r.warning;
+                    const note = parsed.notes.get(`${r.orderId}@${gi}`);
+                    const bad = parsed.flagged.has(`${r.orderId}@${gi}`) || !!r.warning || !!note;
                     const cellIn = (field: keyof ParsedMasterlistRow, w: string) => (
                       <Input value={String(r[field] ?? '')} onChange={(e) => editRow(i, { [field]: field === 'grams' || field === 'mc' ? e.target.value : e.target.value.toUpperCase() } as Partial<ParsedMasterlistRow>)} className={`h-6 px-1 text-[11px] ${w}`} />
                     );
                     return (
-                      <tr key={i} title={r.warning || undefined} className={`border-t border-border/50 ${bad ? 'bg-warning/15' : ''}`}>
+                      <tr key={i} title={[r.warning, note].filter(Boolean).join(' · ') || undefined} className={`border-t border-border/50 ${bad ? 'bg-warning/15' : ''}`}>
                         {hasPhotos && <td className="px-2 py-1 whitespace-nowrap">{photo ? cellIn('orderId', 'w-16') : r.orderId}</td>}
                         <td className="px-2 py-1 truncate max-w-[130px]">{photo ? cellIn('minerName', 'w-28') : r.minerName}</td>
                         <td className="px-2 py-1 truncate max-w-[160px]">{photo ? cellIn('itemDescription', 'w-36') : r.itemDescription}</td>
