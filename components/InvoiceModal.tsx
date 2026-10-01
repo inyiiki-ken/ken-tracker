@@ -19,6 +19,8 @@ import { formatDate } from '@/lib/formatters';
 interface Props {
   records: DatabaseRowType[];
   onClose: () => void;
+  /** Box tab to open on (e.g. the work-queue card's box). */
+  initialBox?: OrderBox;
 }
 
 const CURRENCIES = ['PHP', 'AED', 'USD'];
@@ -40,7 +42,7 @@ function shipmentDays(list: DatabaseRowType[]): string[] {
   return [...new Set(list.map(shipmentDay))].sort((a, b) => b.localeCompare(a));
 }
 
-export default function InvoiceModal({ records, onClose }: Props) {
+export default function InvoiceModal({ records, onClose, initialBox }: Props) {
   const printRef = useRef<HTMLDivElement>(null);
   const [isCopying, setIsCopying] = useState(false);
   const [ccIncludeShipping, setCcIncludeShipping] = useState(getCcIncludeShipping());
@@ -67,8 +69,11 @@ export default function InvoiceModal({ records, onClose }: Props) {
     return out;
   }, [records]);
 
-  // Open on the first tab that has items, so a card's Invoice button lands on its own items.
-  const [tab, setTab] = useState<InvoiceTab>(() => INVOICE_TABS.find(t => byTab.get(t.key)!.length)?.key ?? 'cod');
+  // Open on the card's box when given, else the first tab with items.
+  const [tab, setTab] = useState<InvoiceTab>(() =>
+    initialBox && initialBox !== 'cancelled' && byTab.get(initialBox)!.length
+      ? initialBox
+      : INVOICE_TABS.find(t => byTab.get(t.key)!.length)?.key ?? 'cod');
 
   // Dispatched and Delivered items are invoiced per shipment date, one invoice
   // per day shipped. 'all' shows every date together.
@@ -153,10 +158,8 @@ export default function InvoiceModal({ records, onClose }: Props) {
       .finally(() => setIsCopying(false));
   };
 
-  // Only boxes this customer has items in, plus the one that's open.
-  const tabConfig = INVOICE_TABS
-    .map(t => ({ ...t, count: byTab.get(t.key)!.length }))
-    .filter(t => t.count > 0 || t.key === tab);
+  // Every box is a shortcut at the top, with how many of this customer's items are in it.
+  const tabConfig = INVOICE_TABS.map(t => ({ ...t, count: byTab.get(t.key)!.length }));
 
   const handleDownloadCSV = () => {
     if (visibleRecords.length === 0) return;

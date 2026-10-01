@@ -1,7 +1,7 @@
 "use client";
 
-import { useMemo, useState } from 'react';
-import { ClipboardList, Package, Truck, ShoppingBag, Layout, Crown, BookOpen, XCircle, CheckCircle2, AlertTriangle, Gem, Plane, Store } from 'lucide-react';
+import { useCallback, useMemo, useState } from 'react';
+import { ClipboardList, Package, Truck, Handshake, CheckSquare, ShoppingBag, Layout, Crown, BookOpen, XCircle, CheckCircle2, AlertTriangle, Gem, Plane, Store } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { TabProps, DatabaseRowType } from '@/types';
@@ -13,7 +13,10 @@ import PulloutReport from './PulloutReport';
 import RemindersDialog from '@/components/RemindersDialog';
 import { computeOverdue } from '@/lib/reminders';
 import { parseDateRobust } from '@/lib/calculations';
-import { ORDER_BOXES, OrderBox, orderBox, isStillWithAdmin, shipmentDay } from '@/lib/fulfilment';
+import { ORDER_BOXES, OrderBox, orderBox, isStillWithAdmin, shipmentDay, outsourceName } from '@/lib/fulfilment';
+import { getEffectiveStatuses } from '@/lib/statusRegistry';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { toast } from 'sonner';
 
 /** Boxes of items still waiting to go out. */
 const GOING_OUT = new Set<OrderBox>(['intl', 'cod', 'pickup', 'reseller']);
@@ -36,6 +39,20 @@ function AgingLabel({ dateStr, warnAfterHours }: { dateStr?: string; warnAfterHo
       {days === 0 ? 'today' : `${days}d`}
     </span>
   );
+}
+
+const customerKey = (r: DatabaseRowType) => (r.minerName || '').trim().toLowerCase();
+
+/** Each customer's most recent live date within a list of items. */
+function latestLiveDateByCustomer(list: DatabaseRowType[]): Map<string, string | undefined> {
+  const best = new Map<string, { t: number; date?: string }>();
+  for (const r of list) {
+    const t = r.dateOfLive ? (parseDateRobust(r.dateOfLive)?.getTime() ?? 0) : 0;
+    const k = customerKey(r);
+    const cur = best.get(k);
+    if (!cur || t > cur.t) best.set(k, { t, date: r.dateOfLive });
+  }
+  return new Map([...best].map(([k, v]) => [k, v.date]));
 }
 
 /** One row in the work-queue list. */
@@ -64,7 +81,7 @@ function QueueButton({
   );
 }
 
-export default function DispatchBoard({ records, searchQuery, onSearchChange, onUpdate, userEmail, clientMilestones }: TabProps) {
+export default function DispatchBoard({ records, searchQuery, onSearchChange, onUpdate, onBulkUpdate, userEmail, clientMilestones }: TabProps) {
   const [showReport, setShowReport] = useState(false);
   const [showReminders, setShowReminders] = useState(() => computeOverdue(records).length > 0);
 
@@ -82,13 +99,19 @@ export default function DispatchBoard({ records, searchQuery, onSearchChange, on
     );
     const buckets = new Map<OrderBox, DatabaseRowType[]>(ORDER_BOXES.map(b => [b.key, []]));
     for (const r of searched) buckets.get(orderBox(r))!.push(r);
-    return new Map(ORDER_BOXES.map(b => [
-      b.key,
+    return new Map(ORDER_BOXES.map(b => {
+      const list = buckets.get(b.key)!;
       // Shipped items are grouped by the day they shipped, not the live date.
-      b.key === 'dispatched' || b.key === 'delivered'
-        ? groupByPageDateMiner(buckets.get(b.key)!, shipmentDay)
-        : groupByPageDateMiner(buckets.get(b.key)!),
-    ]));
+      if (b.key === 'dispatched' || b.key === 'delivered') return [b.key, groupByPageDateMiner(list, shipmentDay)];
+      // Waiting boxes: one card per customer with all their items (they go out
+      // together, on one invoice), filed under the customer's latest live date.
+      const latest = latestLiveDateByCustomer(list);
+      const dateOf = (r: DatabaseRowType) => latest.get(customerKey(r));
+      // Outsource: the outsource name comes first, then the date.
+      return [b.key, b.key === 'outsource'
+        ? groupByPageDateMiner(list, dateOf, outsourceName)
+        : groupByPageDateMiner(list, dateOf)];
+    }));
   }, [records, searchQuery]);
 
   // Items waiting to go out, i.e. what the Pullout Report prints.
@@ -100,7 +123,37 @@ export default function DispatchBoard({ records, searchQuery, onSearchChange, on
   // Which queue the right-hand pane is showing.
   const [queue, setQueue] = useState<string>('intl');
 
+  // ─── Multi-select: tick items (or a whole card / queue) and set one status for all.
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [bulkStatus, setBulkStatus] = useState('');
+  const [bulkSaving, setBulkSaving] = useState(false);
+  const toggleSelect = useCallback((ids: number[], on: boolean) => {
+    setSelected(prev => {
+      const next = new Set(prev);
+      for (const id of ids) on ? next.add(id) : next.delete(id);
+      return next;
+    });
+  }, []);
+  const applyBulkStatus = async () => {
+    if (!bulkStatus || selected.size === 0) return;
+    if (/cancel/i.test(bulkStatus) && !window.confirm(`Cancel ${selected.size} item${selected.size !== 1 ? 's' : ''}?`)) return;
+    const updates = [...selected].map(rowId => ({ rowId, fields: { status: bulkStatus } as Partial<DatabaseRowType> }));
+    setBulkSaving(true);
+    try {
+      if (onBulkUpdate) await onBulkUpdate(updates);
+      else for (const u of updates) await onUpdate(u.rowId, u.fields);
+      toast.success(`${updates.length} item${updates.length !== 1 ? 's' : ''} set to ${bulkStatus}`);
+      setSelected(new Set());
+      setBulkStatus('');
+    } catch {
+      toast.error('Could not update all items — please try again.');
+    } finally {
+      setBulkSaving(false);
+    }
+  };
+
   const BOX_ICONS: Record<OrderBox, React.ReactNode> = {
+    outsource: <Handshake className="h-4 w-4" />,
     intl: <Plane className="h-4 w-4" />,
     cod: <Package className="h-4 w-4" />,
     pickup: <Store className="h-4 w-4" />,
@@ -161,6 +214,8 @@ export default function DispatchBoard({ records, searchQuery, onSearchChange, on
                       onUpdate={onUpdate}
                       userEmail={userEmail}
                       clientMilestones={clientMilestones}
+                      selectedIds={selected}
+                      onSelect={toggleSelect}
                     />
                   ))}
                 </CollapsibleGroup>
@@ -240,6 +295,15 @@ export default function DispatchBoard({ records, searchQuery, onSearchChange, on
                   <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
                     {total} item{total !== 1 ? 's' : ''}
                   </span>
+                  {total > 0 && (() => {
+                    const ids = Array.from(group.values()).flatMap(dm => Array.from(dm.values()).flatMap(mm => Array.from(mm.values()).flat())).map(r => r.id);
+                    const allOn = ids.every(id => selected.has(id));
+                    return (
+                      <Button variant="ghost" size="sm" className="h-7 text-xs ml-auto" onClick={() => toggleSelect(ids, !allOn)}>
+                        <CheckSquare className="h-3.5 w-3.5 mr-1" />{allOn ? 'Unselect all' : 'Select all'}
+                      </Button>
+                    );
+                  })()}
                 </div>
                 {group && total > 0 ? (
                   renderGroupedRecords(group, built.warnAfter)
@@ -253,6 +317,23 @@ export default function DispatchBoard({ records, searchQuery, onSearchChange, on
           })()}
         </div>
       </div>
+
+      {/* Bulk status bar — shows while items are ticked */}
+      {selected.size > 0 && (
+        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-40 flex flex-wrap items-center gap-2 rounded-xl border border-primary/40 bg-card shadow-lg px-3 py-2 max-w-[calc(100vw-2rem)]">
+          <span className="text-xs font-semibold text-primary">{selected.size} selected</span>
+          <Select value={bulkStatus} onValueChange={setBulkStatus}>
+            <SelectTrigger className="h-8 w-56 text-xs"><SelectValue placeholder="Set status to…" /></SelectTrigger>
+            <SelectContent>
+              {getEffectiveStatuses('dispatch').map(st => <SelectItem key={st} value={st} className="text-xs">{st}</SelectItem>)}
+            </SelectContent>
+          </Select>
+          <Button size="sm" className="h-8 text-xs" disabled={!bulkStatus || bulkSaving} onClick={applyBulkStatus}>
+            {bulkSaving ? 'Saving…' : 'Apply'}
+          </Button>
+          <Button variant="ghost" size="sm" className="h-8 text-xs" onClick={() => setSelected(new Set())}>Clear</Button>
+        </div>
+      )}
 
       {showReport && <PulloutReport records={records} onClose={() => setShowReport(false)} />}
 
