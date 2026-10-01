@@ -16,6 +16,7 @@
 import type { DatabaseRowType } from '@/types';
 import { isPulloutStatus } from '@/lib/appConfig';
 import { parseDateRobust } from '@/lib/calculations';
+import { statusChangedAt } from '@/lib/pulloutRequests';
 
 export type FulfilmentStage = 'excluded' | 'active' | 'pullout' | 'dispatched' | 'delivered';
 
@@ -51,6 +52,12 @@ function dayKey(v?: string): string {
 /** The day an item shipped: Dispatch Date, else Delivered Date, else the live date. */
 export function shipmentDay(r: DatabaseRowType): string {
   return dayKey(r.dispatchDate) || dayKey(r.deliveredDate) || dayKey(r.dateOfLive) || 'Unknown Date';
+}
+
+/** The day an item was cancelled / returned: when its status last changed, else the live date. */
+export function cancelDay(r: DatabaseRowType): string {
+  const d = statusChangedAt(r);
+  return d ? dayKey(d.toISOString()) || 'Unknown Date' : 'Unknown Date';
 }
 
 /**

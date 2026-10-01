@@ -39,7 +39,7 @@ function gramsDisplay(r: DatabaseRowType): string {
   return r.grams ? `${Number(r.grams).toFixed(2)}g` : '—';
 }
 
-const SHARED_STYLES = `
+export const SHARED_STYLES = `
   * { box-sizing: border-box; }
   body { font-family: Arial, sans-serif; color: #111; background: #fff; margin: 0; padding: 20px; font-size: 11px; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
   .font-cinzel { font-family: 'Cinzel', serif; font-weight: 700; }
