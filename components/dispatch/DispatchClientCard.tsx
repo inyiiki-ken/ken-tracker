@@ -4,7 +4,7 @@ import { useState, useRef, memo, useCallback, useMemo } from 'react';
 import { autoStageDates, orderBox } from '@/lib/fulfilment';
 import { Checkbox } from '@/components/ui/checkbox';
 import { formatDate } from '@/lib/formatters';
-import { FileText, Truck, Upload, History, ChevronDown, AlertTriangle, Pencil, Check, X, Scissors, StickyNote, Plus, Gift, MapPin, Phone } from 'lucide-react';
+import { FileText, Truck, Upload, History, ChevronDown, AlertTriangle, Pencil, Check, X, Scissors, StickyNote, Plus, Gift, MapPin, Phone, Copy } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Switch } from '@/components/ui/switch';
@@ -387,6 +387,13 @@ function DispatchClientCard({ minerName, records, allRecords, onUpdate, userEmai
     toast.success(`Status: ${newStatus}`);
   };
 
+  const copyName = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    navigator.clipboard.writeText(minerName.trim())
+      .then(() => toast.success(`Copied: ${minerName.trim()}`))
+      .catch(() => toast.error('Could not copy the name'));
+  };
+
   const startEditName = (e: React.MouseEvent) => {
     e.stopPropagation();
     setNameValue(minerName);
@@ -467,6 +474,7 @@ function DispatchClientCard({ minerName, records, allRecords, onUpdate, userEmai
             ) : (
               <>
                 <span className="font-cinzel text-[13px] text-primary">{minerName}</span>
+                <button className="shrink-0 text-muted-foreground hover:text-primary transition-colors" title="Copy name" onClick={copyName}><Copy className="h-3 w-3" /></button>
                 <button className="shrink-0 text-muted-foreground hover:text-primary transition-colors" title="Edit customer name" onClick={startEditName}><Pencil className="h-3 w-3" /></button>
                 {first?.customerId && (
                   <button className="shrink-0 text-muted-foreground hover:text-primary transition-colors" title="View Lifetime History" onClick={e => { e.stopPropagation(); setShowHistory(true); }}><History className="h-3.5 w-3.5" /></button>
