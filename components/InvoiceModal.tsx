@@ -13,7 +13,7 @@ import { getCcIncludeShipping } from '@/lib/pricingConfig';
 import InvoicePrintContent from '@/components/InvoicePrintContent';
 import { parseDateRobust } from '@/lib/calculations';
 import { toast } from 'sonner';
-import { fulfilmentStage, shipmentDay } from '@/lib/fulfilment';
+import { ORDER_BOXES, OrderBox, orderBox, boxLabel, shipmentDay } from '@/lib/fulfilment';
 import { formatDate } from '@/lib/formatters';
 
 interface Props {
@@ -31,7 +31,9 @@ function sortByDate(list: DatabaseRowType[]) {
   });
 }
 
-type InvoiceTab = 'active' | 'dispatched' | 'delivered';
+/** Statement tabs = Crown's boxes (lib/fulfilment); cancelled / returned items are never invoiced. */
+type InvoiceTab = Exclude<OrderBox, 'cancelled'>;
+const INVOICE_TABS = ORDER_BOXES.filter(b => b.key !== 'cancelled') as { key: InvoiceTab; label: string }[];
 
 /** Shipment days present in a list, newest first. */
 function shipmentDays(list: DatabaseRowType[]): string[] {
@@ -41,7 +43,6 @@ function shipmentDays(list: DatabaseRowType[]): string[] {
 export default function InvoiceModal({ records, onClose }: Props) {
   const printRef = useRef<HTMLDivElement>(null);
   const [isCopying, setIsCopying] = useState(false);
-  const [tab, setTab] = useState<InvoiceTab>('active');
   const [ccIncludeShipping, setCcIncludeShipping] = useState(getCcIncludeShipping());
 
   useEffect(() => {
@@ -54,35 +55,33 @@ export default function InvoiceModal({ records, onClose }: Props) {
     }
   }, []);
 
-  // Each item goes to a tab by its status (see lib/fulfilment): Reseller and
-  // other open orders are Active; Shipment International, couriers and
-  // Dispatched are Dispatched; Delivered / Given to Shop / Picked Up are Delivered.
-  const { activeRecords, dispatchedRecords, deliveredRecords } = useMemo(() => {
-    const active: DatabaseRowType[] = [], dispatched: DatabaseRowType[] = [], delivered: DatabaseRowType[] = [];
+  // Each item goes to the tab of its box: For International Shipment, For COD,
+  // For Pick Up, Reseller, Dispatched or Delivered.
+  const byTab = useMemo(() => {
+    const out = new Map<InvoiceTab, DatabaseRowType[]>(INVOICE_TABS.map(t => [t.key, []]));
     for (const r of records) {
-      const stage = fulfilmentStage(r.status);
-      if (stage === 'excluded') continue;
-      if (stage === 'delivered') delivered.push(r);
-      else if (stage === 'dispatched') dispatched.push(r);
-      else active.push(r);
+      const box = orderBox(r);
+      if (box !== 'cancelled') out.get(box)!.push(r);
     }
-    return { activeRecords: sortByDate(active), dispatchedRecords: sortByDate(dispatched), deliveredRecords: sortByDate(delivered) };
+    for (const [k, list] of out) out.set(k, sortByDate(list));
+    return out;
   }, [records]);
+
+  // Open on the first tab that has items, so a card's Invoice button lands on its own items.
+  const [tab, setTab] = useState<InvoiceTab>(() => INVOICE_TABS.find(t => byTab.get(t.key)!.length)?.key ?? 'cod');
 
   // Dispatched and Delivered items are invoiced per shipment date, one invoice
   // per day shipped. 'all' shows every date together.
-  const tabRecords =
-    tab === 'active' ? activeRecords :
-    tab === 'dispatched' ? dispatchedRecords :
-    deliveredRecords;
-  const dayOptions = useMemo(() => (tab === 'active' ? [] : shipmentDays(tabRecords)), [tab, tabRecords]);
+  const tabRecords = byTab.get(tab)!;
+  const byShipDate = tab === 'dispatched' || tab === 'delivered';
+  const dayOptions = useMemo(() => (byShipDate ? shipmentDays(tabRecords) : []), [byShipDate, tabRecords]);
   const [shipDay, setShipDay] = useState<string>('');
   useEffect(() => { setShipDay(dayOptions[0] ?? ''); }, [dayOptions]);
 
   const visibleRecords = useMemo(() => {
-    if (tab === 'active' || !shipDay || shipDay === 'all') return tabRecords;
+    if (!byShipDate || !shipDay || shipDay === 'all') return tabRecords;
     return tabRecords.filter(r => shipmentDay(r) === shipDay);
-  }, [tab, tabRecords, shipDay]);
+  }, [byShipDate, tabRecords, shipDay]);
 
   const baseRecord = visibleRecords[0] || records[0];
   // Default = the item's own currency; a blank currency means AED (local),
@@ -154,11 +153,10 @@ export default function InvoiceModal({ records, onClose }: Props) {
       .finally(() => setIsCopying(false));
   };
 
-  const tabConfig: { key: InvoiceTab; label: string; count: number }[] = [
-    { key: 'active', label: 'Active Orders', count: activeRecords.length },
-    { key: 'dispatched', label: 'Dispatched', count: dispatchedRecords.length },
-    { key: 'delivered', label: 'Delivered', count: deliveredRecords.length },
-  ];
+  // Only boxes this customer has items in, plus the one that's open.
+  const tabConfig = INVOICE_TABS
+    .map(t => ({ ...t, count: byTab.get(t.key)!.length }))
+    .filter(t => t.count > 0 || t.key === tab);
 
   const handleDownloadCSV = () => {
     if (visibleRecords.length === 0) return;
@@ -285,7 +283,7 @@ export default function InvoiceModal({ records, onClose }: Props) {
             </div>
 
             {/* Shipment date — one invoice per day shipped */}
-            {tab !== 'active' && dayOptions.length > 0 && (
+            {byShipDate && dayOptions.length > 0 && (
               <div className="flex items-center gap-1.5 flex-wrap">
                 <span className="text-xs text-muted-foreground font-medium">Shipment date:</span>
                 {[...dayOptions, ...(dayOptions.length > 1 ? ['all'] : [])].map(d => {
@@ -313,11 +311,7 @@ export default function InvoiceModal({ records, onClose }: Props) {
             <AlertCircle className="h-8 w-8 text-warning mb-2" />
             <p className="font-semibold text-warning">No Items</p>
             <p className="text-xs">
-              {tab === 'active'
-                ? 'No active/pending items. Check the other tabs.'
-                : tab === 'dispatched'
-                ? 'No dispatched items.'
-                : 'No delivered items.'}
+              {`Nothing in ${boxLabel(tab)}.`}
             </p>
           </div>
         )}
