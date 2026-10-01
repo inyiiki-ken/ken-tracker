@@ -1,5 +1,6 @@
 import { format, parseISO, isValid } from 'date-fns';
 import { DatabaseRowType } from '@/types';
+import { parseDateRobust } from '@/lib/calculations';
 
 // UAE offset in ms (UTC+4)
 // Kept as the fallback default; the live value comes from the customer's
@@ -279,3 +280,14 @@ export const STATUS_COLORS: Record<string, string> = {
   'Given to Shop': 'bg-success/10 text-success border-success/30',
   'Payment for Verification': 'bg-info/10 text-info border-info/30',
 };
+/** "Ordered Sep 26, 2026 – Sep 30, 2026" (or one date) across some items; '' when none are dated. */
+export function orderedRangeLabel(records: DatabaseRowType[]): string {
+  const dated = records
+    .map(r => ({ s: r.dateOfLive, t: r.dateOfLive ? parseDateRobust(r.dateOfLive)?.getTime() : undefined }))
+    .filter((d): d is { s: string; t: number } => !!d.s && typeof d.t === 'number' && !isNaN(d.t))
+    .sort((a, b) => a.t - b.t);
+  if (dated.length === 0) return '';
+  const from = formatDate(dated[0].s);
+  const to = formatDate(dated[dated.length - 1].s);
+  return from === to ? `Ordered ${from}` : `Ordered ${from} – ${to}`;
+}

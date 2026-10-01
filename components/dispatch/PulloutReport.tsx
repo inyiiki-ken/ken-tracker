@@ -5,7 +5,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { Button } from '@/components/ui/button';
 import { Printer, ClipboardList, DollarSign } from 'lucide-react';
 import { DatabaseRowType } from '@/types';
-import { formatDate } from '@/lib/formatters';
+import { orderedRangeLabel } from '@/lib/formatters';
 import { calcProfitAED, calcItemPriceAED, calcItemCostAED, getQty } from '@/lib/calculations';
 import { OrderBox, orderBox, boxLabel, isStillWithAdmin } from '@/lib/fulfilment';
 import { computeToCancel, hoursInStatus } from '@/lib/reminders';
@@ -18,20 +18,42 @@ interface Props {
 /** Boxes whose items go out, in the order they're printed. */
 const REPORT_BOXES: OrderBox[] = ['intl', 'cod', 'pickup', 'reseller'];
 
-/** Box → source → client. Each block is one box + source, e.g. "FOR COD · Main Store". */
-function groupBySourceThenMiner(records: DatabaseRowType[]) {
+/**
+ * Box → customer, in work-queue order. One block per box (like the Dispatch
+ * work queue), one entry per customer however many livers / branches sold to
+ * them; the liver shows as a label on the customer instead.
+ */
+function groupByBoxThenCustomer(records: DatabaseRowType[]) {
   const grouped = new Map<string, Map<string, DatabaseRowType[]>>();
+  const names = new Map<string, string>();
   const sorted = [...records].sort((a, b) => REPORT_BOXES.indexOf(orderBox(a)) - REPORT_BOXES.indexOf(orderBox(b)));
   for (const r of sorted) {
-    const source = `${boxLabel(orderBox(r)).toUpperCase()} · ${r.source?.trim() || r.liverName?.trim() || 'Main Store'}`;
-    const miner = r.minerName?.trim() || 'Unknown Client';
-    if (!grouped.has(source)) grouped.set(source, new Map());
-    const bySource = grouped.get(source)!;
-    if (!bySource.has(miner)) bySource.set(miner, []);
-    bySource.get(miner)!.push(r);
+    const box = boxLabel(orderBox(r)).toUpperCase();
+    const key = (r.minerName || '').trim().toLowerCase() || 'unknown client';
+    if (!names.has(key)) names.set(key, r.minerName?.trim() || 'Unknown Client');
+    const name = names.get(key)!;
+    if (!grouped.has(box)) grouped.set(box, new Map());
+    const byCustomer = grouped.get(box)!;
+    if (!byCustomer.has(name)) byCustomer.set(name, []);
+    byCustomer.get(name)!.push(r);
   }
   return grouped;
 }
+
+/** Livers / branches the items came from, e.g. "AMBIE, Crown Dubai". */
+function liversOf(items: DatabaseRowType[]): string {
+  return [...new Set(items.map(r => r.liverName?.trim() || r.source?.trim()).filter(Boolean))].join(', ');
+}
+
+const isPc = (r: DatabaseRowType) => {
+  const c = (r.category || '').toLowerCase();
+  return c.includes('per pc') || c.includes('screw type') || c.includes('diamond');
+};
+const sumGrams = (items: DatabaseRowType[]) => items.reduce((s, r) => isPc(r) ? s : s + (Number(r.grams) || 0), 0);
+/** Customer amount (selling price). Items with no rate yet count as 0. */
+const sumAmount = (items: DatabaseRowType[]) => items.reduce((s, r) => s + calcItemPriceAED(r), 0);
+const unpriced = (items: DatabaseRowType[]) => items.filter(r => calcItemPriceAED(r) <= 0).length;
+const aed = (v: number) => `AED ${Math.round(v).toLocaleString()}`;
 
 function gramsDisplay(r: DatabaseRowType): string {
   const cat = (r.category || '').toLowerCase();
@@ -92,7 +114,7 @@ export default function PulloutReport({ records, onClose }: Props) {
     }
     return h + `</div></div>`;
   };
-  const grouped = groupBySourceThenMiner(forPullout);
+  const grouped = groupByBoxThenCustomer(forPullout);
 
   const printDispatchSheet = () => {
     const win = window.open('', '_blank');
@@ -125,12 +147,13 @@ export default function PulloutReport({ records, onClose }: Props) {
           const c = (r.category || '').toLowerCase();
           return c.includes('per pc') || c.includes('screw type') || c.includes('diamond') ? s : s + (Number(r.grams) || 0);
         }, 0);
-        const dates = [...new Set(items.map(r => formatDate(r.dateOfLive)).filter(Boolean))].join(', ');
+        const dates = orderedRangeLabel(items);
+        const livers = liversOf(items);
 
         html += `<div class="client-block">
           <div class="client-header">
             <span>${miner}</span>
-            <span class="client-meta">${dates} &nbsp;·&nbsp; ${items.length} item${items.length !== 1 ? 's' : ''} &nbsp;·&nbsp; ${minerGrams.toFixed(2)}g</span>
+            <span class="client-meta">${livers ? `${livers} &nbsp;·&nbsp; ` : ''}${dates} &nbsp;·&nbsp; ${items.length} item${items.length !== 1 ? 's' : ''} &nbsp;·&nbsp; ${minerGrams.toFixed(2)}g</span>
           </div>
           <table><thead><tr>
             <th style="width:28px">Pull</th>
@@ -146,7 +169,7 @@ export default function PulloutReport({ records, onClose }: Props) {
             <td class="order-id">${r.orderId || `#${r.id}`}</td>
             <td>${r.itemDescription || '—'}</td>
             <td class="r">${gramsDisplay(r)}</td>
-            <td>${r.liverName || source}</td>
+            <td>${r.liverName || r.source || '—'}</td>
           </tr>`;
         });
 
@@ -206,7 +229,7 @@ export default function PulloutReport({ records, onClose }: Props) {
           const c = (r.category || '').toLowerCase();
           return c.includes('per pc') || c.includes('screw type') || c.includes('diamond') ? s : s + (Number(r.grams) || 0);
         }, 0);
-        const dates = [...new Set(items.map(r => formatDate(r.dateOfLive)).filter(Boolean))].join(', ');
+        const dates = orderedRangeLabel(items);
 
         html += `<div class="client-block">
           <div class="client-header">
@@ -275,40 +298,51 @@ export default function PulloutReport({ records, onClose }: Props) {
         {/* Summary */}
         <div className="rounded-lg border border-border bg-secondary/30 p-3 space-y-1">
           <p className="text-xs text-muted-foreground font-medium">
-            {forPullout.length} items ready for pullout: {REPORT_BOXES.map(b => `${boxLabel(b)} ${forPullout.filter(r => orderBox(r) === b).length}`).join(' · ')}
+            {forPullout.length} items to pull out · {aed(sumAmount(forPullout))}
           </p>
           {forPullout.length === 0 && (
             <p className="text-xs text-muted-foreground">No items in For International Shipment, For COD, For Pick Up or Reseller.</p>
           )}
         </div>
 
-        {/* Source breakdown preview */}
+        {/* One block per box, one row per customer (same as the work queue) */}
         {grouped.size > 0 && (
           <div className="space-y-3">
-            {Array.from(grouped.entries()).map(([source, byMiner]) => {
-              const allItems = Array.from(byMiner.values()).flat();
-              const totalProfit = allItems.reduce((s, r) => s + calcProfitAED(r), 0);
-              const totalGrams = allItems.reduce((s, r) => {
-                const c = (r.category || '').toLowerCase();
-                return c.includes('per pc') || c.includes('screw type') || c.includes('diamond') ? s : s + (Number(r.grams) || 0);
-              }, 0);
+            {Array.from(grouped.entries()).map(([box, byCustomer]) => {
+              const allItems = Array.from(byCustomer.values()).flat();
+              const noRate = unpriced(allItems);
               return (
-                <div key={source} className="rounded-lg border border-border overflow-hidden">
-                  <div className="px-3 py-2 bg-secondary/50 flex justify-between items-center">
-                    <span className="font-cinzel text-xs font-bold text-primary">{source}</span>
+                <div key={box} className="rounded-lg border border-border overflow-hidden">
+                  <div className="px-3 py-2 bg-secondary/50 flex justify-between items-center gap-2">
+                    <span className="font-cinzel text-xs font-bold text-primary">{box}</span>
                     <div className="flex gap-3 text-[10px] text-muted-foreground">
-                      <span>{allItems.length} items</span>
-                      <span>{totalGrams.toFixed(2)}g</span>
-                      <span className="text-success font-semibold">AED {totalProfit.toFixed(2)}</span>
+                      <span>{byCustomer.size} customer{byCustomer.size !== 1 ? 's' : ''}</span>
+                      <span>{allItems.length} item{allItems.length !== 1 ? 's' : ''}</span>
+                      <span>{sumGrams(allItems).toFixed(2)}g</span>
+                      <span className="font-semibold text-foreground">{aed(sumAmount(allItems))}</span>
                     </div>
                   </div>
-                  <div className="px-3 py-2 space-y-1">
-                    {Array.from(byMiner.entries()).map(([miner, items]) => (
-                      <div key={miner} className="flex justify-between text-xs">
-                        <span className="font-medium">{miner}</span>
-                        <span className="text-muted-foreground">{items.length} item{items.length !== 1 ? 's' : ''}</span>
-                      </div>
-                    ))}
+                  {noRate > 0 && (
+                    <p className="px-3 pt-1.5 text-[10px] text-warning">{noRate} item{noRate !== 1 ? 's have' : ' has'} no rate yet, so {noRate !== 1 ? 'they are' : 'it is'} not in the amount.</p>
+                  )}
+                  <div className="divide-y divide-border/50">
+                    {Array.from(byCustomer.entries()).map(([customer, items]) => {
+                      const livers = liversOf(items);
+                      const amt = sumAmount(items);
+                      return (
+                        <div key={customer} className="px-3 py-1.5 flex justify-between gap-3 text-xs">
+                          <div className="min-w-0">
+                            <span className="font-medium">{customer}</span>
+                            {livers && <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground">{livers}</span>}
+                            <p className="text-[10px] text-muted-foreground">{orderedRangeLabel(items)}</p>
+                          </div>
+                          <div className="text-right shrink-0 text-muted-foreground">
+                            <p>{items.length} item{items.length !== 1 ? 's' : ''} · {sumGrams(items).toFixed(2)}g</p>
+                            <p className="text-foreground font-medium">{amt > 0 ? aed(amt) : 'No rate yet'}</p>
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
               );
@@ -367,7 +401,7 @@ export default function PulloutReport({ records, onClose }: Props) {
             <div>
               <p className="text-sm font-semibold text-foreground">Financial / Audit Report</p>
               <p className="text-xs text-muted-foreground mt-0.5">
-                Full financials — grouped by Source with supplier payout totals, client subtotals, and per-item profit. For boss & accounts only.
+                Full financials — grouped by box with supplier payout totals, client subtotals, and per-item profit. For boss & accounts only.
               </p>
             </div>
             <Printer className="h-4 w-4 text-warning shrink-0 mt-0.5 ml-auto" />
