@@ -6,7 +6,9 @@ import { writeConfig } from "./config-store";
 import { databaseRecordToRow } from "./row-mapper";
 import { DATABASE_HEADERS, DATABASE_HEADER_ALIASES } from "./sheet-config";
 import { SESSION_H, ITEM_H, STOCK_H, LIVE_TABS } from "./liveSellerHeaders";
-import { getMyContextCore, getTenantById, getSessionEmail, isDeveloper, isMultiTenant } from "./tenancy-core";
+import { getMyContextCore, getTenantById, getTenants, getSessionEmail, isDeveloper, isMultiTenant } from "./tenancy-core";
+import { getSpreadsheetById } from "./client";
+import { SHEET_TABS, LEGACY_CONFIG_TITLES, UPLOADS_HEADERS } from "./sheet-config";
 import {
   isDemoTenant,
   buildDemoRecords,
@@ -14,6 +16,8 @@ import {
   buildDemoDataOptions,
   buildDemoPurchases,
   buildDemoLive,
+  mergeCopiedSetup,
+  COPYABLE_SETUP_MARKERS,
 } from "@/lib/demoData";
 
 /**
@@ -42,15 +46,53 @@ async function assertDemoWorkspace(): Promise<string> {
   return active.displayName;
 }
 
-/** Is the active workspace a demo account? (For the God Mode card.) */
-export async function getDemoStatus(): Promise<{ isDemo: boolean; name: string; reason?: string }> {
+/** Is the active workspace a demo account? Plus the real customers whose setup it can copy. */
+export async function getDemoStatus(): Promise<{
+  isDemo: boolean;
+  name: string;
+  reason?: string;
+  sources: { tenantId: string; displayName: string }[];
+}> {
+  let sources: { tenantId: string; displayName: string }[] = [];
+  try {
+    if (isDeveloper(await getSessionEmail()) && isMultiTenant()) {
+      sources = (await getTenants())
+        .filter((t) => t.active && !isDemoTenant(t))
+        .map((t) => ({ tenantId: t.tenantId, displayName: t.displayName }));
+    }
+  } catch { /* no list: the demo still works without copying */ }
   try {
     const name = await assertDemoWorkspace();
-    return { isDemo: true, name };
+    return { isDemo: true, name, sources };
   } catch (err) {
     const ctx = await getMyContextCore().catch(() => null);
-    return { isDemo: false, name: ctx?.activeTenant?.displayName ?? "", reason: err instanceof Error ? err.message : String(err) };
+    return { isDemo: false, name: ctx?.activeTenant?.displayName ?? "", reason: err instanceof Error ? err.message : String(err), sources };
   }
+}
+
+/**
+ * Read the setup markers (settings only, never data) from another customer's
+ * sheet: Ken_Config first, then the legacy config / Uploads markers.
+ */
+async function readSetupFrom(tenantId: string): Promise<Record<string, string>> {
+  const t = await getTenantById(tenantId);
+  if (!t) throw new Error("The customer to copy from was not found.");
+  if (isDemoTenant(t)) throw new Error("Pick a real customer to copy the setup from.");
+  const doc = await getSpreadsheetById(t.sheetId);
+  const wanted = new Set<string>(COPYABLE_SETUP_MARKERS);
+  const out: Record<string, string> = {};
+  const titles = [SHEET_TABS.uploads.title, ...LEGACY_CONFIG_TITLES, SHEET_TABS.config.title]; // later tabs win
+  for (const title of titles) {
+    const ws = doc.sheetsByTitle[title];
+    if (!ws) continue;
+    const rows = await ws.getRows().catch(() => []);
+    for (const r of rows) {
+      const marker = String(r.get(UPLOADS_HEADERS.status) ?? "");
+      const value = String(r.get(UPLOADS_HEADERS.masterlistFile) ?? "");
+      if (wanted.has(marker) && value) out[marker] = value;
+    }
+  }
+  return out;
 }
 
 /** Get a tab by title, creating it with headers; add any missing headers. */
@@ -179,14 +221,15 @@ async function seedLive(who: string): Promise<number> {
 }
 
 /** Run one step of the demo seed on the active (demo) workspace. */
-export async function seedDemoStep(params: { step: DemoStep }): Promise<{ step: DemoStep; count: number }> {
+export async function seedDemoStep(params: { step: DemoStep; copyFrom?: string }): Promise<{ step: DemoStep; count: number }> {
   await assertDemoWorkspace();
   const who = (await getSessionEmail()) || "demo";
   let count = 0;
   try {
     switch (params.step) {
       case "settings": {
-        const settings = buildDemoSettings(new Date());
+        const demo = buildDemoSettings(new Date());
+        const settings = params.copyFrom ? mergeCopiedSetup(await readSetupFrom(params.copyFrom), demo) : demo;
         for (const [marker, value] of Object.entries(settings)) await writeConfig(marker, value);
         count = Object.keys(settings).length;
         break;

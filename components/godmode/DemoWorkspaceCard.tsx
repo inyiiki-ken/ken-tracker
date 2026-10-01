@@ -8,7 +8,7 @@ import { getDemoStatus, seedDemoStep, type DemoStep } from "@/lib/google-sheets/
 import { prepareTenantSwitch } from "@/lib/tenantStorage";
 
 const STEPS: { step: DemoStep; label: string }[] = [
-  { step: "settings", label: "Switch on every feature (tabs, boxes, statuses, reminders, resellers)" },
+  { step: "settings", label: "Copy the setup and switch on every feature (tabs, boxes, statuses, reminders)" },
   { step: "options", label: "Dropdown lists (sellers, pages, categories)" },
   { step: "orders", label: "Orders in every box, repeat customers, invoices, layaway" },
   { step: "purchasing", label: "Supplier purchases" },
@@ -21,12 +21,20 @@ const STEPS: { step: DemoStep; label: string }[] = [
  * the workspace is a demo account, so a real customer can't be overwritten.
  */
 export default function DemoWorkspaceCard({ tenantId }: { tenantId?: string }) {
-  const [status, setStatus] = useState<{ isDemo: boolean; name: string; reason?: string } | null>(null);
+  const [status, setStatus] = useState<Awaited<ReturnType<typeof getDemoStatus>> | null>(null);
+  const [copyFrom, setCopyFrom] = useState("");
   const [running, setRunning] = useState(false);
   const [done, setDone] = useState<DemoStep[]>([]);
 
   useEffect(() => {
-    getDemoStatus().then(setStatus).catch(() => setStatus(null));
+    getDemoStatus()
+      .then((s) => {
+        setStatus(s);
+        // Crown has every recent update, so it's the default setup to copy.
+        const crown = s.sources.find((t) => /crown/i.test(t.displayName));
+        setCopyFrom(crown?.tenantId ?? "");
+      })
+      .catch(() => setStatus(null));
   }, [tenantId]);
 
   const run = async () => {
@@ -36,7 +44,7 @@ export default function DemoWorkspaceCard({ tenantId }: { tenantId?: string }) {
     setDone([]);
     try {
       for (const { step } of STEPS) {
-        await seedDemoStep({ step });
+        await seedDemoStep({ step, copyFrom: step === "settings" && copyFrom ? copyFrom : undefined });
         setDone((d) => [...d, step]);
       }
       toast.success(`${status.name} is filled with demo data. Reloading…`);
@@ -58,7 +66,8 @@ export default function DemoWorkspaceCard({ tenantId }: { tenantId?: string }) {
       <p className="text-xs text-muted-foreground">
         Fills the active demo account with made-up customers (no real people, phones or addresses),
         orders in every box, resellers, invoices, purchases and live sellers, and switches every
-        feature on. Running it again resets the demo. Only works on an account whose name or plan
+        feature on. Settings (statuses, boxes, pricing, labels, tabs) can be copied from a real
+        customer such as Crown; their orders, customers, resellers and branding are never copied. Running it again resets the demo. Only works on an account whose name or plan
         says &quot;Demo&quot;.
       </p>
       {status && !status.isDemo && (
@@ -77,6 +86,22 @@ export default function DemoWorkspaceCard({ tenantId }: { tenantId?: string }) {
             </li>
           ))}
         </ul>
+      )}
+      {status?.isDemo && (
+        <label className="flex items-center gap-2 text-xs text-muted-foreground">
+          Copy setup from
+          <select
+            className="rounded border border-border bg-background px-2 py-1 text-xs text-foreground"
+            value={copyFrom}
+            onChange={(e) => setCopyFrom(e.target.value)}
+            disabled={running}
+          >
+            <option value="">Nobody (demo defaults)</option>
+            {status.sources.map((t) => (
+              <option key={t.tenantId} value={t.tenantId}>{t.displayName}</option>
+            ))}
+          </select>
+        </label>
       )}
       <Button size="sm" variant="outline" onClick={run} disabled={running || !status?.isDemo}>
         {running ? <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5 mr-1.5" />}
