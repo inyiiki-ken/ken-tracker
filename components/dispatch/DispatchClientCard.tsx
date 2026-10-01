@@ -3,6 +3,7 @@
 import { useState, useRef, memo, useCallback, useMemo } from 'react';
 import { autoStageDates, orderBox } from '@/lib/fulfilment';
 import { Checkbox } from '@/components/ui/checkbox';
+import { formatDate } from '@/lib/formatters';
 import { FileText, Truck, Upload, History, ChevronDown, AlertTriangle, Pencil, Check, X, Scissors, StickyNote, Plus, Gift, MapPin, Phone } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -523,7 +524,11 @@ function DispatchClientCard({ minerName, records, allRecords, onUpdate, userEmai
                     />
                   )}
                   <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium">{effective.itemDescription}</p>
+                    <p className="text-sm font-medium">
+                      {effective.itemDescription}
+                      {/* A card can hold items from several lives, so each item shows its own date. */}
+                      {effective.dateOfLive && <span className="ml-2 text-[10px] font-normal text-muted-foreground">{formatDate(effective.dateOfLive)}</span>}
+                    </p>
                     {!isCompact && (
                       <p className="text-xs text-muted-foreground mt-0.5">
                         {effective.category} · {isScrewType ? `${getQty(effective)} PCS` : (effective.grams ? `${effective.grams}g` : 'PC')}

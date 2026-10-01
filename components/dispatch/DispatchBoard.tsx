@@ -41,6 +41,20 @@ function AgingLabel({ dateStr, warnAfterHours }: { dateStr?: string; warnAfterHo
   );
 }
 
+const customerKey = (r: DatabaseRowType) => (r.minerName || '').trim().toLowerCase();
+
+/** Each customer's most recent live date within a list of items. */
+function latestLiveDateByCustomer(list: DatabaseRowType[]): Map<string, string | undefined> {
+  const best = new Map<string, { t: number; date?: string }>();
+  for (const r of list) {
+    const t = r.dateOfLive ? (parseDateRobust(r.dateOfLive)?.getTime() ?? 0) : 0;
+    const k = customerKey(r);
+    const cur = best.get(k);
+    if (!cur || t > cur.t) best.set(k, { t, date: r.dateOfLive });
+  }
+  return new Map([...best].map(([k, v]) => [k, v.date]));
+}
+
 /** One row in the work-queue list. */
 function QueueButton({
   active, label, count, icon, urgent, onClick,
@@ -85,16 +99,19 @@ export default function DispatchBoard({ records, searchQuery, onSearchChange, on
     );
     const buckets = new Map<OrderBox, DatabaseRowType[]>(ORDER_BOXES.map(b => [b.key, []]));
     for (const r of searched) buckets.get(orderBox(r))!.push(r);
-    return new Map(ORDER_BOXES.map(b => [
-      b.key,
+    return new Map(ORDER_BOXES.map(b => {
+      const list = buckets.get(b.key)!;
       // Shipped items are grouped by the day they shipped, not the live date.
-      b.key === 'dispatched' || b.key === 'delivered'
-        ? groupByPageDateMiner(buckets.get(b.key)!, shipmentDay)
-        // Outsource: the outsource name comes first, then the date.
-        : b.key === 'outsource'
-        ? groupByPageDateMiner(buckets.get(b.key)!, undefined, outsourceName)
-        : groupByPageDateMiner(buckets.get(b.key)!),
-    ]));
+      if (b.key === 'dispatched' || b.key === 'delivered') return [b.key, groupByPageDateMiner(list, shipmentDay)];
+      // Waiting boxes: one card per customer with all their items (they go out
+      // together, on one invoice), filed under the customer's latest live date.
+      const latest = latestLiveDateByCustomer(list);
+      const dateOf = (r: DatabaseRowType) => latest.get(customerKey(r));
+      // Outsource: the outsource name comes first, then the date.
+      return [b.key, b.key === 'outsource'
+        ? groupByPageDateMiner(list, dateOf, outsourceName)
+        : groupByPageDateMiner(list, dateOf)];
+    }));
   }, [records, searchQuery]);
 
   // Items waiting to go out, i.e. what the Pullout Report prints.
