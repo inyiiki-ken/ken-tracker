@@ -65,6 +65,8 @@ export default function ResellerImportDialog({ open, onClose, onImported, record
   const [reading, setReading] = useState<{ done: number; total: number } | null>(null);
   const [saving, setSaving] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+  const ratesBoxRef = useRef<HTMLDivElement>(null);
+  const rateInputs = useRef<Partial<Record<ResellerKarat, HTMLInputElement | null>>>({});
 
   useEffect(() => {
     if (!open) return;
@@ -118,9 +120,29 @@ export default function ResellerImportDialog({ open, onClose, onImported, record
   const addPicked = () => {
     const chosen = dayGroups.flatMap(([, rs]) => rs).filter((r) => picked.has(r.id));
     if (!chosen.length) return toast.error("Tick the items to bill to the reseller.");
-    setItems((xs) => [...xs.filter((x) => x.item.trim() || x.grams.trim()), ...chosen.map(itemFromRecord)]);
+    const added = chosen.map(itemFromRecord);
+    setItems((xs) => [...xs.filter((x) => x.item.trim() || x.grams.trim()), ...added]);
     setPicked(new Set());
     setShowPick(false);
+    // No rate entered yet for a type: start from the rate the uploaded sheet
+    // already priced it at (e.g. 384 + MC 25 = 409), most common per type.
+    const fromSheet: Partial<Record<ResellerKarat, string>> = {};
+    for (const k of RESELLER_KARATS) {
+      if (parseFloat(rates[k]) > 0) continue;
+      const counts = new Map<number, number>();
+      added.forEach((it) => {
+        const r = Number(it.record?.clientRate) || 0;
+        const cur = String(it.record?.currency ?? "").toUpperCase();
+        if (it.karat === k && r > 0 && (!cur || cur === "AED")) counts.set(r, (counts.get(r) || 0) + 1);
+      });
+      const best = [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
+      if (best) fromSheet[k] = String(best);
+    }
+    const keys = Object.keys(fromSheet) as ResellerKarat[];
+    if (keys.length) {
+      setRates((r) => ({ ...r, ...fromSheet }));
+      toast.info(`Rates filled from the uploaded sheet: ${keys.map((k) => `${k} ${fromSheet[k]}`).join(", ")}. Check them against ${resellerKey(reseller) || "the reseller"}'s rates for today.`);
+    }
   };
 
   const rateNums: Partial<ResellerRates> = {
@@ -131,7 +153,14 @@ export default function ResellerImportDialog({ open, onClose, onImported, record
   const filled = items.filter((it) => it.item.trim() || it.grams.trim());
   const totalGrams = round2(filled.reduce((s, it) => s + (parseFloat(it.grams) || 0), 0));
   const totalAmount = round2(filled.reduce((s, it) => s + itemAmount(it, rateNums), 0));
-  const problems = filled.filter((it) => !(parseFloat(it.grams) > 0) || !it.customer.trim() || !rateNums[it.karat]);
+  const problems = filled.filter((it) => !(parseFloat(it.grams) > 0) || !it.customer.trim());
+  // Types used by the items that have no rate yet (every amount shows 0 until filled).
+  const missingRates = RESELLER_KARATS.filter((k) => !rateNums[k] && filled.some((it) => it.karat === k));
+  const showRates = () => {
+    ratesBoxRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+    const first = missingRates[0];
+    if (first) setTimeout(() => rateInputs.current[first]?.focus(), 300);
+  };
 
   const setItem = (key: number, patch: Partial<ResellerItem>) =>
     setItems((xs) => xs.map((x) => (x.key === key ? { ...x, ...patch } : x)));
@@ -185,7 +214,11 @@ export default function ResellerImportDialog({ open, onClose, onImported, record
     const who = resellerKey(reseller);
     if (!who) return toast.error("Choose the reseller the invoice goes to.");
     if (!filled.length) return toast.error("Add the items first.");
-    if (problems.length) return toast.error("Each item needs a customer, grams, and a rate for its type.");
+    if (missingRates.length) {
+      showRates();
+      return toast.error(`Enter ${who}'s ${missingRates.join(" / ")} rate${missingRates.length === 1 ? "" : "s"} for ${date} in the rate boxes at the top.`);
+    }
+    if (problems.length) return toast.error(`${problems.length} item${problems.length === 1 ? " needs" : "s need"} a customer name and grams.`);
     setSaving(true);
     try {
       // Remember today's rates for this reseller (every PC sees them).
@@ -290,12 +323,13 @@ export default function ResellerImportDialog({ open, onClose, onImported, record
           </label>
         </div>
 
-        <div className="rounded-xl border border-border p-3">
+        <div ref={ratesBoxRef} className={`rounded-xl border p-3 ${missingRates.length ? "border-destructive" : "border-border"}`}>
           <div className="flex flex-wrap items-end gap-3">
             {RESELLER_KARATS.map((k) => (
               <label key={k} className="text-sm font-medium w-28">
                 {k} rate (AED/g)
-                <Input inputMode="decimal" value={rates[k]} onChange={(e) => setRates((r) => ({ ...r, [k]: e.target.value }))} className="mt-1" />
+                <Input ref={(el) => { rateInputs.current[k] = el; }} inputMode="decimal" value={rates[k]} onChange={(e) => setRates((r) => ({ ...r, [k]: e.target.value }))}
+                  className={`mt-1 ${missingRates.includes(k) ? "border-destructive" : ""}`} placeholder={missingRates.includes(k) ? "Enter rate" : undefined} />
               </label>
             ))}
           </div>
@@ -431,7 +465,12 @@ export default function ResellerImportDialog({ open, onClose, onImported, record
         <DialogFooter className="flex-col sm:flex-row sm:items-center gap-2">
           <div className="text-sm mr-auto tabular-nums">
             {filled.length} items · {totalGrams} g · <b>AED {totalAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</b>
-            {problems.length > 0 && <span className="text-destructive ml-2">{problems.length} need a customer, grams or rate</span>}
+            {missingRates.length > 0 && (
+              <button type="button" onClick={showRates} className="text-destructive ml-2 underline">
+                Enter the {missingRates.join(" / ")} rate{missingRates.length === 1 ? "" : "s"} at the top
+              </button>
+            )}
+            {problems.length > 0 && <span className="text-destructive ml-2">{problems.length} need a customer or grams</span>}
           </div>
           <Button variant="outline" onClick={onClose} disabled={saving}>Cancel</Button>
           <Button onClick={save} disabled={saving || !!reading || !filled.length}>
