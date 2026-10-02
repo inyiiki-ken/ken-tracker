@@ -783,8 +783,29 @@ export async function undoLastImport(
 // special row on the Uploads sheet itself, marked status === "__RATES_CONFIG__",
 // with the JSON blob stored in the masterlistFile column.
 
+/** Crown's cost rates — never sent to a liver (her browser only needs the sell side). */
+const LIVER_HIDDEN_RATES = ["silverCostRate", "silverBrandedCostRate"] as const;
+
+function withoutCostRates(json: string): string {
+  if (!json) return json;
+  try {
+    const config = JSON.parse(json);
+    const strip = (r: unknown) => {
+      if (r && typeof r === "object") for (const k of LIVER_HIDDEN_RATES) delete (r as Record<string, unknown>)[k];
+    };
+    strip(config?.sticky);
+    for (const entry of Object.values(config?.dates ?? {})) strip((entry as { rates?: unknown })?.rates);
+    return JSON.stringify(config);
+  } catch {
+    return "";
+  }
+}
+
 export async function getRatesConfig(_params?: Record<string, never>): Promise<{ config: string }> {
-  return { config: await readConfig("__RATES_CONFIG__") };
+  const config = await readConfig("__RATES_CONFIG__");
+  const access = await getSessionAccess();
+  if (access.all || !isLiverOnly(access.roles)) return { config };
+  return { config: withoutCostRates(config) };
 }
 
 export async function saveRatesConfig(params: { config: string }): Promise<{ success: boolean }> {

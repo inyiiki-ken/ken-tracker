@@ -16,6 +16,7 @@ import type { DatabaseRowType } from "@/types";
 import { gramsLabel } from "@/lib/calculations";
 import { isCancelledOrReturned } from "@/lib/fulfilment";
 import { todayLocalISO } from "@/lib/businessConfig";
+import { formatDate } from "@/lib/formatters";
 
 export type PulloutRequestStatus = "Requested" | "Ready" | "Done" | "Cancelled";
 export type PulloutMethod = "COD" | "Pick Up";
@@ -158,4 +159,22 @@ export function todayISO(d?: Date): string {
 /** The day has passed and the liver hasn't come yet. */
 export function isOverdueRequest(q: PulloutRequest, today = todayISO()): boolean {
   return isOpenRequest(q) && !!q.date && q.date < today;
+}
+
+/** "Pull out today" / "Pull out on Thu, Oct 05": the day she said she'd come. */
+export function pullOutOnLabel(d: string, today = todayISO()): string {
+  if (d === today) return "Pull out today";
+  const day = /^\d{4}-\d{2}-\d{2}$/.test(d) ? new Date(`${d}T12:00:00`) : null;
+  return `Pull out on ${day ? day.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "2-digit" }) : formatDate(d)}`;
+}
+
+/**
+ * Dispatch finished this (a Done request, a Confirmed report) after her
+ * records last loaded: its items are still moving, so they stay locked until
+ * the refreshed records show where they went (a day at most). After that her
+ * items' own statuses say what is left to do (Dispatch may have skipped one).
+ */
+export function finishedAfterLoad(updatedAt: string, recordsAt: number, now = Date.now()): boolean {
+  const t = Date.parse(updatedAt);
+  return Number.isFinite(t) && t > recordsAt && now - t < 24 * 3600_000;
 }

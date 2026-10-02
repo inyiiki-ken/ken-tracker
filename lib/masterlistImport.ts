@@ -97,7 +97,7 @@ function toNum(v: string): number {
  * yyyy-mm-dd so every tab reads the same day; "03/09/2026" stays as typed.
  */
 function cleanDate(v: string): string {
-  const s = String(v ?? "").trim().replace(/^[a-z]+day,?\s+/i, "");
+  const s = String(v ?? "").trim().replace(/^(?:mon|tue|wed|thu|fri|sat|sun)[a-z]*\.?,?\s+/i, "");
   const num = s.match(/^(\d{1,2})[/.-](\d{1,2})[/.-]\d{2,4}\b/);
   if (num && +num[1] <= 12 && +num[2] <= 12) return s;
   const d = parseDateRobust(s);

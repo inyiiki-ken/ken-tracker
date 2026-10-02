@@ -77,7 +77,7 @@ function ClientCard({ group, section, audience, ownNewest }: {
             <span className="text-muted-foreground font-normal ml-1.5">· {group.items.length} item{group.items.length !== 1 ? "s" : ""}</span>
           </p>
           <p className={`${small} text-muted-foreground`}>
-            {(liver ? group.page : [group.liver, group.page].filter(Boolean).join(" · ")) || "—"} · since {group.since ? formatDate(group.since.toISOString()) : "—"}
+            {(liver ? group.page : [group.liver, group.page].filter(Boolean).join(" · ")) || "—"} · {liver ? `${section.rule.status} since` : "since"} {group.since ? formatDate(group.since.toISOString()) : "—"}
             {group.due && <> · due {formatDate(group.due.toISOString())}</>}
           </p>
           {group.lastBuy && (
@@ -87,11 +87,23 @@ function ClientCard({ group, section, audience, ownNewest }: {
             </p>
           )}
           <ul className="mt-1.5 space-y-0.5">
-            {group.items.map((it) => (
+            {group.items.map((it) => liver ? (
+              // Liver (on a phone): what it is on one line, its weight and order date
+              // on a second that never gets cut off.
+              <li key={it.id} className={`${small} text-muted-foreground flex items-baseline gap-1.5`}>
+                <span className="text-muted-foreground/60">•</span>
+                <span className="min-w-0">
+                  <span className="block truncate">{[it.orderId, it.itemDescription].filter(Boolean).join(" · ") || "—"}</span>
+                  <span className="block break-words">
+                    {[gramsLabel(it), it.dateOfLive ? `Ordered ${formatDate(it.dateOfLive)}` : ""].filter(x => x && x !== "—").join(" · ")}
+                  </span>
+                </span>
+              </li>
+            ) : (
               <li key={it.id} className={`${small} text-muted-foreground flex items-baseline gap-1.5`}>
                 <span className="text-muted-foreground/60">•</span>
                 <span className="truncate">
-                  {[it.orderId, it.itemDescription, liver ? gramsLabel(it) : "", liver && it.dateOfLive ? `Ordered ${formatDate(it.dateOfLive)}` : ""].filter(x => x && x !== "—").join(" · ") || "—"}
+                  {[it.orderId, it.itemDescription].filter(x => x && x !== "—").join(" · ") || "—"}
                 </span>
                 <span className="ml-auto shrink-0 text-muted-foreground/70">{Math.floor(hoursInStatus(it) / 24)}d</span>
               </li>

@@ -21,7 +21,7 @@ import {
 } from '@/lib/api';
 import {
   PULLOUT_METHODS, isCancelledItem, methodStatus, isOpenRequest, isOverdueRequest, isRealItemKey, isToPullOut,
-  itemKey, itemLine, itemSummary, itemsByKey, itemsFor, todayISO,
+  finishedAfterLoad, itemKey, itemLine, itemSummary, itemsByKey, itemsFor, pullOutOnLabel, todayISO,
   type PulloutMethod, type PulloutRequest, type PulloutRequestStatus,
 } from '@/lib/pulloutRequests';
 import { liverCameStatus, ownBox, requestTargetsLabel } from '@/lib/pulloutTargets';
@@ -68,7 +68,6 @@ const STATUS_STYLE: Record<string, string> = {
   Cancelled: 'border-border bg-secondary text-muted-foreground line-through',
 };
 
-const DAY_MS = 24 * 3600_000;
 // Coming back to the app reloads her items at most this often (it reads the whole sheet).
 const RECORDS_REFRESH_MS = 2 * 60_000;
 
@@ -90,12 +89,14 @@ function GroupCheckbox({ checked, partial, disabled, onChange, label }: {
 }
 
 // ─── Items to pull out + pullout requests ────────────────────────────────────
-export function PulloutPanel({ liver, records, allRecords, onRefresh, previewing, visibleIds, query, onRequestsChange, onLoaded, onOpenCustomer, open: openProp, onOpenChange }: {
+export function PulloutPanel({ liver, records, allRecords, recordsAt, onRefresh, previewing, visibleIds, query, onRequestsChange, onLoaded, onOpenCustomer, open: openProp, onOpenChange }: {
   liver: string;
   /** This liver's items. */
   records: DatabaseRowType[];
   /** Every row this screen holds (her own rows for a liver), to spot shared Row Keys. */
   allRecords: DatabaseRowType[];
+  /** When her records last loaded (ms), so a finished request locks its items only until they refresh. */
+  recordsAt: number;
   /** Reload the records (after Dispatch moved her items). */
   onRefresh?: () => void;
   /** An admin previewing her view: nothing is sent. */
@@ -106,8 +107,8 @@ export function PulloutPanel({ liver, records, allRecords, onRefresh, previewing
   query?: string;
   /** Her requests, whenever they load (the page's Today card and overdue list use them). */
   onRequestsChange?: (list: PulloutRequest[]) => void;
-  /** The first load ended (loaded or failed), so the page's overdue list is real. */
-  onLoaded?: () => void;
+  /** A load ended: ok = her requests arrived, false = it failed (the page decides what that means). */
+  onLoaded?: (ok: boolean) => void;
   /** Tap a customer's name: her per-customer sheet. */
   onOpenCustomer?: (customer: string) => void;
   /** Items to pull out folded open or shut; null = open when something waits to be requested or is Ready. */
@@ -147,11 +148,14 @@ export function PulloutPanel({ liver, records, allRecords, onRefresh, previewing
   const onLoadedRef = useRef(onLoaded);
   onLoadedRef.current = onLoaded;
   const lastRefreshRef = useRef(Date.now());
+  // When this panel last asked for her items (0 = not yet).
+  const askedRefreshRef = useRef(0);
 
   const refreshRecords = useCallback((force = false) => {
     if (!onRefreshRef.current) return;
     if (!force && Date.now() - lastRefreshRef.current < RECORDS_REFRESH_MS) return;
     lastRefreshRef.current = Date.now();
+    askedRefreshRef.current = Date.now();
     onRefreshRef.current();
   }, []);
 
@@ -167,7 +171,7 @@ export function PulloutPanel({ liver, records, allRecords, onRefresh, previewing
       setRequests(list);
       onRequestsChangeRef.current?.(list);
       setLoaded(true);
-      onLoadedRef.current?.();
+      onLoadedRef.current?.(true);
       failedRef.current = false;
       setFailed(false);
       // Dispatch pressed "Liver came": her items moved, fetch them now.
@@ -178,7 +182,7 @@ export function PulloutPanel({ liver, records, allRecords, onRefresh, previewing
       if (!failedRef.current) toast.error(err instanceof Error ? err.message : 'Could not load your pullout requests');
       failedRef.current = true;
       setFailed(true);
-      onLoadedRef.current?.();
+      onLoadedRef.current?.(false);
     }
   }, [liver, refreshRecords]);
 
@@ -208,14 +212,17 @@ export function PulloutPanel({ liver, records, allRecords, onRefresh, previewing
     return m;
   }, [requests]);
 
-  // Requests Dispatch finished in the last day: their items are moving to
-  // For COD / Pick Up even before the refreshed records arrive.
+  // Requests Dispatch finished since her records loaded: their items are
+  // moving to For COD / Pick Up even before the refreshed records arrive.
   const recentlyDone = useMemo(() => {
-    const since = Date.now() - DAY_MS;
-    const s = new Set<string>();
-    for (const q of requests) if (q.status === 'Done' && Date.parse(q.updatedAt) >= since) for (const k of q.itemKeys) s.add(k);
-    return s;
-  }, [requests]);
+    const m = new Map<string, PulloutRequest>();
+    for (const q of requests) if (q.status === 'Done' && finishedAfterLoad(q.updatedAt, recordsAt)) for (const k of q.itemKeys) m.set(k, q);
+    return m;
+  }, [requests, recordsAt]);
+  // Fetch her items then (unless just asked), so the lock ends as soon as they show where they went.
+  useEffect(() => {
+    if (recentlyDone.size > 0 && Date.now() - askedRefreshRef.current > 5_000) refreshRecords(true);
+  }, [recentlyDone.size, refreshRecords]);
 
   const free = useMemo(
     () => toPullOut.filter(r => !requestedFor.has(keyOf(r)) && !recentlyDone.has(keyOf(r))),
@@ -430,12 +437,6 @@ export function PulloutPanel({ liver, records, allRecords, onRefresh, previewing
   const setOpen = (v: boolean) => { setOpenLocal(v); onOpenChange?.(v); };
   const shownGroups = visibleIds ? groups.map(g => ({ ...g, rows: g.rows.filter(shows) })).filter(g => g.rows.length > 0) : groups;
 
-  /** "Pull out today" / "Pull out on Thu, Oct 05". */
-  const pullOutOn = (d: string) => {
-    if (d === today) return 'Pull out today';
-    const day = /^\d{4}-\d{2}-\d{2}$/.test(d) ? new Date(`${d}T12:00:00`) : null;
-    return `Pull out on ${day ? day.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: '2-digit' }) : formatDate(d)}`;
-  };
   /** Done: where the items went, e.g. "Done · set to For COD" (their status now, once they moved). */
   const doneLabel = (q: PulloutRequest, items: DatabaseRowType[]) => {
     const to = Array.from(new Set(items.length
@@ -452,7 +453,7 @@ export function PulloutPanel({ liver, records, allRecords, onRefresh, previewing
       {failed && (
         <p className="text-xs text-destructive">
           Couldn&apos;t refresh your pullout requests ·{' '}
-          <button className="underline" onClick={() => load()}>Retry</button>
+          <button className="underline px-1 py-2" onClick={() => load()}>Retry</button>
         </p>
       )}
 
@@ -478,7 +479,7 @@ export function PulloutPanel({ liver, records, allRecords, onRefresh, previewing
           <p className="border-t border-border px-4 py-4 text-xs text-muted-foreground">Nothing to pull out right now.</p>
         ) : (
           <div className="border-t border-border">
-            {!loaded && <p className="px-4 py-2 text-xs text-muted-foreground">Loading your requests…</p>}
+            {!loaded && !failed && <p className="px-4 py-2 text-xs text-muted-foreground">Loading your requests…</p>}
             {visibleIds && (
               <p className="px-4 py-2 text-xs text-muted-foreground">
                 Showing items that match your search
@@ -543,7 +544,8 @@ export function PulloutPanel({ liver, records, allRecords, onRefresh, previewing
                     ...g.rows.map(r => {
                       const k = keyOf(r);
                       const q = requestedFor.get(k);
-                      const done = !q && recentlyDone.has(k);
+                      const doneReq = q ? undefined : recentlyDone.get(k);
+                      const done = !!doneReq;
                       const locked = !!q || done;
                       const due = dueFor(r, rules, lastBuys);
                       const collect = collectForAED([r], g.all);
@@ -570,7 +572,7 @@ export function PulloutPanel({ liver, records, allRecords, onRefresh, previewing
                                 In request · {q.date === today ? 'pull out today' : `pull out on ${formatDateShort(q.date)}`} · {q.status === 'Ready' ? 'Ready for you' : 'waiting for Dispatch'}
                               </div>
                             )}
-                            {done && <div className="text-xs text-primary">Dispatch set it out · updating…</div>}
+                            {doneReq && <div className="text-xs text-primary">Moved by Dispatch to {liverCameStatus(r, doneReq.method, statuses)} · updating…</div>}
                             <NotesToggle r={r} />
                           </td>
                           <td className="px-3 py-2 text-right whitespace-nowrap">{gramsLabel(r)}</td>
@@ -651,7 +653,7 @@ export function PulloutPanel({ liver, records, allRecords, onRefresh, previewing
                 <div key={q.id} className={`px-4 py-3 space-y-2 ${overdue ? 'bg-destructive/5' : ''}`}>
                   <div className="flex flex-wrap items-center gap-2 text-xs">
                     <span className={overdue ? 'text-destructive font-semibold' : 'font-medium'}>
-                      {pullOutOn(q.date)}{overdue ? ' · day has passed' : ''}
+                      {pullOutOnLabel(q.date, today)}{overdue ? ' · day has passed' : ''}
                     </span>
                     <span className="text-muted-foreground">{requestTargetsLabel(items, q.method, statuses)}</span>
                     <span className="text-muted-foreground">· {q.itemKeys.length} item{q.itemKeys.length !== 1 ? 's' : ''}{items.length ? ` · ${weightOf(items)}` : ''}</span>
@@ -708,13 +710,18 @@ export function PulloutPanel({ liver, records, allRecords, onRefresh, previewing
 
 // ─── Cancelled / returned items (with the reason Dispatch typed) ─────────────
 
-export function CancelledItems({ records, query, onOpenCustomer }: {
+export function CancelledItems({ records, query, onOpenCustomer, open: openProp, onOpenChange }: {
   records: DatabaseRowType[];
   /** The search text, to highlight. */
   query?: string;
   onOpenCustomer?: (customer: string) => void;
+  /** Folded open or shut (shut by default); the page opens it from its link. */
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
 }) {
-  const [open, setOpen] = useState(false);
+  const [openLocal, setOpenLocal] = useState(false);
+  const open = openProp ?? openLocal;
+  const setOpen = (f: (v: boolean) => boolean) => { const v = f(open); setOpenLocal(v); onOpenChange?.(v); };
   const [range, setRange] = useState<DateRange>('all');
   const [start, setStart] = useState('');
   const [end, setEnd] = useState('');

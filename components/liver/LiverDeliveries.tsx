@@ -14,7 +14,7 @@ import {
   deliveryKindOf, isOpenReport, parseCash,
   type DeliveryKind, type DeliveryReport, type DeliveryReportStatus,
 } from '@/lib/deliveryReports';
-import { isRealItemKey, itemKey, itemLine, itemsByKey, itemsFor } from '@/lib/pulloutRequests';
+import { finishedAfterLoad, isRealItemKey, itemKey, itemLine, itemsByKey, itemsFor } from '@/lib/pulloutRequests';
 import { useVisiblePolling } from '@/lib/useVisiblePolling';
 import { Highlight } from './LiverRowBits';
 
@@ -64,10 +64,12 @@ export function recentlyRejected(reports: DeliveryReport[], records: DatabaseRow
  * For COD / For Pick Up items: the liver reports Delivered / Picked up (COD
  * with the cash she collected). Dispatch confirms, which sets the status.
  */
-export function DeliveryPanel({ liver, records, onRefresh, previewing, visibleIds, query, onReportsChange, onLoaded, onOpenCustomer, open: openProp, onOpenChange }: {
+export function DeliveryPanel({ liver, records, recordsAt, onRefresh, previewing, visibleIds, query, onReportsChange, onLoaded, onOpenCustomer, open: openProp, onOpenChange }: {
   liver: string;
   /** This liver's items. */
   records: DatabaseRowType[];
+  /** When her records last loaded (ms), so a confirmed report locks its items only until they refresh. */
+  recordsAt: number;
   /** Reload the records (after Dispatch confirmed). */
   onRefresh?: () => void;
   /** An admin previewing her view: nothing is sent. */
@@ -77,8 +79,8 @@ export function DeliveryPanel({ liver, records, onRefresh, previewing, visibleId
   query?: string;
   /** Her reports, whenever they load (the page's overdue list and Today card use them). */
   onReportsChange?: (list: DeliveryReport[]) => void;
-  /** The first load ended (loaded or failed), so the page's overdue list is real. */
-  onLoaded?: () => void;
+  /** A load ended: ok = her reports arrived, false = it failed (the page decides what that means). */
+  onLoaded?: (ok: boolean) => void;
   onOpenCustomer?: (customer: string) => void;
   /** Folded open or shut; null = open only when Dispatch didn't confirm a report. */
   open?: boolean | null;
@@ -109,6 +111,8 @@ export function DeliveryPanel({ liver, records, onRefresh, previewing, visibleId
   onReportsChangeRef.current = onReportsChange;
   const onLoadedRef = useRef(onLoaded);
   onLoadedRef.current = onLoaded;
+  // When this card last asked for her items (0 = not yet).
+  const askedRefreshRef = useRef(0);
 
   const load = useCallback(async () => {
     if (!liver) return;
@@ -122,17 +126,17 @@ export function DeliveryPanel({ liver, records, onRefresh, previewing, visibleId
       setReports(list);
       onReportsChangeRef.current?.(list);
       setLoaded(true);
-      onLoadedRef.current?.();
+      onLoadedRef.current?.(true);
       failedRef.current = false;
       setFailed(false);
       // Dispatch confirmed: her items are Delivered now, fetch them.
-      if (confirmed) onRefreshRef.current?.();
+      if (confirmed) { askedRefreshRef.current = Date.now(); onRefreshRef.current?.(); }
     } catch (err) {
       if (liveRef.current !== asked) return;
       if (!failedRef.current) toast.error(err instanceof Error ? err.message : 'Could not load your delivery reports');
       failedRef.current = true;
       setFailed(true);
-      onLoadedRef.current?.();
+      onLoadedRef.current?.(false);
     }
   }, [liver]);
 
@@ -148,13 +152,18 @@ export function DeliveryPanel({ liver, records, onRefresh, previewing, visibleId
     for (const q of reports) if (isOpenReport(q)) for (const k of q.itemKeys) m.set(k, q);
     return m;
   }, [reports]);
-  // Reports Dispatch confirmed in the last day: items are moving even before the refresh arrives.
+  // Reports Dispatch confirmed since her records loaded: items are moving even before the refresh arrives.
   const recentlyConfirmed = useMemo(() => {
-    const since = Date.now() - 24 * 3600_000;
     const s = new Set<string>();
-    for (const q of reports) if (q.status === 'Confirmed' && Date.parse(q.updatedAt) >= since) for (const k of q.itemKeys) s.add(k);
+    for (const q of reports) if (q.status === 'Confirmed' && finishedAfterLoad(q.updatedAt, recordsAt)) for (const k of q.itemKeys) s.add(k);
     return s;
-  }, [reports]);
+  }, [reports, recordsAt]);
+  // Fetch her items then (unless just asked), so the lock ends as soon as they show Delivered.
+  useEffect(() => {
+    if (recentlyConfirmed.size === 0 || Date.now() - askedRefreshRef.current <= 5_000) return;
+    askedRefreshRef.current = Date.now();
+    onRefreshRef.current?.();
+  }, [recentlyConfirmed.size]);
   const isFree = useCallback((r: DatabaseRowType) => !reportedIn.has(keyOf(r)) && !recentlyConfirmed.has(keyOf(r)), [reportedIn, recentlyConfirmed, keyOf]);
 
   // One group per customer and kind (a customer may have COD and Pick Up items).
@@ -275,13 +284,13 @@ export function DeliveryPanel({ liver, records, onRefresh, previewing, visibleId
         <div className="border-t border-border">
           {failed && (
             <p className="px-4 pt-2 text-xs text-destructive">
-              Couldn&apos;t refresh your reports · <button className="underline" onClick={() => load()}>Retry</button>
+              Couldn&apos;t refresh your reports · <button className="underline px-1 py-2" onClick={() => load()}>Retry</button>
             </p>
           )}
           <p className="px-4 py-2 text-xs text-muted-foreground">
             Customer got the items? Tap Delivered or Picked up. Dispatch confirms and sets the status.
           </p>
-          {!loaded && <p className="px-4 pb-2 text-xs text-muted-foreground">Loading your reports…</p>}
+          {!loaded && !failed && <p className="px-4 pb-2 text-xs text-muted-foreground">Loading your reports…</p>}
           {toReport.length === 0 ? (
             <p className="px-4 pb-3 text-xs text-muted-foreground">No For COD or For Pick Up items right now.</p>
           ) : shownGroups.length === 0 ? (

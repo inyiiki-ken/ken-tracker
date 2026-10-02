@@ -47,7 +47,7 @@ function monthIndex(name: string): number {
  */
 export function parseDateRobust(dateStr?: string): Date | null {
   if (!dateStr) return null;
-  const s = String(dateStr).trim().replace(/^[a-z]+day,?\s+/i, '');
+  const s = String(dateStr).trim().replace(/^(?:mon|tue|wed|thu|fri|sat|sun)[a-z]*\.?,?\s+/i, '');
   if (!s) return null;
 
   const ymd = s.match(/^(\d{4})([-/.])(\d{1,2})\2(\d{1,2})$/);
@@ -71,13 +71,20 @@ export function parseDateRobust(dateStr?: string): Date | null {
     return dayFirst ? dayAt(y, b, a, h, min, sec) : dayAt(y, a, b, h, min, sec);
   }
 
-  const mdy = s.match(/^([a-z]{3,9})\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s*(\d{4})\b/i);
-  if (mdy && monthIndex(mdy[1])) return dayAt(+mdy[3], monthIndex(mdy[1]), +mdy[2]);
-  const dmy = s.match(/^(\d{1,2})(?:st|nd|rd|th)?[\s-]+([a-z]{3,9})\.?,?[\s-]+(\d{4})\b/i);
+  // A 2-digit year needs a gap before it ("Sep 24 26"), so "Sep 2026" is not read as Sep 20.
+  const mdy = s.match(/^([a-z]{3,9})\.?\s+(\d{1,2})(?:st|nd|rd|th)?(?:,?\s*(\d{4})|(?:,\s*|\s+)(\d{2}))\b/i);
+  if (mdy && monthIndex(mdy[1])) return dayAt(+(mdy[3] ?? mdy[4]), monthIndex(mdy[1]), +mdy[2]);
+  const dmy = s.match(/^(\d{1,2})(?:st|nd|rd|th)?[\s-]+([a-z]{3,9})\.?,?[\s-]+(\d{4}|\d{2})\b/i);
   if (dmy && monthIndex(dmy[2])) return dayAt(+dmy[3], monthIndex(dmy[2]), +dmy[1]);
 
   const iso = parseISO(s);
-  return isValid(iso) ? iso : null;
+  if (isValid(iso)) return iso;
+  // Last resort for other text dates with a month name or zone (e.g. Date.toString() output).
+  if (/[a-z]{3}/i.test(s)) {
+    const nat = new Date(s);
+    if (!isNaN(nat.getTime())) return nat;
+  }
+  return null;
 }
 
 export function getQty(record: DatabaseRowType): number {
@@ -573,10 +580,19 @@ export function calcItemPricePHP(record: DatabaseRowType): number {
 // and "cleared" checks must use these group functions so Accounts, Bossing and
 // the invoice all agree.
 
-function netChargeAED(r: DatabaseRowType): number {
+/** One item's extra charges minus discounts (Additional Charges), AED. */
+export function netChargeAED(r: DatabaseRowType): number {
   const mods = parseBillingModifiers(r.additionalCharges);
   const snap = getRatesForDate(r.dateOfLive || '');
   return getTotalChargesAED(mods, snap.phpRate) - getTotalDiscountsAED(mods, snap.phpRate);
+}
+
+/** Shipping for ONE customer's items, charged once: a promo SF wins, any free SF means none. */
+export function groupShippingFee(records: DatabaseRowType[]): number {
+  if (!records.length) return 0;
+  const promo = records.find(r => isPromoSf(r));
+  const anyFree = !promo && records.some(r => isFreeSf(r));
+  return anyFree ? 0 : calcShippingFee(promo || records[0]);
 }
 
 /** Balance owed for ONE customer's items, computed the way the invoice does. */
@@ -584,9 +600,7 @@ export function calcGroupBalance(records: DatabaseRowType[]): number {
   if (!records.length) return 0;
   const itemsTotal = records.reduce((s, r) => s + calcItemPriceAED(r), 0);
   const ccItems = records.filter(r => r.modeOfPayment === 'Credit Card').reduce((s, r) => s + calcItemPriceAED(r), 0);
-  const promo = records.find(r => isPromoSf(r));
-  const anyFree = !promo && records.some(r => isFreeSf(r));
-  const shipping = anyFree ? 0 : calcShippingFee(promo || records[0]);
+  const shipping = groupShippingFee(records);
   const cc = roundPrice(ccItems * getCcSurchargeRate());
   const charges = roundPrice(records.reduce((s, r) => s + netChargeAED(r), 0));
   const paid = records.reduce((s, r) => s + calcTotalPaid(r), 0);

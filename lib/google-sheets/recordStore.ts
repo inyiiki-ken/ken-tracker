@@ -1,5 +1,5 @@
 import "server-only";
-import type { GoogleSpreadsheetWorksheet } from "google-spreadsheet";
+import type { GoogleSpreadsheetCell, GoogleSpreadsheetWorksheet } from "google-spreadsheet";
 import { getActiveWorksheet, invalidateActiveRows } from "./tenant-context";
 import { readConfig } from "./config-store";
 import { rowToDatabaseRecord } from "./row-mapper";
@@ -83,6 +83,30 @@ export function withSheetWriteLock<T>(fn: () => Promise<T>): Promise<T> {
   const run = sheetWriteChain.then(fn, fn);
   sheetWriteChain = run.catch(() => undefined);
   return run;
+}
+
+/**
+ * Set some cells and save ONLY those. The worksheet object is cached per
+ * process, so a failed save used to leave its edits pending and the next,
+ * unrelated saveUpdatedCells() sent them too, skipping that write's
+ * "changed a moment ago" check. On any failure the edits are dropped.
+ */
+export async function setAndSaveCells(
+  ws: GoogleSpreadsheetWorksheet,
+  edits: [GoogleSpreadsheetCell, unknown][],
+): Promise<void> {
+  const touched: GoogleSpreadsheetCell[] = [];
+  try {
+    for (const [cell, value] of edits) {
+      touched.push(cell);
+      cell.value = value as never;
+    }
+    const dirty = touched.filter((c) => c._isDirty);
+    if (dirty.length) await ws.saveCells(dirty);
+  } catch (err) {
+    touched.forEach((c) => c.discardUnsavedChanges());
+    throw err;
+  }
 }
 
 export async function writeRowsByCells(
@@ -174,19 +198,19 @@ export async function writeRowsByCells(
     }
 
     let count = 0;
+    const edits: [GoogleSpreadsheetCell, unknown][] = [];
     for (const u of targets) {
       let touched = false;
       for (const [header, value] of Object.entries(u.patch)) {
         const col = colOf.get(header);
         if (col === undefined) continue;
-        const cell = sheet.getCell(u.rowNumber - 1, col);
-        cell.value = value === undefined || value === null ? "" : (value as never);
+        edits.push([sheet.getCell(u.rowNumber - 1, col), value === undefined || value === null ? "" : value]);
         touched = true;
       }
       if (touched) count++;
     }
 
-    await sheet.saveUpdatedCells(); // one request for everything
+    await setAndSaveCells(sheet, edits); // one request for everything
     return count;
   });
 }

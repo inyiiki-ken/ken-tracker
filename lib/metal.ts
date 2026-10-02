@@ -10,7 +10,9 @@ export type MetalKind = 'gold' | 'silver' | 'other';
 export function metalOf(r: DatabaseRowType): MetalKind {
   const tog = String(r.tog ?? '');
   const text = `${r.category ?? ''} ${r.itemDescription ?? ''} ${r.source ?? ''}`.toLowerCase();
-  if (/925|silver/i.test(tog) || text.includes('silver')) return 'silver';
-  if (/\d{2}\s*K/i.test(tog) || text.includes('gold')) return 'gold';
+  if (/925|silver/i.test(tog)) return 'silver';
+  if (/\d{2}\s*K/i.test(tog)) return 'gold';
+  if (text.includes('silver')) return 'silver';
+  if (text.includes('gold')) return 'gold';
   return 'other';
 }

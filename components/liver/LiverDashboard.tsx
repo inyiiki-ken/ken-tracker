@@ -19,7 +19,10 @@ import { PulloutPanel, CancelledItems } from './LiverPullout';
 import { DeliveryPanel, recentlyRejected } from './LiverDeliveries';
 import LiverCustomerSheet from './LiverCustomerSheet';
 import { Highlight, NotesToggle, OutsourceTag, ShippedLine } from './LiverRowBits';
-import { isOpenRequest, isOverdueRequest, isToPullOut, itemKey, itemsByKey, itemsFor, liverKey, todayISO, type PulloutRequest } from '@/lib/pulloutRequests';
+import {
+  finishedAfterLoad, isOpenRequest, isOverdueRequest, isToPullOut, itemKey, itemsByKey, itemsFor, liverKey, pullOutOnLabel, todayISO,
+  type PulloutRequest,
+} from '@/lib/pulloutRequests';
 import { requestTargetsLabel } from '@/lib/pulloutTargets';
 import { dayKey, fulfilmentStage, isSold, soldDay } from '@/lib/fulfilment';
 import { metalOf, type MetalKind } from '@/lib/metal';
@@ -30,21 +33,32 @@ import {
   type DateRange, type StatusGroup,
 } from '@/lib/liverSales';
 
-/** The overdue popup shows once per liver per day, even if the tab remounts. */
+/**
+ * The overdue popup shows once per liver per day on this phone, even across
+ * tabs, in-app browsers and relaunches (localStorage, not sessionStorage).
+ */
 function remindersSeenKey(liver: string): string {
   return `liverReminders:${liver}:${todayISO()}`;
 }
-// In-memory copy for when sessionStorage is blocked (private browsing).
+// In-memory copy for when localStorage is blocked (private browsing).
 const remindersSeenThisVisit = new Set<string>();
 function remindersSeen(liver: string): boolean {
   const key = remindersSeenKey(liver);
   if (remindersSeenThisVisit.has(key)) return true;
-  try { return sessionStorage.getItem(key) === '1'; } catch { return false; }
+  try { return localStorage.getItem(key) === '1'; } catch { return false; }
 }
 function markRemindersSeen(liver: string): void {
   const key = remindersSeenKey(liver);
   remindersSeenThisVisit.add(key);
-  try { sessionStorage.setItem(key, '1'); } catch { /* ignore */ }
+  try {
+    // Drop this liver's keys from earlier days so they don't pile up.
+    const prefix = `liverReminders:${liver}:`;
+    for (let i = localStorage.length - 1; i >= 0; i--) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith(prefix) && k !== key) localStorage.removeItem(k);
+    }
+    localStorage.setItem(key, '1');
+  } catch { /* ignore */ }
 }
 
 /** Cancelled or returned: kept out of the KPIs and status groups (they have their own box). */
@@ -313,16 +327,25 @@ export default function LiverDashboard({ records, searchQuery, onSearchChange, l
   // Her delivery reports (Delivered / Picked up), as that card loads them.
   const [reports, setReports] = useState<DeliveryReport[]>([]);
   const [deliveriesOpen, setDeliveriesOpen] = useState<boolean | null>(null);
-  // Both lists answered (or failed): until then nothing counts as overdue,
-  // so the popup never lists items she already requested or reported.
-  const [requestsLoaded, setRequestsLoaded] = useState(false);
-  const [reportsLoaded, setReportsLoaded] = useState(false);
+  // Which liver each list last answered for, and whether her data ever
+  // arrived (ok) or every load failed. Tied to the liver, so switching liver
+  // never reuses the previous one's answer.
+  const [requestsLoaded, setRequestsLoaded] = useState<{ liver: string; ok: boolean } | null>(null);
+  const [reportsLoaded, setReportsLoaded] = useState<{ liver: string; ok: boolean } | null>(null);
   useEffect(() => {
     setRequests([]); setReports([]);
-    setRequestsLoaded(false); setReportsLoaded(false);
   }, [selectedLiver]);
-  const onRequestsLoaded = useCallback(() => setRequestsLoaded(true), []);
-  const onReportsLoaded = useCallback(() => setReportsLoaded(true), []);
+  const onRequestsLoaded = useCallback((ok: boolean) => setRequestsLoaded(prev => ({
+    liver: selectedLiver, ok: ok || (prev?.liver === selectedLiver && prev.ok),
+  })), [selectedLiver]);
+  const onReportsLoaded = useCallback((ok: boolean) => setReportsLoaded(prev => ({
+    liver: selectedLiver, ok: ok || (prev?.liver === selectedLiver && prev.ok),
+  })), [selectedLiver]);
+  const [cancelledOpen, setCancelledOpen] = useState(false);
+  // When her records last arrived: a Done request / Confirmed report locks its
+  // items only until then (see finishedAfterLoad).
+  const [recordsAt, setRecordsAt] = useState(() => Date.now());
+  useEffect(() => { setRecordsAt(Date.now()); }, [records]);
   // "Now" for the date filters and overdue items, so a screen left open
   // overnight moves on (ticks every minute and when the app comes back).
   const [now, setNow] = useState(() => Date.now());
@@ -463,15 +486,20 @@ export default function LiverDashboard({ records, searchQuery, onSearchChange, l
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `now`: re-check deadlines as time passes
     [byLiver, records, rules, inRequest, now],
   );
-  const listsLoaded = requestsLoaded && reportsLoaded;
-  const overdueCount = listsLoaded ? myOverdue.reduce((n, sec) => n + sec.items.length, 0) : 0;
+  // Both lists answered for her (or failed): until then nothing counts as
+  // overdue, so the banner never lists items she already requested or
+  // reported. A broken endpoint still shows the warnings, but the popup waits
+  // for real data, so it never uses up the day on a wrong list.
+  const listsAnswered = requestsLoaded?.liver === selectedLiver && reportsLoaded?.liver === selectedLiver;
+  const listsOk = listsAnswered && !!requestsLoaded?.ok && !!reportsLoaded?.ok;
+  const overdueCount = listsAnswered ? myOverdue.reduce((n, sec) => n + sec.items.length, 0) : 0;
   const mayBeCancelled = myOverdue.some(sec => sec.rule.cancelWhenOverdue);
   useEffect(() => {
-    if (selectedLiver && listsLoaded && overdueCount > 0 && !remindersSeen(selectedLiver)) {
+    if (selectedLiver && listsOk && overdueCount > 0 && !remindersSeen(selectedLiver)) {
       setShowReminders(true);
       markRemindersSeen(selectedLiver);
     }
-  }, [selectedLiver, listsLoaded, overdueCount]);
+  }, [selectedLiver, listsOk, overdueCount]);
 
   // Today card.
   const dueSoon = useMemo(() => {
@@ -489,15 +517,15 @@ export default function LiverDashboard({ records, searchQuery, onSearchChange, l
   const statuses = useMemo(() => records.map(r => String(r.status ?? '')), [records]);
   const notRequested = useMemo(() => {
     const keys = new Set<string>();
-    const since = now - 24 * 3600_000;
     for (const q of requests) {
-      if (isOpenRequest(q) || (q.status === 'Done' && Date.parse(q.updatedAt) >= since)) for (const k of q.itemKeys) keys.add(k);
+      if (isOpenRequest(q) || (q.status === 'Done' && finishedAfterLoad(q.updatedAt, recordsAt, now))) for (const k of q.itemKeys) keys.add(k);
     }
     return byLiver.filter(r => isToPullOut(r) && !keys.has(itemKey(r))).length;
-  }, [requests, byLiver, now]);
+  }, [requests, byLiver, recordsAt, now]);
 
   const openPullout = () => { setPulloutOpen(true); setTimeout(() => scrollToId('liver-pullout'), 50); };
   const openDeliveries = () => { setDeliveriesOpen(true); setTimeout(() => scrollToId('liver-deliveries'), 50); };
+  const openCancelled = () => { setCancelledOpen(true); setTimeout(() => scrollToId('liver-cancelled'), 50); };
   // Due soon: open the groups holding those items, then go there.
   const openDueSoon = () => {
     const keys = new Set(dueSoon.map(r => statusOf(r).toLowerCase()));
@@ -597,7 +625,7 @@ export default function LiverDashboard({ records, searchQuery, onSearchChange, l
                 </p>
                 {ready.map(q => (
                   <button key={q.id} className="block w-full text-left text-success font-medium py-2" onClick={openPullout}>
-                    Ready to collect: {q.itemKeys.length} item{q.itemKeys.length !== 1 ? 's' : ''} · {q.date === todayISO() ? 'today' : formatDateShort(q.date)} · {requestTargetsLabel(itemsFor(byKey, q.itemKeys), q.method, statuses)}
+                    Ready to collect: {q.itemKeys.length} item{q.itemKeys.length !== 1 ? 's' : ''} · {pullOutOnLabel(q.date).replace(/^Pull/, 'pull')} · {requestTargetsLabel(itemsFor(byKey, q.itemKeys), q.method, statuses)}
                   </button>
                 ))}
                 {rejectedReports.length > 0 && (
@@ -639,6 +667,7 @@ export default function LiverDashboard({ records, searchQuery, onSearchChange, l
                 liver={selectedLiver}
                 records={byLiver}
                 allRecords={records}
+                recordsAt={recordsAt}
                 onRefresh={onRefresh}
                 previewing={previewing}
                 visibleIds={searchedIds}
@@ -654,6 +683,7 @@ export default function LiverDashboard({ records, searchQuery, onSearchChange, l
               key={`d-${selectedLiver}`}
               liver={selectedLiver}
               records={byLiver}
+              recordsAt={recordsAt}
               onRefresh={onRefresh}
               previewing={previewing}
               visibleIds={searchedIds}
@@ -664,12 +694,21 @@ export default function LiverDashboard({ records, searchQuery, onSearchChange, l
               open={deliveriesOpen}
               onOpenChange={setDeliveriesOpen}
             />
-            <CancelledItems key={`c-${selectedLiver}`} records={searched} query={query} onOpenCustomer={setCustomer} />
+            <CancelledItems
+              key={`c-${selectedLiver}`}
+              records={searched}
+              query={query}
+              onOpenCustomer={setCustomer}
+              open={cancelledOpen}
+              onOpenChange={setCancelledOpen}
+            />
 
             {/* Period */}
-            <div className={query ? 'opacity-60' : ''}>
+            <div>
               <p className="text-xs text-muted-foreground mb-1.5">
-                Period <span className="text-muted-foreground/80">· lists by order date, sold by ship date{query ? ' · off while searching' : ''}</span>
+                Period <span className="text-muted-foreground/80">· {query
+                  ? 'lists show every date while searching; Sold and In progress still use this period'
+                  : 'lists by order date, sold by ship date'}</span>
               </p>
               <div className="flex gap-1.5 flex-wrap">
                 {DATE_RANGES.map(r => (
@@ -735,7 +774,7 @@ export default function LiverDashboard({ records, searchQuery, onSearchChange, l
               <StatCard
                 icon={<Weight className="h-3.5 w-3.5" />}
                 accent="gold"
-                label="Sold"
+                label={range === 'all' ? 'Sold' : `Sold · ${range === 'custom' ? 'your dates' : rangeLabel}`}
                 value={`${sumGrams(sold).toFixed(2)}g`}
                 sub={[
                   `${sumGrams(soldGold).toFixed(2)}g gold`,
@@ -748,7 +787,7 @@ export default function LiverDashboard({ records, searchQuery, onSearchChange, l
               <StatCard
                 icon={<Package className="h-3.5 w-3.5" />}
                 accent="neutral"
-                label="In progress"
+                label={range === 'all' ? 'In progress' : `In progress · ordered ${range === 'custom' ? 'in your dates' : rangeLabel}`}
                 value={<>{inProgress.length} <span className="text-sm font-normal">item{inProgress.length !== 1 ? 's' : ''}</span></>}
                 sub={`${weightLabel(inProgress)} · not shipped yet`}
               />
@@ -796,8 +835,8 @@ export default function LiverDashboard({ records, searchQuery, onSearchChange, l
                 </div>
               )}
               {outInView > 0 && (
-                <button className="mt-2 text-xs text-muted-foreground underline py-1" onClick={() => scrollToId('liver-cancelled')}>
-                  Cancelled / Returned: {outInView} — see the red box above
+                <button className="mt-2 text-xs text-muted-foreground underline py-1" onClick={openCancelled}>
+                  See cancelled / returned items (the red box above)
                 </button>
               )}
             </div>

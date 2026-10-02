@@ -191,9 +191,9 @@ export default function AppConfigSettings() {
 
       {/* Liver sales */}
       <div>
-        <Label className="text-xs text-primary font-semibold">Counts as a sale for the liver (My Sales)</Label>
+        <Label className="text-xs text-primary font-semibold">Extra statuses that count as a sale (My Sales and Bossing)</Label>
         <p className="text-[11px] text-muted-foreground mb-2">
-          An item in any of these statuses counts as sold for its liver. Add &quot;Dispatched&quot; if delivery can&apos;t be tracked.
+          Shipped and delivered items (Dispatched, Shipped, In Transit, Delivered, Picked Up…) always count as sold. Add any other status here that should also count as a sale.
         </p>
         <ChipList id="sale" values={saleStatuses} onChange={setSaleStatuses} />
       </div>

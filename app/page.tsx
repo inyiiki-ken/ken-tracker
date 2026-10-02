@@ -404,7 +404,8 @@ function AppContent() {
             </div>
           </div>
           <div className="flex items-center gap-1">
-            <RateCalculatorWidget />
+            {/* Livers never see the gold rate (owner decision 2; pending Ken's confirmation). */}
+            <RateCalculatorWidget hideGold={liverOnly} />
             <button onClick={toggleCompact} className="p-1.5 transition-colors hover:bg-accent text-muted-foreground" title={isCompact ? 'Expand view' : 'Compact view'}>
               {isCompact ? <Maximize2 className="h-3.5 w-3.5" /> : <Minimize2 className="h-3.5 w-3.5" />}
             </button>

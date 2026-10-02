@@ -1,13 +1,13 @@
 "use server";
 
-import type { GoogleSpreadsheetRow, GoogleSpreadsheetWorksheet } from "google-spreadsheet";
+import type { GoogleSpreadsheetCell, GoogleSpreadsheetRow, GoogleSpreadsheetWorksheet } from "google-spreadsheet";
 import { getActiveDoc, invalidateActiveRows } from "./tenant-context";
 import { getAppTab } from "./appTabs";
 import { requireRole, getSessionAccess, liverNameForEmail } from "./authz";
 import { getSessionEmail } from "./tenancy-core";
 import { databaseRecordToRow } from "./row-mapper";
 import { DATABASE_HEADERS } from "./sheet-config";
-import { readDatabase, writeRowsByCells, appendAudit, newRowKey } from "./recordStore";
+import { readDatabase, writeRowsByCells, appendAudit, newRowKey, setAndSaveCells } from "./recordStore";
 import type { DatabaseRowType } from "@/types";
 import {
   PULLOUT_MOVES, isOpenRequest, isRealItemKey, isToPullOut, itemLine, itemSummary, liverKey,
@@ -253,11 +253,12 @@ async function writeRequestCells(
     return c ? str(c.formattedValue ?? c.value) : "";
   };
   if (read(H.id) !== q.id || read(H.updatedAt) !== q.updatedAt) throw new Error(CHANGED);
+  const edits: [GoogleSpreadsheetCell, unknown][] = [];
   for (const [k, v] of Object.entries(patch)) {
     const c = cell(H[k as keyof typeof H]);
-    if (c) c.value = literal(String(v ?? ""));
+    if (c) edits.push([c, literal(String(v ?? ""))]);
   }
-  await ws.saveUpdatedCells();
+  await setAndSaveCells(ws, edits);
   invalidateRequests();
 }
 
