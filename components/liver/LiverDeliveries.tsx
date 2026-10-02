@@ -7,8 +7,8 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import type { DatabaseRowType } from '@/types';
 import { formatDateShort } from '@/lib/formatters';
-import { customerKey, gramsLabel, gramsTotalLabel, parseDateRobust, pieceCount, sumGrams } from '@/lib/calculations';
-import { aedLabel, collectAED } from '@/lib/liverMoney';
+import { customerKey, gramsLabel, gramsTotalLabel, groupByCustomer, parseDateRobust, pieceCount, sumGrams } from '@/lib/calculations';
+import { aedLabel, collectForAED } from '@/lib/liverMoney';
 import { createDeliveryReport, ensurePulloutRowKeys, getDeliveryReports, withdrawDeliveryReport } from '@/lib/api';
 import {
   deliveryKindOf, isOpenReport, parseCash,
@@ -42,16 +42,29 @@ function orderTime(r: DatabaseRowType): number {
   return parseDateRobust(r.dateOfLive)?.getTime() ?? 0;
 }
 
-/** Recently rejected reports: what the Today card and this card's header flag. */
-export function recentlyRejected(reports: DeliveryReport[], now = Date.now()): DeliveryReport[] {
-  return reports.filter(q => q.status === 'Rejected' && now - Date.parse(q.updatedAt) < REJECTED_SHOWN_MS);
+/**
+ * Recently rejected reports still worth flagging (Today card, this card's
+ * header): at least one item wasn't reported again since (waiting or
+ * confirmed) and is still For COD / For Pick Up in her items.
+ */
+export function recentlyRejected(reports: DeliveryReport[], records: DatabaseRowType[], now = Date.now()): DeliveryReport[] {
+  const byKey = itemsByKey(records);
+  return reports.filter(q => {
+    const rejectedAt = Date.parse(q.updatedAt);
+    if (q.status !== 'Rejected' || !(now - rejectedAt < REJECTED_SHOWN_MS)) return false;
+    return q.itemKeys.some(k => {
+      const reportedAgain = reports.some(o => o.id !== q.id && (o.status === 'Reported' || o.status === 'Confirmed')
+        && Date.parse(o.reportedAt || o.updatedAt) > rejectedAt && o.itemKeys.includes(k));
+      return !reportedAgain && (byKey.get(k) ?? []).some(r => deliveryKindOf(r) !== null);
+    });
+  });
 }
 
 /**
  * For COD / For Pick Up items: the liver reports Delivered / Picked up (COD
  * with the cash she collected). Dispatch confirms, which sets the status.
  */
-export function DeliveryPanel({ liver, records, onRefresh, previewing, visibleIds, query, onReportsChange, onOpenCustomer, open: openProp, onOpenChange }: {
+export function DeliveryPanel({ liver, records, onRefresh, previewing, visibleIds, query, onReportsChange, onLoaded, onOpenCustomer, open: openProp, onOpenChange }: {
   liver: string;
   /** This liver's items. */
   records: DatabaseRowType[];
@@ -64,6 +77,8 @@ export function DeliveryPanel({ liver, records, onRefresh, previewing, visibleId
   query?: string;
   /** Her reports, whenever they load (the page's overdue list and Today card use them). */
   onReportsChange?: (list: DeliveryReport[]) => void;
+  /** The first load ended (loaded or failed), so the page's overdue list is real. */
+  onLoaded?: () => void;
   onOpenCustomer?: (customer: string) => void;
   /** Folded open or shut; null = open only when Dispatch didn't confirm a report. */
   open?: boolean | null;
@@ -92,6 +107,8 @@ export function DeliveryPanel({ liver, records, onRefresh, previewing, visibleId
   onRefreshRef.current = onRefresh;
   const onReportsChangeRef = useRef(onReportsChange);
   onReportsChangeRef.current = onReportsChange;
+  const onLoadedRef = useRef(onLoaded);
+  onLoadedRef.current = onLoaded;
 
   const load = useCallback(async () => {
     if (!liver) return;
@@ -105,6 +122,7 @@ export function DeliveryPanel({ liver, records, onRefresh, previewing, visibleId
       setReports(list);
       onReportsChangeRef.current?.(list);
       setLoaded(true);
+      onLoadedRef.current?.();
       failedRef.current = false;
       setFailed(false);
       // Dispatch confirmed: her items are Delivered now, fetch them.
@@ -114,6 +132,7 @@ export function DeliveryPanel({ liver, records, onRefresh, previewing, visibleId
       if (!failedRef.current) toast.error(err instanceof Error ? err.message : 'Could not load your delivery reports');
       failedRef.current = true;
       setFailed(true);
+      onLoadedRef.current?.();
     }
   }, [liver]);
 
@@ -156,6 +175,8 @@ export function DeliveryPanel({ liver, records, onRefresh, previewing, visibleId
   const shownGroups = visibleIds ? groups.map(g => ({ ...g, rows: g.rows.filter(shows) })).filter(g => g.rows.length > 0) : groups;
 
   const byKey = useMemo(() => itemsByKey(records), [records]);
+  // All her items per customer, so Collect nets a group downpayment saved on one item.
+  const byCustomer = useMemo(() => groupByCustomer(records), [records]);
   const shownReports = useMemo(() => {
     const open = reports.filter(isOpenReport);
     const closed = reports.filter(q => !isOpenReport(q))
@@ -166,7 +187,7 @@ export function DeliveryPanel({ liver, records, onRefresh, previewing, visibleId
 
   const freeCount = toReport.filter(isFree).length;
   const openCount = reports.filter(isOpenReport).length;
-  const rejected = recentlyRejected(reports);
+  const rejected = useMemo(() => recentlyRejected(reports, records), [reports, records]);
   const [openLocal, setOpenLocal] = useState<boolean | null>(null);
   const isOpen = (openProp ?? openLocal) ?? rejected.length > 0;
   const setOpen = (v: boolean) => { setOpenLocal(v); onOpenChange?.(v); };
@@ -269,7 +290,7 @@ export function DeliveryPanel({ liver, records, onRefresh, previewing, visibleId
             <div className="divide-y divide-border/50 border-t border-border/50">
               {shownGroups.map(g => {
                 const free = g.rows.filter(isFree);
-                const collect = free.reduce((s, r) => s + collectAED(r), 0);
+                const collect = collectForAED(free, byCustomer.get(g.customer) ?? g.rows);
                 const editing = active === g.key;
                 const ticked = free.filter(r => picked.has(r.id));
                 return (
@@ -296,15 +317,21 @@ export function DeliveryPanel({ liver, records, onRefresh, previewing, visibleId
                         const done = !q && recentlyConfirmed.has(keyOf(r));
                         const canTick = editing && isFree(r);
                         return (
-                          <li key={r.id} className="flex items-start gap-2">
+                          // While ticking, the whole row toggles (easier on a phone than the box).
+                          <li
+                            key={r.id}
+                            className={`flex items-start gap-2 ${editing ? 'min-h-10 py-1' : ''} ${canTick ? 'cursor-pointer' : ''}`}
+                            onClick={() => canTick && toggle(r.id)}
+                          >
                             {editing && (
                               <input
                                 type="checkbox"
-                                className="mt-0.5 h-4 w-4"
+                                className="mt-0.5 h-5 w-5 shrink-0"
                                 aria-label={`Tick ${r.itemDescription || 'item'}`}
                                 disabled={!canTick}
                                 checked={!canTick || picked.has(r.id)}
                                 onChange={() => toggle(r.id)}
+                                onClick={e => e.stopPropagation()}
                               />
                             )}
                             <div className="min-w-0 flex-1 break-words">

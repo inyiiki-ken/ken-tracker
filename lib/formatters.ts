@@ -1,14 +1,13 @@
 import { format, parseISO, isValid } from 'date-fns';
 import { DatabaseRowType } from '@/types';
 import { parseDateRobust } from '@/lib/calculations';
+import { getTimezoneOffsetMs } from '@/lib/businessConfig';
 
-// UAE offset in ms (UTC+4)
-// Kept as the fallback default; the live value comes from the customer's
-// Business settings via getTimezoneOffsetMs().
-const UAE_OFFSET_MS = 4 * 60 * 60 * 1000;
+// Timestamps are shown on the business's calendar: the offset comes from the
+// customer's Business settings via getTimezoneOffsetMs() (UAE = +4).
 
 /**
- * Format a date string for display, always in UAE timezone (UTC+4).
+ * Format a date string for display, on the business's calendar (Settings → Business timezone; UAE = UTC+4).
  *
  * Why: dateOfLive values from Google Sheets come in two flavours:
  *   1. Bare date "2026-04-09"  → parseISO treats as midnight UTC → correct in UAE
@@ -38,8 +37,10 @@ export function formatDate(dateStr?: string): string {
       const p = parseDateRobust(dateStr);
       return p ? format(p, 'MMM dd, yyyy') : dateStr;
     }
-    const uaeDate = new Date(d.getTime() + UAE_OFFSET_MS);
-    return format(uaeDate, 'MMM dd, yyyy');
+    // Read the shifted instant's UTC fields (the business's wall clock), so the
+    // device's own timezone never adds to the shift (20:30 UAE stays that day).
+    const u = new Date(d.getTime() + getTimezoneOffsetMs());
+    return format(new Date(u.getUTCFullYear(), u.getUTCMonth(), u.getUTCDate(), 12), 'MMM dd, yyyy');
   } catch {
     return dateStr;
   }

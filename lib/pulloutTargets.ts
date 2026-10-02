@@ -14,7 +14,7 @@ export const LIVER_CAME_BOX_STATUS = {
   intl: 'For International Shipment',
   reseller: 'Reseller',
 } as const;
-type OwnBox = keyof typeof LIVER_CAME_BOX_STATUS;
+export type OwnBox = keyof typeof LIVER_CAME_BOX_STATUS;
 
 const BOX_PATTERN: Record<OwnBox, RegExp> = {
   intl: /\binternational\b/,
@@ -56,5 +56,20 @@ export function ownBox(r: DatabaseRowType): OwnBox | null {
 /** The status "Liver came" sets on one item. */
 export function liverCameStatus(r: DatabaseRowType, method: PulloutMethod, statusesInUse: string[]): string {
   const box = ownBox(r);
-  return box ? boxStatusName(box, statusesInUse) : methodStatus(method);
+  if (!box) return methodStatus(method);
+  // A liver's rows carry the name the server worked out over every row.
+  return String(r.ownBoxStatus ?? '').trim() || boxStatusName(box, statusesInUse);
+}
+
+/**
+ * How a request goes out, for her cards: the method only when some item is
+ * local, plus the box each international / reseller item goes to, e.g.
+ * "COD + For International Shipment". Items unknown (not loaded): the method.
+ */
+export function requestTargetsLabel(items: DatabaseRowType[], method: PulloutMethod, statusesInUse: string[]): string {
+  if (items.length === 0) return method;
+  const parts = new Set<string>();
+  if (items.some(r => !ownBox(r))) parts.add(method);
+  for (const r of items) if (ownBox(r)) parts.add(liverCameStatus(r, method, statusesInUse));
+  return Array.from(parts).join(' + ');
 }

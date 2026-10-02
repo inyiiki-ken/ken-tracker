@@ -12,8 +12,9 @@ import { DATABASE_HEADERS, DATABASE_HEADER_ALIASES, OPTIONAL_DATABASE_KEYS, ROLE
 import type { DatabaseRowType } from "@/types";
 import { buildCustomerIdIndex, resolveCustomerIdFor } from "@/lib/customerId";
 import { isLiverOnly, getUserRole } from "@/config/roles";
-import { customerKey } from "@/lib/calculations";
-import { newestPurchaseByCustomer } from "@/lib/purchaseDates";
+import { customerKey, parseDateRobust } from "@/lib/calculations";
+import { newestPurchaseRawByCustomer } from "@/lib/purchaseDates";
+import { boxStatusName, ownBox } from "@/lib/pulloutTargets";
 
 
 /**
@@ -217,7 +218,11 @@ export async function getRecords(_params?: { tailOnly?: boolean }): Promise<Data
   if (!me) return [];
   // Her customers may also buy from other livers; reminders count from the
   // customer's newest purchase, so stamp that on her rows before dropping the rest.
-  const newest = newestPurchaseByCustomer(all);
+  const newest = newestPurchaseRawByCustomer(all);
+  // Where "Liver came" sends her international / reseller items, named from
+  // every row like Dispatch's (her own rows may spell the box differently).
+  const statuses = all.map((r) => String(r.status ?? ""));
+  const boxNames = { intl: boxStatusName("intl", statuses), reseller: boxStatusName("reseller", statuses) };
   return all
     .filter((r) => liverKey(r.liverName) === me)
     .map((r) => {
@@ -227,7 +232,9 @@ export async function getRecords(_params?: { tailOnly?: boolean }): Promise<Data
       out.hasClientAddress = !!String(r.clientAddress ?? "").trim();
       for (const k of LIVER_HIDDEN_CONTACT) delete out[k];
       const last = newest.get(customerKey(r));
-      if (last) out.customerLastPurchaseAt = last.toISOString();
+      if (last) out.customerLastPurchaseAt = last;
+      const box = ownBox(r);
+      if (box) out.ownBoxStatus = boxNames[box];
       return out;
     });
 }
@@ -454,7 +461,9 @@ function dateKey(v: unknown): string {
   const s = String(v ?? "").trim().replace(/^[a-z]+day,?\s+/i, "");
   if (!s) return "";
   if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
-  const d = new Date(s);
+  // The shared parser first, so day-first "24/08/2026" (older rows) and the
+  // cleaned "2026-08-24" (new import) give the same key.
+  const d = parseDateRobust(s) ?? new Date(s);
   if (Number.isNaN(d.getTime())) return s.toUpperCase();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }

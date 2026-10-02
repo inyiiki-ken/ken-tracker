@@ -7,6 +7,7 @@ import { formatDate } from "@/lib/formatters";
 import { computeOverdue, hoursInStatus, statusSince, MAX_HOLD_DAYS, type OverdueSection } from "@/lib/reminders";
 import { customerKey, gramsLabel } from "@/lib/calculations";
 import { newestPurchaseByCustomer } from "@/lib/purchaseDates";
+import { dayKey } from "@/lib/fulfilment";
 
 /** Who reads the dialog: Dispatch (everyone's items) or a liver (her own). */
 type Audience = "liver" | "dispatch";
@@ -57,12 +58,16 @@ function ClientCard({ group, section, audience, ownNewest }: {
   const days = Math.floor(group.oldestHours / 24);
   const urgent = group.oldestHours >= section.rule.urgentAfterHours;
   const liver = audience === "liver";
-  // The newer purchase was on someone else's live when it is newer than any of hers.
+  // The newer purchase was on someone else's live when it is on a later day than any of hers.
   const own = ownNewest?.get(group.key);
-  const otherLive = liver && !!group.lastBuy && (!own || group.lastBuy.getTime() > own.getTime() + 60_000);
+  const otherLive = liver && !!group.lastBuy && (!own || dayKey(group.lastBuy.toISOString()) > dayKey(own.toISOString()));
+  // Liver: days past the deadline (not days in the status).
+  const overdueDays = group.due ? Math.max(0, Math.floor((Date.now() - group.due.getTime()) / 86_400_000)) : days;
   const pill = liver
-    ? `Overdue ${days}d`
+    ? (overdueDays === 0 ? "Overdue today" : `Overdue ${overdueDays}d`)
     : urgent ? (section.rule.cancelWhenOverdue ? "CANCEL?" : "ACTION NEEDED") : `${days}d ago`;
+  // Livers read this on a phone: a size up from Dispatch's dense list.
+  const small = liver ? "text-xs" : "text-[10px]";
   return (
     <div className={`rounded-lg border p-3 ${urgent ? "border-destructive/40 bg-destructive/5" : "border-border bg-secondary/20"}`}>
       <div className="flex items-start justify-between gap-2">
@@ -71,19 +76,19 @@ function ClientCard({ group, section, audience, ownNewest }: {
             {group.name}
             <span className="text-muted-foreground font-normal ml-1.5">· {group.items.length} item{group.items.length !== 1 ? "s" : ""}</span>
           </p>
-          <p className="text-[10px] text-muted-foreground">
+          <p className={`${small} text-muted-foreground`}>
             {(liver ? group.page : [group.liver, group.page].filter(Boolean).join(" · ")) || "—"} · since {group.since ? formatDate(group.since.toISOString()) : "—"}
             {group.due && <> · due {formatDate(group.due.toISOString())}</>}
           </p>
           {group.lastBuy && (
-            <p className="text-[10px] text-primary">
+            <p className={`${small} text-primary`}>
               {otherLive ? "Bought again on another live" : "Bought again"} {formatDate(group.lastBuy.toISOString())} — deadline counted from then
               {group.capped ? ` (max ${MAX_HOLD_DAYS} days reached)` : ""}
             </p>
           )}
           <ul className="mt-1.5 space-y-0.5">
             {group.items.map((it) => (
-              <li key={it.id} className="text-[10px] text-muted-foreground flex items-baseline gap-1.5">
+              <li key={it.id} className={`${small} text-muted-foreground flex items-baseline gap-1.5`}>
                 <span className="text-muted-foreground/60">•</span>
                 <span className="truncate">
                   {[it.orderId, it.itemDescription, liver ? gramsLabel(it) : "", liver && it.dateOfLive ? `Ordered ${formatDate(it.dateOfLive)}` : ""].filter(x => x && x !== "—").join(" · ") || "—"}
@@ -140,7 +145,7 @@ export default function RemindersDialog({
               <h3 className="text-xs font-bold text-warning uppercase tracking-wider flex items-center gap-2">
                 <Clock className="h-3.5 w-3.5" /> {section.rule.title} ({groups.length} client{groups.length !== 1 ? "s" : ""} · {section.items.length} item{section.items.length !== 1 ? "s" : ""})
               </h3>
-              <p className="text-[10px] text-muted-foreground">{audience === "liver" ? "Follow up now." : section.rule.hint}</p>
+              <p className={`${audience === "liver" ? "text-xs" : "text-[10px]"} text-muted-foreground`}>{audience === "liver" ? "Follow up now." : section.rule.hint}</p>
               {groups.map((g) => <ClientCard key={g.name} group={g} section={section} audience={audience} ownNewest={ownNewest} />)}
             </div>
           );

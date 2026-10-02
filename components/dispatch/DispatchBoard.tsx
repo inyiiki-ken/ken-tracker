@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ClipboardList, Package, Truck, Handshake, CheckSquare, ShoppingBag, Layout, Crown, BookOpen, XCircle, CheckCircle2, AlertTriangle, Gem, Plane, Store, Printer } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
@@ -88,10 +88,22 @@ function QueueButton({
 export default function DispatchBoard({ records, searchQuery, onSearchChange, onUpdate, onBulkUpdate, userEmail, clientMilestones, onRefresh }: TabProps) {
   const [showReport, setShowReport] = useState(false);
   const [showCancelReport, setShowCancelReport] = useState(false);
-  const [showReminders, setShowReminders] = useState(() => computeOverdue(records).length > 0);
+  const [showReminders, setShowReminders] = useState(false);
   // Items a liver reported delivered / picked up: not overdue while Dispatch checks.
   const [reportedIds, setReportedIds] = useState<Set<number>>(new Set());
+  const [reportsLoaded, setReportsLoaded] = useState(false);
+  const onOpenReportsChange = useCallback((ids: Set<number>) => {
+    setReportedIds(ids);
+    setReportsLoaded(true);
+  }, []);
   const anyOverdue = computeOverdue(records).some(sec => sec.items.some(r => !reportedIds.has(r.id)));
+  // The reminders pop up once, after the delivery reports loaded (so reported items don't count).
+  const remindersAutoShown = useRef(false);
+  useEffect(() => {
+    if (!reportsLoaded || remindersAutoShown.current) return;
+    remindersAutoShown.current = true;
+    if (anyOverdue) setShowReminders(true);
+  }, [reportsLoaded, anyOverdue]);
 
   // One queue per box (lib/fulfilment ORDER_BOXES), named like Crown's physical
   // boxes. Items still with Admin / Accounts (Pending, Waiting for…, on hold,
@@ -282,7 +294,7 @@ export default function DispatchBoard({ records, searchQuery, onSearchChange, on
       />
 
       <PulloutRequestsPanel records={records} onRefresh={onRefresh} />
-      <DeliveryReportsPanel records={records} onRefresh={onRefresh} onOpenReportsChange={setReportedIds} />
+      <DeliveryReportsPanel records={records} onRefresh={onRefresh} onOpenReportsChange={onOpenReportsChange} />
 
       {/* Work queue: pick a queue on the left, work it on the right. Replaces the
           six stacked accordions — one click instead of expand/collapse, and the
@@ -383,7 +395,7 @@ export default function DispatchBoard({ records, searchQuery, onSearchChange, on
         </DialogContent>
       </Dialog>
 
-      {showReport && <PulloutReport records={records} onClose={() => setShowReport(false)} />}
+      {showReport && <PulloutReport records={records} exclude={reportedIds} onClose={() => setShowReport(false)} />}
       {showCancelReport && <CancelReport records={records} onClose={() => setShowCancelReport(false)} />}
 
       {/* Courier & Pullout Reminders Dialog */}

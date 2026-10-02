@@ -7,8 +7,8 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import type { DatabaseRowType } from '@/types';
 import { formatDateShort } from '@/lib/formatters';
-import { gramsLabel, gramsTotalLabel } from '@/lib/calculations';
-import { aedLabel, collectAED } from '@/lib/liverMoney';
+import { gramsLabel, gramsTotalLabel, groupByCustomer } from '@/lib/calculations';
+import { aedLabel, collectForAED } from '@/lib/liverMoney';
 import { confirmDeliveryReport, getDeliveryReports, rejectDeliveryReport } from '@/lib/api';
 import { confirmStatusFor, isOpenReport, type DeliveryReport } from '@/lib/deliveryReports';
 import { itemsByKey, itemsFor } from '@/lib/pulloutRequests';
@@ -55,14 +55,17 @@ export default function DeliveryReportsPanel({ records, onRefresh, onOpenReports
 
   const openReports = useMemo(() => reports.filter(isOpenReport), [reports]);
   const byKey = useMemo(() => itemsByKey(records), [records]);
+  const byCustomer = useMemo(() => groupByCustomer(records), [records]);
 
   const onOpenReportsChangeRef = useRef(onOpenReportsChange);
   onOpenReportsChangeRef.current = onOpenReportsChange;
+  // Only once the first load ended (or failed), so the board knows the list is real.
   useEffect(() => {
+    if (loading) return;
     const ids = new Set<number>();
     for (const q of openReports) for (const r of itemsFor(byKey, q.itemKeys)) ids.add(r.id);
     onOpenReportsChangeRef.current?.(ids);
-  }, [openReports, byKey]);
+  }, [openReports, byKey, loading]);
 
   const closeReason = (id: string) => setReasons(p => { const n = { ...p }; delete n[id]; return n; });
 
@@ -136,7 +139,9 @@ export default function DeliveryReportsPanel({ records, onRefresh, onOpenReports
             const items = itemsFor(byKey, q.itemKeys);
             const notFound = items.length === 0;
             const to = confirmStatusFor(q.kind, dispatchStatuses);
-            const expected = items.reduce((s, r) => s + collectAED(r), 0);
+            // Per customer, capped at what they still owe (a group downpayment sits on one item).
+            const expected = Array.from(groupByCustomer(items))
+              .reduce((s, [k, rows]) => s + collectForAED(rows, byCustomer.get(k) ?? rows), 0);
             const isBusy = busy === q.id;
             const reason = reasons[q.id];
             return (

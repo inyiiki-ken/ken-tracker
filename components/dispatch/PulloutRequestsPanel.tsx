@@ -133,9 +133,11 @@ export default function PulloutRequestsPanel({ records, onRefresh }: {
     }
   };
 
-  const notReady = (q: PulloutRequest, reply: string) => {
-    if (!reply.trim()) { toast.error('Write a reply so the liver knows why it isn’t ready.'); return; }
-    void run(q.id, () => setPulloutRequestStatus({ id: q.id, status: 'Requested', reply: reply.trim(), seenUpdatedAt: q.updatedAt }), 'Back to Requested — the liver sees your reply');
+  const notReady = (q: PulloutRequest) => {
+    // A reason typed now: an earlier reply still in the box would tell her something out of date.
+    const typed = (replies[q.id] ?? '').trim();
+    if (!typed || typed === String(q.dispatchReply ?? '').trim()) { toast.error('Write why it isn’t ready now, so the liver knows.'); return; }
+    void run(q.id, () => setPulloutRequestStatus({ id: q.id, status: 'Requested', reply: typed, seenUpdatedAt: q.updatedAt }), 'Back to Requested — the liver sees your reply');
   };
 
   const cancelRequest = (q: PulloutRequest, reply: string) => {
@@ -260,7 +262,7 @@ export default function PulloutRequestsPanel({ records, onRefresh }: {
                       <Button size="sm" className="h-8 text-xs" disabled={isBusy || notFound} onClick={() => liverCame(q)}>
                         {targets.length === 1 ? `Liver came — set to ${targets[0]}` : 'Liver came'}
                       </Button>
-                      <Button size="sm" variant="ghost" className="h-8 text-xs" disabled={isBusy} onClick={() => notReady(q, reply)}>
+                      <Button size="sm" variant="ghost" className="h-8 text-xs" disabled={isBusy} onClick={() => notReady(q)}>
                         Not ready
                       </Button>
                     </>

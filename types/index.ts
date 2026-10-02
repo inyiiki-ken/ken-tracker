@@ -51,10 +51,17 @@ export type DatabaseRowType = {
   cancelReason?: string;
   /**
    * Not a sheet column. Sent only to liver-only users (who get just their own
-   * rows): the customer's newest purchase across every liver, ISO, so her
-   * reminders count from the same day Dispatch's do.
+   * rows): the customer's newest purchase across every liver, as the raw sheet
+   * value (live date or history timestamp), so her reminders count from the
+   * same day Dispatch's do.
    */
   customerLastPurchaseAt?: string;
+  /**
+   * Not a sheet column. Sent only to liver-only users, on international /
+   * reseller items: the status "Liver came" sets (lib/pulloutTargets), named
+   * from every row of the sheet like Dispatch's.
+   */
+  ownBoxStatus?: string;
   /** Not a sheet column. Sent to liver-only users instead of clientAddress: whether one is on file. */
   hasClientAddress?: boolean;
   id: number;

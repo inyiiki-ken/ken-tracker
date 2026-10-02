@@ -491,8 +491,9 @@ function AppContent() {
           )}
         </div>
       )}
+      {/* A liver-only user has only her own rows, so loyalty counts would be short: no badge. */}
       {shownTab === 'liver' && (lockedLiverName || picksLiver) && (
-        <LiverDashboard records={records} searchQuery={searchQueries.liver} onSearchChange={handleSearchChange} onUpdate={handleUpdate} lockedLiverName={lockedLiverName} defaultLiver={picksLiver ? ownLiverName : undefined} onRefresh={() => fetchData(true)} previewing={previewing} clientMilestones={clientMilestones} />
+        <LiverDashboard records={records} searchQuery={searchQueries.liver} onSearchChange={handleSearchChange} onUpdate={handleUpdate} lockedLiverName={lockedLiverName} defaultLiver={picksLiver ? ownLiverName : undefined} onRefresh={() => fetchData(true)} previewing={previewing} clientMilestones={liverOnly ? undefined : clientMilestones} />
       )}
       {shownTab === 'purchasing' && (
         <PurchasingTab userEmail={user.email} />

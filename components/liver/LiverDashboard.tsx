@@ -8,7 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { TabProps, DatabaseRowType } from '@/types';
-import { customerKey, gramsLabel, pieceCount, sumGrams } from '@/lib/calculations';
+import { customerKey, gramsLabel, groupByCustomer, pieceCount, sumGrams } from '@/lib/calculations';
 import { applySearch, formatDate, formatDateShort } from '@/lib/formatters';
 import TabHeader from '@/components/TabHeader';
 import { StatCard } from '@/components/ui/dash';
@@ -19,13 +19,14 @@ import { PulloutPanel, CancelledItems } from './LiverPullout';
 import { DeliveryPanel, recentlyRejected } from './LiverDeliveries';
 import LiverCustomerSheet from './LiverCustomerSheet';
 import { Highlight, NotesToggle, OutsourceTag, ShippedLine } from './LiverRowBits';
-import { isOpenRequest, isOverdueRequest, isToPullOut, itemKey, liverKey, todayISO, type PulloutRequest } from '@/lib/pulloutRequests';
+import { isOpenRequest, isOverdueRequest, isToPullOut, itemKey, itemsByKey, itemsFor, liverKey, todayISO, type PulloutRequest } from '@/lib/pulloutRequests';
+import { requestTargetsLabel } from '@/lib/pulloutTargets';
 import { dayKey, fulfilmentStage, isSold, soldDay } from '@/lib/fulfilment';
 import { metalOf, type MetalKind } from '@/lib/metal';
-import { aedLabel, collectAED } from '@/lib/liverMoney';
+import { aedLabel, collectForAED } from '@/lib/liverMoney';
 import { isOpenReport, type DeliveryKind, type DeliveryReport } from '@/lib/deliveryReports';
 import {
-  DATE_RANGES, groupByDay, groupByStatus, inBounds, newestFirst, rangeBounds, summariseLives,
+  DATE_RANGES, groupByDay, groupByStatus, inBounds, newestFirst, rangeBounds, statusOf, summariseLives,
   type DateRange, type StatusGroup,
 } from '@/lib/liverSales';
 
@@ -77,7 +78,7 @@ function scrollToId(id: string) {
 }
 
 // ─── Status Section ───────────────────────────────────────────────────────────
-function StatusSection({ group, open, onToggle, query, copyRow, copiedId, dueOf, onOpenCustomer, reported }: {
+function StatusSection({ group, open, onToggle, query, copyRow, copiedId, dueOf, onOpenCustomer, reported, customerRows }: {
   group: StatusGroup;
   open: boolean;
   onToggle: () => void;
@@ -88,10 +89,14 @@ function StatusSection({ group, open, onToggle, query, copyRow, copiedId, dueOf,
   onOpenCustomer: (customer: string) => void;
   /** Items in an open delivery report, and what she reported. */
   reported: Map<number, DeliveryKind>;
+  /** All her items per customer (customerKey), for Collect. */
+  customerRows: Map<string, DatabaseRowType[]>;
 }) {
   const [limit, setLimit] = useState(PAGE_ROWS);
   const rows = useMemo(() => newestFirst(group.items), [group.items]);
-  useEffect(() => { setLimit(PAGE_ROWS); }, [group.items]);
+  // Back to the first rows only when the items change, not on every refresh.
+  const idsKey = useMemo(() => group.items.map(r => r.id).join(','), [group.items]);
+  useEffect(() => { setLimit(PAGE_ROWS); }, [idsKey]);
   const weight = weightLabel(rows);
   const now = Date.now();
 
@@ -124,7 +129,7 @@ function StatusSection({ group, open, onToggle, query, copyRow, copiedId, dueOf,
             <tbody>
               {rows.slice(0, limit).map((r, i) => {
                 const due = dueOf(r);
-                const collect = collectAED(r);
+                const collect = collectForAED([r], customerRows.get(customerKey(r)) ?? [r]);
                 const rep = reported.get(r.id);
                 return (
                   <tr key={r.id} className={`border-b border-border/30 align-top ${i % 2 === 0 ? '' : 'bg-secondary/10'}`}>
@@ -308,7 +313,16 @@ export default function LiverDashboard({ records, searchQuery, onSearchChange, l
   // Her delivery reports (Delivered / Picked up), as that card loads them.
   const [reports, setReports] = useState<DeliveryReport[]>([]);
   const [deliveriesOpen, setDeliveriesOpen] = useState<boolean | null>(null);
-  useEffect(() => { setRequests([]); setReports([]); }, [selectedLiver]);
+  // Both lists answered (or failed): until then nothing counts as overdue,
+  // so the popup never lists items she already requested or reported.
+  const [requestsLoaded, setRequestsLoaded] = useState(false);
+  const [reportsLoaded, setReportsLoaded] = useState(false);
+  useEffect(() => {
+    setRequests([]); setReports([]);
+    setRequestsLoaded(false); setReportsLoaded(false);
+  }, [selectedLiver]);
+  const onRequestsLoaded = useCallback(() => setRequestsLoaded(true), []);
+  const onReportsLoaded = useCallback(() => setReportsLoaded(true), []);
   // "Now" for the date filters and overdue items, so a screen left open
   // overnight moves on (ticks every minute and when the app comes back).
   const [now, setNow] = useState(() => Date.now());
@@ -365,7 +379,10 @@ export default function LiverDashboard({ records, searchQuery, onSearchChange, l
   const searched = useMemo(() => (query ? applySearch(byLiver, query) : byLiver), [byLiver, query]);
   const searchedIds = useMemo(() => (query ? new Set(searched.map(r => r.id)) : null), [searched, query]);
 
-  const bounds = useMemo(() => rangeBounds(range, new Date(now), customStart, customEnd), [range, now, customStart, customEnd]);
+  // Recomputed when the day changes, not every minute (keeps the lists still).
+  const nowDay = todayISO(new Date(now));
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- `now` only matters through nowDay
+  const bounds = useMemo(() => rangeBounds(range, new Date(now), customStart, customEnd), [range, nowDay, customStart, customEnd]);
   const matches = useCallback((r: DatabaseRowType) => materialFilter === 'all' || metalOf(r) === materialFilter, [materialFilter]);
   const otherCount = useMemo(() => byLiver.filter(r => metalOf(r) === 'other').length, [byLiver]);
   useEffect(() => { if (materialFilter === 'other' && otherCount === 0) setMaterialFilter('all'); }, [materialFilter, otherCount]);
@@ -393,6 +410,9 @@ export default function LiverDashboard({ records, searchQuery, onSearchChange, l
   const soldSilver = sold.filter(r => metalOf(r) === 'silver');
   const soldOther = sold.filter(r => metalOf(r) === 'other');
   const soldPcs = pieceCount(sold);
+  // "Sold by ship date" follows the search like the lists (every date while searching).
+  const soldShown = useMemo(() => (query ? searched.filter(r => matches(r) && isSold(r)) : sold), [query, searched, matches, sold]);
+  const customerRows = useMemo(() => groupByCustomer(byLiver), [byLiver]);
 
   const groups = useMemo(() => groupByStatus(live), [live]);
   // Searching opens every group with a match; clearing folds them again.
@@ -443,14 +463,15 @@ export default function LiverDashboard({ records, searchQuery, onSearchChange, l
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `now`: re-check deadlines as time passes
     [byLiver, records, rules, inRequest, now],
   );
-  const overdueCount = myOverdue.reduce((n, sec) => n + sec.items.length, 0);
+  const listsLoaded = requestsLoaded && reportsLoaded;
+  const overdueCount = listsLoaded ? myOverdue.reduce((n, sec) => n + sec.items.length, 0) : 0;
   const mayBeCancelled = myOverdue.some(sec => sec.rule.cancelWhenOverdue);
   useEffect(() => {
-    if (selectedLiver && overdueCount > 0 && !remindersSeen(selectedLiver)) {
+    if (selectedLiver && listsLoaded && overdueCount > 0 && !remindersSeen(selectedLiver)) {
       setShowReminders(true);
       markRemindersSeen(selectedLiver);
     }
-  }, [selectedLiver, overdueCount]);
+  }, [selectedLiver, listsLoaded, overdueCount]);
 
   // Today card.
   const dueSoon = useMemo(() => {
@@ -462,7 +483,10 @@ export default function LiverDashboard({ records, searchQuery, onSearchChange, l
     });
   }, [byLiver, dueOf, inRequest, now]);
   const ready = requests.filter(q => q.status === 'Ready');
-  const rejectedReports = recentlyRejected(reports, now);
+  const rejectedReports = useMemo(() => recentlyRejected(reports, byLiver, now), [reports, byLiver, now]);
+  // Her items by key and every status, for where a Ready request's items go.
+  const byKey = useMemo(() => itemsByKey(byLiver), [byLiver]);
+  const statuses = useMemo(() => records.map(r => String(r.status ?? '')), [records]);
   const notRequested = useMemo(() => {
     const keys = new Set<string>();
     const since = now - 24 * 3600_000;
@@ -474,6 +498,13 @@ export default function LiverDashboard({ records, searchQuery, onSearchChange, l
 
   const openPullout = () => { setPulloutOpen(true); setTimeout(() => scrollToId('liver-pullout'), 50); };
   const openDeliveries = () => { setDeliveriesOpen(true); setTimeout(() => scrollToId('liver-deliveries'), 50); };
+  // Due soon: open the groups holding those items, then go there.
+  const openDueSoon = () => {
+    const keys = new Set(dueSoon.map(r => statusOf(r).toLowerCase()));
+    setOpenGroups(prev => new Set([...Array.from(prev), ...Array.from(keys)]));
+    const first = groups.find(g => keys.has(g.key));
+    setTimeout(() => scrollToId(first ? `liver-status-${first.key}` : 'liver-groups'), 50);
+  };
 
   const rangeLabel = DATE_RANGES.find(x => x.key === range)?.label.toLowerCase() ?? '';
   const emptyText = (() => {
@@ -560,32 +591,32 @@ export default function LiverDashboard({ records, searchQuery, onSearchChange, l
 
             {/* Today */}
             {(ready.length > 0 || rejectedReports.length > 0 || overdueCount > 0 || dueSoon.length > 0 || notRequested > 0) && (
-              <div className="rounded-xl border border-primary/30 bg-card p-3 space-y-1.5 text-sm">
+              <div className="rounded-xl border border-primary/30 bg-card p-3 space-y-0.5 text-sm">
                 <p className="flex items-center gap-2 text-xs font-cinzel font-bold text-primary/80 uppercase tracking-wide">
                   <CalendarClock className="h-4 w-4" /> Today
                 </p>
                 {ready.map(q => (
-                  <button key={q.id} className="block w-full text-left text-success font-medium py-0.5" onClick={openPullout}>
-                    Ready to collect: {q.itemKeys.length} item{q.itemKeys.length !== 1 ? 's' : ''} · {q.date === todayISO() ? 'today' : formatDateShort(q.date)} · {q.method}
+                  <button key={q.id} className="block w-full text-left text-success font-medium py-2" onClick={openPullout}>
+                    Ready to collect: {q.itemKeys.length} item{q.itemKeys.length !== 1 ? 's' : ''} · {q.date === todayISO() ? 'today' : formatDateShort(q.date)} · {requestTargetsLabel(itemsFor(byKey, q.itemKeys), q.method, statuses)}
                   </button>
                 ))}
                 {rejectedReports.length > 0 && (
-                  <button className="block w-full text-left text-destructive py-0.5" onClick={openDeliveries}>
+                  <button className="block w-full text-left text-destructive py-2" onClick={openDeliveries}>
                     Dispatch didn&apos;t confirm: {rejectedReports.length} delivery report{rejectedReports.length !== 1 ? 's' : ''} — see why
                   </button>
                 )}
                 {overdueCount > 0 && (
-                  <button className="block w-full text-left text-destructive py-0.5" onClick={() => setShowReminders(true)}>
+                  <button className="block w-full text-left text-destructive py-2" onClick={() => setShowReminders(true)}>
                     Overdue: {overdueCount} item{overdueCount !== 1 ? 's' : ''}
                   </button>
                 )}
                 {dueSoon.length > 0 && (
-                  <button className="block w-full text-left text-warning py-0.5" onClick={() => scrollToId('liver-groups')}>
+                  <button className="block w-full text-left text-warning py-2" onClick={openDueSoon}>
                     Due soon (next {DUE_SOON_HOURS}h): {dueSoon.length} item{dueSoon.length !== 1 ? 's' : ''}
                   </button>
                 )}
                 {notRequested > 0 && (
-                  <button className="block w-full text-left py-0.5" onClick={openPullout}>
+                  <button className="block w-full text-left py-2" onClick={openPullout}>
                     Not yet requested: {notRequested} item{notRequested !== 1 ? 's' : ''} to pull out
                   </button>
                 )}
@@ -613,6 +644,7 @@ export default function LiverDashboard({ records, searchQuery, onSearchChange, l
                 visibleIds={searchedIds}
                 query={query}
                 onRequestsChange={setRequests}
+                onLoaded={onRequestsLoaded}
                 onOpenCustomer={setCustomer}
                 open={pulloutOpen}
                 onOpenChange={setPulloutOpen}
@@ -627,6 +659,7 @@ export default function LiverDashboard({ records, searchQuery, onSearchChange, l
               visibleIds={searchedIds}
               query={query}
               onReportsChange={setReports}
+              onLoaded={onReportsLoaded}
               onOpenCustomer={setCustomer}
               open={deliveriesOpen}
               onOpenChange={setDeliveriesOpen}
@@ -757,6 +790,7 @@ export default function LiverDashboard({ records, searchQuery, onSearchChange, l
                       dueOf={dueOf}
                       onOpenCustomer={setCustomer}
                       reported={reported}
+                      customerRows={customerRows}
                     />
                   ))}
                 </div>
@@ -768,7 +802,7 @@ export default function LiverDashboard({ records, searchQuery, onSearchChange, l
               )}
             </div>
 
-            <SoldBreakdown sold={sold} />
+            <SoldBreakdown sold={soldShown} />
             <MyLives rows={filtered} />
           </>
         )}

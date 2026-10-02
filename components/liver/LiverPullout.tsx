@@ -12,7 +12,7 @@ import { customerKey, gramsLabel, gramsTotalLabel, groupByCustomer, parseDateRob
 import { boxFromDelivery, statusChangedInfo } from '@/lib/fulfilment';
 import StatusBadge from '@/components/StatusBadge';
 import { dueFor, getReminderRules, lastPurchases } from '@/lib/reminders';
-import { aedLabel, collectAED, customerMoney } from '@/lib/liverMoney';
+import { aedLabel, collectForAED, customerMoney } from '@/lib/liverMoney';
 import { DATE_RANGES, rangeBounds, type DateRange } from '@/lib/liverSales';
 import { Highlight, NotesToggle, OutsourceTag, notesOf } from './LiverRowBits';
 import {
@@ -24,7 +24,7 @@ import {
   itemKey, itemLine, itemSummary, itemsByKey, itemsFor, todayISO,
   type PulloutMethod, type PulloutRequest, type PulloutRequestStatus,
 } from '@/lib/pulloutRequests';
-import { liverCameStatus, ownBox } from '@/lib/pulloutTargets';
+import { liverCameStatus, ownBox, requestTargetsLabel } from '@/lib/pulloutTargets';
 import { useVisiblePolling } from '@/lib/useVisiblePolling';
 
 /** Weight of some items, e.g. "12.40g + 2 pcs" (per-piece items in pieces). */
@@ -90,7 +90,7 @@ function GroupCheckbox({ checked, partial, disabled, onChange, label }: {
 }
 
 // ─── Items to pull out + pullout requests ────────────────────────────────────
-export function PulloutPanel({ liver, records, allRecords, onRefresh, previewing, visibleIds, query, onRequestsChange, onOpenCustomer, open: openProp, onOpenChange }: {
+export function PulloutPanel({ liver, records, allRecords, onRefresh, previewing, visibleIds, query, onRequestsChange, onLoaded, onOpenCustomer, open: openProp, onOpenChange }: {
   liver: string;
   /** This liver's items. */
   records: DatabaseRowType[];
@@ -106,6 +106,8 @@ export function PulloutPanel({ liver, records, allRecords, onRefresh, previewing
   query?: string;
   /** Her requests, whenever they load (the page's Today card and overdue list use them). */
   onRequestsChange?: (list: PulloutRequest[]) => void;
+  /** The first load ended (loaded or failed), so the page's overdue list is real. */
+  onLoaded?: () => void;
   /** Tap a customer's name: her per-customer sheet. */
   onOpenCustomer?: (customer: string) => void;
   /** Items to pull out folded open or shut; null = open when something waits to be requested or is Ready. */
@@ -142,6 +144,8 @@ export function PulloutPanel({ liver, records, allRecords, onRefresh, previewing
   onRefreshRef.current = onRefresh;
   const onRequestsChangeRef = useRef(onRequestsChange);
   onRequestsChangeRef.current = onRequestsChange;
+  const onLoadedRef = useRef(onLoaded);
+  onLoadedRef.current = onLoaded;
   const lastRefreshRef = useRef(Date.now());
 
   const refreshRecords = useCallback((force = false) => {
@@ -163,6 +167,7 @@ export function PulloutPanel({ liver, records, allRecords, onRefresh, previewing
       setRequests(list);
       onRequestsChangeRef.current?.(list);
       setLoaded(true);
+      onLoadedRef.current?.();
       failedRef.current = false;
       setFailed(false);
       // Dispatch pressed "Liver came": her items moved, fetch them now.
@@ -173,6 +178,7 @@ export function PulloutPanel({ liver, records, allRecords, onRefresh, previewing
       if (!failedRef.current) toast.error(err instanceof Error ? err.message : 'Could not load your pullout requests');
       failedRef.current = true;
       setFailed(true);
+      onLoadedRef.current?.();
     }
   }, [liver, refreshRecords]);
 
@@ -191,7 +197,9 @@ export function PulloutPanel({ liver, records, allRecords, onRefresh, previewing
 
   const keyOf = useCallback((r: DatabaseRowType) => newKeys[r.id] ?? itemKey(r), [newKeys]);
   const toPullOut = useMemo(() => records.filter(isToPullOut), [records]);
-  const statuses = useMemo(() => records.map(r => String(r.status ?? '')), [records]);
+  // Box names from every row this screen holds, like Dispatch's (a liver's own
+  // rows also carry the server's name, see liverCameStatus).
+  const statuses = useMemo(() => allRecords.map(r => String(r.status ?? '')), [allRecords]);
 
   // Items already in an open request, and which request.
   const requestedFor = useMemo(() => {
@@ -245,8 +253,9 @@ export function PulloutPanel({ liver, records, allRecords, onRefresh, previewing
         const sorted = [...rows].sort((a, b) => orderTime(b) - orderTime(a));
         const key = customerKey(sorted[0]);
         // Paid / balance over all her items for this customer, not only these.
-        const money = customerMoney(allByCustomer.get(key) ?? rows);
-        return { key, name: sorted[0].minerName || '—', rows: sorted, newest: orderTime(sorted[0]), money };
+        const all = allByCustomer.get(key) ?? rows;
+        const money = customerMoney(all);
+        return { key, name: sorted[0].minerName || '—', rows: sorted, all, newest: orderTime(sorted[0]), money };
       })
       .sort((a, b) => b.newest - a.newest);
   }, [toPullOut, records]);
@@ -427,9 +436,11 @@ export function PulloutPanel({ liver, records, allRecords, onRefresh, previewing
     const day = /^\d{4}-\d{2}-\d{2}$/.test(d) ? new Date(`${d}T12:00:00`) : null;
     return `Pull out on ${day ? day.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: '2-digit' }) : formatDate(d)}`;
   };
-  /** Done: where the items went, e.g. "Done · set to For COD". */
+  /** Done: where the items went, e.g. "Done · set to For COD" (their status now, once they moved). */
   const doneLabel = (q: PulloutRequest, items: DatabaseRowType[]) => {
-    const to = Array.from(new Set(items.length ? items.map(r => liverCameStatus(r, q.method, statuses)) : [methodStatus(q.method)]));
+    const to = Array.from(new Set(items.length
+      ? items.map(r => isToPullOut(r) ? liverCameStatus(r, q.method, statuses) : String(r.status ?? '').trim() || '—')
+      : [methodStatus(q.method)]));
     return `Done · set to ${to.join(' / ')}`;
   };
 
@@ -535,7 +546,7 @@ export function PulloutPanel({ liver, records, allRecords, onRefresh, previewing
                       const done = !q && recentlyDone.has(k);
                       const locked = !!q || done;
                       const due = dueFor(r, rules, lastBuys);
-                      const collect = collectAED(r);
+                      const collect = collectForAED([r], g.all);
                       return (
                         <tr key={r.id} className={`border-b border-border/30 align-top ${locked ? 'opacity-70' : 'cursor-pointer'}`} onClick={() => loaded && !locked && toggle(r.id)}>
                           <td className="w-8 px-3 py-2 text-center">
@@ -642,7 +653,7 @@ export function PulloutPanel({ liver, records, allRecords, onRefresh, previewing
                     <span className={overdue ? 'text-destructive font-semibold' : 'font-medium'}>
                       {pullOutOn(q.date)}{overdue ? ' · day has passed' : ''}
                     </span>
-                    <span className="text-muted-foreground">{q.method}</span>
+                    <span className="text-muted-foreground">{requestTargetsLabel(items, q.method, statuses)}</span>
                     <span className="text-muted-foreground">· {q.itemKeys.length} item{q.itemKeys.length !== 1 ? 's' : ''}{items.length ? ` · ${weightOf(items)}` : ''}</span>
                     <span className={`ml-auto text-xs font-semibold px-2 py-0.5 rounded-full border ${STATUS_STYLE[q.status]}`}>
                       {q.status === 'Ready' ? 'Ready for you' : q.status === 'Done' ? doneLabel(q, items) : q.status}
@@ -665,7 +676,8 @@ export function PulloutPanel({ liver, records, allRecords, onRefresh, previewing
                     <div className="space-y-2">
                       <div className="flex flex-wrap gap-3 items-end">
                         <Input type="date" min={today} value={editDate} onChange={e => setEditDate(e.target.value)} className="h-9 text-xs w-40 bg-background border-border" />
-                        <MethodToggle value={editMethod} onChange={setEditMethod} />
+                        {/* COD / Pick Up only matters when some item is local. */}
+                        {(items.length === 0 || items.some(r => !ownBox(r))) && <MethodToggle value={editMethod} onChange={setEditMethod} />}
                       </div>
                       <Textarea value={editNote} onChange={e => setEditNote(e.target.value)} placeholder="Note for Dispatch (optional)" className="text-xs min-h-[48px] bg-background" />
                       <div className="flex gap-2">

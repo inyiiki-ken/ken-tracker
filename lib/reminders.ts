@@ -124,8 +124,9 @@ export function lastPurchases(all: DatabaseRowType[]): Map<string, Date> {
   const m = newestPurchaseByCustomer(all);
   for (const r of all) {
     if (!r.customerLastPurchaseAt) continue;
-    const d = new Date(r.customerLastPurchaseAt);
-    if (Number.isNaN(d.getTime())) continue;
+    // The raw sheet value, read like her own rows (see newestPurchaseRawByCustomer).
+    const d = parseDateRobust(r.customerLastPurchaseAt);
+    if (!d) continue;
     const k = customerKey(r);
     const cur = m.get(k);
     if (!cur || d > cur) m.set(k, d);

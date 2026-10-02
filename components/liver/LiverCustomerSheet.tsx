@@ -11,7 +11,7 @@ import { customerKey, gramsLabel, gramsTotalLabel } from '@/lib/calculations';
 import { formatDate } from '@/lib/formatters';
 import { dayKey, fulfilmentStage } from '@/lib/fulfilment';
 import { isFieldHidden } from '@/lib/appConfig';
-import { aedLabel, collectAED, customerMoney } from '@/lib/liverMoney';
+import { aedLabel, collectForAED, customerMoney } from '@/lib/liverMoney';
 import { groupByDay, newestFirst, statusOf } from '@/lib/liverSales';
 import { NotesToggle, OutsourceTag, ShippedLine } from './LiverRowBits';
 
@@ -93,7 +93,7 @@ export default function LiverCustomerSheet({ customer, rows, clientMilestones, o
                 <ul className="divide-y divide-border rounded-lg border border-border">
                   {dayRows.map(r => {
                     const missing = statusOf(r) === 'Waiting for Details' ? missingDetails(r) : [];
-                    const collect = collectAED(r);
+                    const collect = collectForAED([r], items);
                     return (
                       <li key={r.id} className="space-y-1 p-2.5">
                         <div className="flex flex-wrap items-center gap-2">

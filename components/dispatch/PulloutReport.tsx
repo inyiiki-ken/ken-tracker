@@ -13,6 +13,8 @@ import { computeToCancel, hoursInStatus } from '@/lib/reminders';
 interface Props {
   records: DatabaseRowType[];
   onClose: () => void;
+  /** Item ids to leave out of "Needs to be cancelled" (e.g. reported delivered, waiting for Dispatch). */
+  exclude?: Set<number>;
 }
 
 /** Boxes whose items go out, in the order they're printed. */
@@ -83,13 +85,15 @@ export const SHARED_STYLES = `
   @media print { button { display: none !important; } }
 `;
 
-export default function PulloutReport({ records, onClose }: Props) {
+export default function PulloutReport({ records, onClose, exclude }: Props) {
   const [activePreview, setActivePreview] = useState<'dispatch' | 'financial' | null>(null);
   // Everything in a box that's going out (International Shipment, COD, Pick Up, Reseller).
   const forPullout = records.filter(r =>
     String(r.status || '').trim() && !isStillWithAdmin(r.status) && REPORT_BOXES.includes(orderBox(r)));
   // Items past their status deadline (Settings → App Settings → Status deadlines).
-  const toCancel = computeToCancel(records);
+  const toCancel = computeToCancel(records)
+    .map(s => (exclude?.size ? { ...s, items: s.items.filter(r => !exclude.has(r.id)) } : s))
+    .filter(s => s.items.length > 0);
   const toCancelCount = toCancel.reduce((n, s) => n + s.items.length, 0);
   const cancelHtml = () => {
     if (!toCancelCount) return '';
