@@ -4,7 +4,7 @@ import { useMemo, useState, useEffect, useCallback } from 'react';
 import { ChevronDown, Package, Weight, DollarSign, Copy, Check, AlertTriangle, CalendarClock } from 'lucide-react';
 import { toast } from 'sonner';
 
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { TabProps, DatabaseRowType } from '@/types';
@@ -24,7 +24,7 @@ import {
   type PulloutRequest,
 } from '@/lib/pulloutRequests';
 import { requestTargetsLabel } from '@/lib/pulloutTargets';
-import { dayKey, fulfilmentStage, isSold, soldDay } from '@/lib/fulfilment';
+import { dayKey, fulfilmentStage, isSold, outsourceOfLivers, soldDay } from '@/lib/fulfilment';
 import { metalOf, type MetalKind } from '@/lib/metal';
 import { aedLabel, collectForAED } from '@/lib/liverMoney';
 import { isOpenReport, type DeliveryKind, type DeliveryReport } from '@/lib/deliveryReports';
@@ -383,6 +383,43 @@ export default function LiverDashboard({ records, searchQuery, onSearchChange, l
     if (lockedLiverName) setSelectedLiver(liverKey(lockedLiverName));
   }, [lockedLiverName]);
 
+  // Outsources (e.g. JOLAI) are chosen first, then one of their livers; the
+  // shop's own livers are chosen by name. An outsource whose only liver is
+  // itself (e.g. BELLA uploading her own list) is just a name.
+  const outsourceOf = useMemo(() => outsourceOfLivers(records, liverKey), [records]);
+  const { ownLivers, outsources } = useMemo(() => {
+    const outs = new Map<string, string[]>();
+    for (const n of liverNames) {
+      const o = outsourceOf.get(n);
+      if (o) outs.set(o, [...(outs.get(o) ?? []), n]);
+    }
+    for (const [o, livers] of outs) {
+      if (livers.length === 1 && livers[0] === liverKey(o)) outs.delete(o);
+    }
+    const grouped = new Set([...outs.values()].flat());
+    return { ownLivers: liverNames.filter(n => !grouped.has(n)), outsources: outs };
+  }, [liverNames, outsourceOf]);
+  // The outsource picked while none of its livers is chosen yet.
+  const [pickedOutsource, setPickedOutsource] = useState<string | null>(null);
+  const selectedOutsource = useMemo(() => {
+    const o = selectedLiver ? outsourceOf.get(selectedLiver) : undefined;
+    if (o && outsources.has(o)) return o;
+    return !selectedLiver && pickedOutsource && outsources.has(pickedOutsource) ? pickedOutsource : null;
+  }, [selectedLiver, outsourceOf, outsources, pickedOutsource]);
+  const outsourceLivers = selectedOutsource ? outsources.get(selectedOutsource) ?? [] : [];
+  const pickTop = (v: string) => {
+    const name = v.slice(2);
+    if (v.startsWith('l:')) {
+      setPickedOutsource(null);
+      setSelectedLiver(name);
+      return;
+    }
+    const livers = outsources.get(name) ?? [];
+    setPickedOutsource(name);
+    setSelectedLiver(livers.length === 1 ? livers[0] : '');
+  };
+  const who = selectedOutsource && selectedLiver ? `${selectedOutsource} · ${selectedLiver}` : selectedLiver;
+
   useEffect(() => {
     if (lockedLiverName || liverNames.length === 0) return;
     if (selectedLiver && !liverNames.includes(selectedLiver)) {
@@ -543,7 +580,7 @@ export default function LiverDashboard({ records, searchQuery, onSearchChange, l
   })();
 
   // Admins and bosses choose a liver; a liver sees only herself.
-  const title = lockedLiverName ? 'My Sales' : selectedLiver ? `${selectedLiver}'s sales` : 'Liver sales';
+  const title = lockedLiverName ? 'My Sales' : selectedLiver ? `${who}'s sales` : 'Liver sales';
   const sameFirstName = useMemo(() => {
     const first = selectedLiver.split(' ')[0];
     return first ? liverNames.filter(n => n !== selectedLiver && n.split(' ')[0] === first) : [];
@@ -558,21 +595,48 @@ export default function LiverDashboard({ records, searchQuery, onSearchChange, l
         {lockedLiverName ? (
           <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-primary/10 border border-primary/20">
             <span className="text-xs text-muted-foreground">Viewing as:</span>
-            <span className="text-sm font-cinzel font-bold text-primary">{selectedLiver}</span>
+            <span className="text-sm font-cinzel font-bold text-primary">{who}</span>
           </div>
         ) : (
-          <div>
-            <p className="text-xs text-muted-foreground mb-1.5">Choose a liver</p>
-            <Select value={selectedLiver} onValueChange={setSelectedLiver}>
-              <SelectTrigger className="h-9 text-sm bg-background border-border w-full max-w-xs">
-                <SelectValue placeholder="Choose a liver..." />
-              </SelectTrigger>
-              <SelectContent className="bg-popover border-border">
-                {liverNames.map(name => (
-                  <SelectItem key={name} value={name} className="text-sm text-foreground font-medium">{name}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+          <div className="flex flex-wrap gap-x-3 gap-y-2">
+            <div className="w-full max-w-xs">
+              <p className="text-xs text-muted-foreground mb-1.5">{outsources.size ? 'Choose a liver or outsource' : 'Choose a liver'}</p>
+              <Select value={selectedOutsource ? `o:${selectedOutsource}` : selectedLiver ? `l:${selectedLiver}` : ''} onValueChange={pickTop}>
+                <SelectTrigger className="h-9 text-sm bg-background border-border w-full">
+                  <SelectValue placeholder={outsources.size ? 'Choose a liver or outsource...' : 'Choose a liver...'} />
+                </SelectTrigger>
+                <SelectContent className="bg-popover border-border">
+                  {ownLivers.map(name => (
+                    <SelectItem key={`l:${name}`} value={`l:${name}`} className="text-sm text-foreground font-medium">{name}</SelectItem>
+                  ))}
+                  {outsources.size > 0 && (
+                    <SelectGroup>
+                      <SelectLabel className="text-[10px] uppercase tracking-wide text-muted-foreground">Outsource</SelectLabel>
+                      {[...outsources.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([out, livers]) => (
+                        <SelectItem key={`o:${out}`} value={`o:${out}`} className="text-sm text-foreground font-medium">
+                          {out} <span className="text-xs font-normal text-muted-foreground">· {livers.length} {livers.length === 1 ? 'liver' : 'livers'}</span>
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  )}
+                </SelectContent>
+              </Select>
+            </div>
+            {selectedOutsource && outsourceLivers.length > 1 && (
+              <div className="w-full max-w-xs">
+                <p className="text-xs text-muted-foreground mb-1.5">{selectedOutsource}&apos;s liver</p>
+                <Select value={selectedLiver} onValueChange={setSelectedLiver}>
+                  <SelectTrigger className="h-9 text-sm bg-background border-border w-full">
+                    <SelectValue placeholder={`Choose ${selectedOutsource}'s liver...`} />
+                  </SelectTrigger>
+                  <SelectContent className="bg-popover border-border">
+                    {outsourceLivers.map(name => (
+                      <SelectItem key={name} value={name} className="text-sm text-foreground font-medium">{name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
           </div>
         )}
 
@@ -866,7 +930,7 @@ export default function LiverDashboard({ records, searchQuery, onSearchChange, l
           <div className="text-center py-16 border border-dashed border-border rounded-xl">
             <DollarSign className="h-8 w-8 text-muted-foreground/40 mx-auto mb-2" />
             <p className="text-sm text-muted-foreground">
-              {lockedLiverName ? 'Loading your sales…' : 'Choose a liver above to see their sales and pullouts.'}
+              {lockedLiverName ? 'Loading your sales…' : selectedOutsource ? `Choose one of ${selectedOutsource}'s livers above.` : 'Choose a liver above to see their sales and pullouts.'}
             </p>
           </div>
         )}

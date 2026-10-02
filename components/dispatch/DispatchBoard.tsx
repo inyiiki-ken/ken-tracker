@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ClipboardList, Package, Truck, Handshake, CheckSquare, ShoppingBag, Layout, Crown, BookOpen, XCircle, CheckCircle2, AlertTriangle, Gem, Plane, Store, Printer } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
@@ -24,6 +24,8 @@ import { toast } from 'sonner';
 
 /** Boxes of items still waiting to go out. */
 const GOING_OUT = new Set<OrderBox>(['intl', 'cod', 'pickup', 'reseller']);
+// Outsource queue: joins the liver and the date in one group key.
+const LIVER_SEP = '\u0001';
 
 function agingHours(dateStr?: string): number {
   if (!dateStr) return 0;
@@ -129,10 +131,18 @@ export default function DispatchBoard({ records, searchQuery, onSearchChange, on
       // together, on one invoice), filed under the customer's latest live date.
       const latest = latestLiveDateByCustomer(list);
       const dateOf = (r: DatabaseRowType) => latest.get(customerKey(r));
-      // Outsource: the outsource name comes first, then the date.
-      return [b.key, b.key === 'outsource'
-        ? groupByPageDateMiner(list, dateOf, outsourceName)
-        : groupByPageDateMiner(list, dateOf)];
+      // Outsource: the outsource (e.g. JOLAI) first, then its liver, then the date.
+      if (b.key === 'outsource') {
+        const byOutsource = groupByPageDateMiner(list, r => `${r.liverName?.trim() || 'No liver name'}${LIVER_SEP}${dateOf(r) ?? ''}`, outsourceName);
+        for (const [out, dateMap] of byOutsource) {
+          byOutsource.set(out, new Map([...dateMap.entries()].sort((x, y) => {
+            const [lx, dx] = x[0].split(LIVER_SEP), [ly, dy] = y[0].split(LIVER_SEP);
+            return lx.localeCompare(ly) || dy.localeCompare(dx);
+          })));
+        }
+        return [b.key, byOutsource];
+      }
+      return [b.key, groupByPageDateMiner(list, dateOf)];
     }));
   }, [records, searchQuery]);
 
@@ -234,13 +244,23 @@ export default function DispatchBoard({ records, searchQuery, onSearchChange, on
             <span className="text-[10px] font-bold px-2 py-0.5 bg-primary/10 text-primary rounded">{totalItems}</span>
           </div>
           <div className="pl-2 sm:pl-3 space-y-1.5">
-            {Array.from(dateMap.entries()).map(([date, minerMap]) => {
+            {Array.from(dateMap.entries()).map(([dateKey, minerMap], i, all) => {
+              // Outsource queue: the date key also carries the liver; her name
+              // heads her dates.
+              const [liver, date] = dateKey.includes(LIVER_SEP) ? dateKey.split(LIVER_SEP) : ['', dateKey];
+              const newLiver = !!liver && (i === 0 || !all[i - 1][0].startsWith(liver + LIVER_SEP));
               const allItems = Array.from(minerMap.values()).flat();
               const maxAge = allItems.reduce((m, r) => Math.max(m, agingHours(r.dateOfLive)), 0);
               const isUrgent = agingWarnHours > 0 && maxAge >= agingWarnHours;
               const agingEl = agingWarnHours > 0 ? <AgingLabel dateStr={allItems[0]?.dateOfLive} warnAfterHours={agingWarnHours} /> : null;
               return (
-                <CollapsibleGroup key={`${date}-${searchQuery ? 'search' : ''}`} label={date === 'Unknown Date' ? date : `${datePrefix} ${formatDate(date)}`} colorClass={isUrgent ? 'text-destructive' : 'text-muted-foreground'} lineClass={isUrgent ? 'bg-destructive/30' : 'bg-border/40'} indent defaultOpen={!!searchQuery.trim()} labelSuffix={agingEl}>
+                <Fragment key={`${dateKey}-${searchQuery ? 'search' : ''}`}>
+                {newLiver && (
+                  <p className="pt-1.5 text-[11px] font-semibold uppercase tracking-wide text-foreground">
+                    <span className="font-normal normal-case text-muted-foreground">Liver </span>{liver}
+                  </p>
+                )}
+                <CollapsibleGroup label={!date || date === 'Unknown Date' ? 'Unknown Date' : `${datePrefix} ${formatDate(date)}`} colorClass={isUrgent ? 'text-destructive' : 'text-muted-foreground'} lineClass={isUrgent ? 'bg-destructive/30' : 'bg-border/40'} indent defaultOpen={!!searchQuery.trim()} labelSuffix={agingEl}>
                   {Array.from(minerMap.entries()).map(([miner, items]) => (
                     <DispatchClientCard
                       key={miner}
@@ -256,6 +276,7 @@ export default function DispatchBoard({ records, searchQuery, onSearchChange, on
                     />
                   ))}
                 </CollapsibleGroup>
+                </Fragment>
               );
             })}
           </div>

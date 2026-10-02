@@ -185,11 +185,51 @@ export function boxFromDelivery(r: DatabaseRowType): OrderBox {
  * Payment for Verification…) the delivery details decide.
  */
 /**
- * Outsource supplier of an item, shown before the date on the Outsource queue:
- * its Source, else whoever uploaded it (the outsource's own masterlist, e.g. BELLA).
+ * Outsource an item came from, shown first on the Outsource queue: its Source,
+ * else the page it was sold on (the outsource's page, e.g. JOLAI, whose livers
+ * sell for it), else whoever uploaded it (the outsource's own masterlist, e.g. BELLA).
  */
 export function outsourceName(r: DatabaseRowType): string {
-  return String(r.source ?? '').trim() || String(r.liverName ?? '').trim() || 'No outsource name';
+  return String(r.source ?? '').trim() || String(r.page ?? '').trim() || String(r.liverName ?? '').trim() || 'No outsource name';
+}
+
+/**
+ * Which outsource each liver sells for (e.g. JAY -> JOLAI), keyed by
+ * `keyOf(liverName)`. A liver with items in the Outsource box (or with a
+ * Source) belongs to the outsource those items name most; a liver whose items
+ * are all on a known outsource's page belongs to it too, so she stays under it
+ * after her items ship. Livers with neither are the shop's own.
+ */
+export function outsourceOfLivers(records: DatabaseRowType[], keyOf: (v: unknown) => string): Map<string, string> {
+  const signal = (r: DatabaseRowType) => orderBox(r) === 'outsource' || !!String(r.source ?? '').trim();
+  const counts = new Map<string, Map<string, number>>();
+  const known = new Set<string>();
+  for (const r of records) {
+    const liver = keyOf(r.liverName);
+    if (!liver || !signal(r)) continue;
+    const out = outsourceName(r);
+    known.add(out);
+    if (!counts.has(liver)) counts.set(liver, new Map());
+    const c = counts.get(liver)!;
+    c.set(out, (c.get(out) ?? 0) + 1);
+  }
+  const result = new Map<string, string>();
+  for (const [liver, c] of counts) {
+    result.set(liver, [...c.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0][0]);
+  }
+  // No outsource items (any more): all on one known outsource's page.
+  const pages = new Map<string, Set<string>>();
+  for (const r of records) {
+    const liver = keyOf(r.liverName);
+    if (!liver || result.has(liver)) continue;
+    if (!pages.has(liver)) pages.set(liver, new Set());
+    pages.get(liver)!.add(String(r.page ?? '').trim());
+  }
+  for (const [liver, set] of pages) {
+    const [only] = [...set];
+    if (set.size === 1 && only && known.has(only)) result.set(liver, only);
+  }
+  return result;
 }
 
 export function orderBox(r: DatabaseRowType): OrderBox {
