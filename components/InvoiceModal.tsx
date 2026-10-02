@@ -21,6 +21,8 @@ interface Props {
   onClose: () => void;
   /** Box tab to open on (e.g. the work-queue card's box). */
   initialBox?: OrderBox;
+  /** The customer's earlier invoices: their shipping isn't charged again and their store credit is applied. */
+  priorRecords?: DatabaseRowType[];
 }
 
 const CURRENCIES = ['PHP', 'AED', 'USD'];
@@ -42,7 +44,7 @@ function shipmentDays(list: DatabaseRowType[]): string[] {
   return [...new Set(list.map(shipmentDay))].sort((a, b) => b.localeCompare(a));
 }
 
-export default function InvoiceModal({ records, onClose, initialBox }: Props) {
+export default function InvoiceModal({ records, onClose, initialBox, priorRecords }: Props) {
   const printRef = useRef<HTMLDivElement>(null);
   const [isCopying, setIsCopying] = useState(false);
   const [ccIncludeShipping, setCcIncludeShipping] = useState(getCcIncludeShipping());
@@ -322,7 +324,7 @@ export default function InvoiceModal({ records, onClose, initialBox }: Props) {
         {visibleRecords.length > 0 && (
           <div className="overflow-x-auto">
             <div ref={printRef} className="min-w-[640px] p-4 bg-white">
-              <InvoicePrintContent records={visibleRecords} currency={currency} ccIncludeShipping={ccIncludeShipping} />
+              <InvoicePrintContent records={visibleRecords} currency={currency} ccIncludeShipping={ccIncludeShipping} priorRecords={priorRecords} />
             </div>
           </div>
         )}

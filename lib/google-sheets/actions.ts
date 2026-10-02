@@ -7,12 +7,13 @@ import { parseSheetId } from "./sheetId";
 import { requireSession, requireRole, getSessionRoles, getSessionAccess } from "./authz";
 import { isDeveloper } from "./tenancy-core";
 import { rowToDatabaseRecord, databaseRecordToRow } from "./row-mapper";
-import { activeHeaderSet, ensureOptionalColumns, writeRowsByCells, withSheetWriteLock, getTenantColumnAliases, newRowKey, auditHeader } from "./recordStore";
+import { activeHeaderSet, ensureOptionalColumns, writeRowsByCells, withSheetWriteLock, getTenantColumnAliases, newRowKey, auditHeader, appendAudit } from "./recordStore";
 import { DATABASE_HEADERS, DATABASE_HEADER_ALIASES, OPTIONAL_DATABASE_KEYS, ROLES_HEADERS, UPLOADS_HEADERS } from "./sheet-config";
 import type { DatabaseRowType } from "@/types";
-import { buildCustomerIdIndex, resolveCustomerIdFor } from "@/lib/customerId";
+import { buildCustomerIdIndex, resolveCustomerIdFor, customerKey } from "@/lib/customerId";
+import { codeKey } from "@/lib/orderCode";
 import { isLiverOnly, getUserRole } from "@/config/roles";
-import { customerKey, parseDateRobust } from "@/lib/calculations";
+import { customerKey as rowCustomerKey, parseDateRobust } from "@/lib/calculations";
 import { newestPurchaseRawByCustomer } from "@/lib/purchaseDates";
 import { boxStatusName, ownBox } from "@/lib/pulloutTargets";
 import { customersEverWithOtherLivers, customersWithOtherLivers, sharedShippingCarriers } from "@/lib/liverMoney";
@@ -262,12 +263,12 @@ export async function getRecords(_params?: { tailOnly?: boolean }): Promise<{ re
       // Change history keeps its dates and text (reminders and stage dates read
       // them) but not other people's emails: "<ISO> | <email> | <change>".
       if (out.auditTrail) out.auditTrail = redactAuditEmails(String(out.auditTrail), access.email);
-      const last = newest.get(customerKey(r));
+      const last = newest.get(rowCustomerKey(r));
       if (last) out.customerLastPurchaseAt = last;
-      if (shared.has(customerKey(r))) out.customerHasOtherLivers = true;
+      if (shared.has(rowCustomerKey(r))) out.customerHasOtherLivers = true;
       const fee = carriers.get(r.id);
       if (fee) out.sharedShippingFrom = fee;
-      if (everShared.has(customerKey(r))) out.customerBoughtFromOtherLivers = true;
+      if (everShared.has(rowCustomerKey(r))) out.customerBoughtFromOtherLivers = true;
       const box = ownBox(r);
       if (box) out.ownBoxStatus = boxNames[box];
       return out;
@@ -289,7 +290,9 @@ export async function createRecord(params: {
   const fieldsWithId = { ...params.fields };
   if (!fieldsWithId.rowKey) fieldsWithId.rowKey = newRowKey();
   if (!fieldsWithId.customerId && fieldsWithId.minerName) {
-    const index = await loadCustomerIdIndex();
+    // Fresh read: a client added a moment ago (e.g. the same new client typed
+    // twice in a row) must get the SAME id, not a second one.
+    const index = await loadCustomerIdIndex(await getActiveRows("database", 0));
     fieldsWithId.customerId = resolveCustomerIdFor(String(fieldsWithId.minerName), index);
   }
 
@@ -298,6 +301,7 @@ export async function createRecord(params: {
     auditTrail: `${timestamp} | ${sessionEmailForAudit || params.userEmail || "unknown"} | Created`,
   };
   await sheet.addRow(databaseRecordToRow(row, await activeHeaderSet(sheet), await getTenantColumnAliases()));
+  invalidateActiveRows();
   return { success: true };
 }
 
@@ -523,7 +527,9 @@ export async function importRows(params: {
   importId?: string;
   /** Import rows even if the same item (liver + date + code + description) is already in the sheet. */
   allowDuplicates?: boolean;
-}): Promise<{ success: boolean; createdCount: number; errors: string[]; duplicates: number; alreadyImported: number }> {
+  /** Masterlist upload: link rows to items already added by hand (Add Client) instead of adding copies. */
+  matchManual?: boolean;
+}): Promise<{ success: boolean; createdCount: number; errors: string[]; duplicates: number; alreadyImported: number; matchedManual: number }> {
   const sessionEmail = await requireRole(RECORD_WRITE_ROLES);
   const sheet = await getActiveWorksheet("database");
   const dbHeaders = await activeHeaderSet(sheet);
@@ -561,12 +567,67 @@ export async function importRows(params: {
   let duplicates = 0;
   let alreadyImported = 0;
 
+  // Items added by hand (Add Client) before the masterlist arrived. The same
+  // piece shows up again in the upload, usually with a different liver name
+  // and description, so the liver+date+code+description check above misses
+  // it. Match on the same client on the same day with the same code (AMB5 =
+  // AMB05) or, when the code differs/was left blank, the same grams. A match
+  // fills the hand-added record's blank fields instead of adding a copy.
+  const manualByDayClient = new Map<string, DatabaseRowType[]>();
+  for (const r of existingRows) {
+    const rec = rowToDatabaseRecord(r, dbAliases);
+    if (/Imported from masterlist/i.test(String(rec.auditTrail ?? ""))) continue;
+    const k = `${dateKey(rec.dateOfLive)}|${customerKey(rec.minerName ?? "")}`;
+    if (!customerKey(rec.minerName ?? "") || !dateKey(rec.dateOfLive)) continue;
+    manualByDayClient.set(k, [...(manualByDayClient.get(k) ?? []), rec]);
+  }
+  const claimed = new Set<number>();
+  const MATCH_FILL_FIELDS = [
+    "orderId", "page", "liverName", "source", "category", "tog", "mc", "goldRate",
+    "clientRate", "grams", "qty", "currency", "clientAddress", "clientNumber", "liverAdminRemarks",
+  ] as const;
+  const matchWrites: { rowNumber: number; rowKey?: string; patch: Record<string, unknown> }[] = [];
+  const findManual = (raw: Record<string, string>): DatabaseRowType | undefined => {
+    const list = manualByDayClient.get(`${dateKey(raw.dateOfLive)}|${customerKey(raw.minerName ?? "")}`);
+    if (!list) return undefined;
+    const open = list.filter((m) => !claimed.has(m.id));
+    const code = codeKey(raw.orderId);
+    const byCode = code ? open.find((m) => codeKey(m.orderId) === code) : undefined;
+    if (byCode) return byCode;
+    const g = Number(raw.grams) || 0;
+    // Grams only for a hand-added item not already paired with a masterlist row.
+    return g > 0
+      ? open.find((m) => !/Matched to masterlist/i.test(String(m.auditTrail ?? "")) && Math.abs((Number(m.grams) || 0) - g) < 0.01)
+      : undefined;
+  };
+  let matchedManual = 0;
+
   for (const rawRow of params.rows.slice(0, 300)) {
     // Retry of a batch that already went in (same Row Key) → skip silently.
     if (rawRow.rowKey && existingRowKeys.has(String(rawRow.rowKey))) { alreadyImported++; continue; }
     const k = itemKey(rawRow.liverName, rawRow.dateOfLive, rawRow.orderId, rawRow.itemDescription);
     if (!params.allowDuplicates && existingKeys.has(k)) { duplicates++; continue; }
     existingKeys.add(k); // also stops the same item twice inside one upload
+    const manual = params.matchManual && !params.allowDuplicates ? findManual(rawRow) : undefined;
+    if (manual) {
+      claimed.add(manual.id);
+      const fill: Record<string, unknown> = {};
+      for (const f of MATCH_FILL_FIELDS) {
+        const have = (manual as unknown as Record<string, unknown>)[f];
+        const blank = have === undefined || have === null || String(have).trim() === "" || (IMPORT_NUMERIC_FIELDS.has(f) && !Number(have));
+        const val = rawRow[f];
+        if (!blank || !val || String(val).trim() === "") continue;
+        fill[f] = IMPORT_NUMERIC_FIELDS.has(f) && Number.isFinite(Number(val)) ? Number(val) : val;
+      }
+      fill.auditTrail = appendAudit(manual.auditTrail, `${timestamp} | ${who} | Matched to masterlist${rawRow.orderId ? ` ${rawRow.orderId}` : ""}${idTag}`);
+      matchWrites.push({
+        rowNumber: manual.id,
+        rowKey: manual.rowKey || undefined,
+        patch: databaseRecordToRow(fill as Partial<DatabaseRowType>, dbHeaders, dbAliases) as Record<string, unknown>,
+      });
+      matchedManual++;
+      continue;
+    }
     try {
       const row: Record<string, unknown> = {};
       for (const [key, val] of Object.entries(rawRow)) {
@@ -605,8 +666,12 @@ export async function importRows(params: {
     created = mapped.length;
     invalidateActiveRows();
   }
+  if (matchWrites.length > 0) {
+    await writeRowsByCells(sheet, matchWrites);
+    invalidateActiveRows();
+  }
 
-  return { success: errors.length === 0, createdCount: created, errors, duplicates, alreadyImported };
+  return { success: errors.length === 0, createdCount: created, errors, duplicates, alreadyImported, matchedManual };
 }
 
 // ---------- Database column check / fix (per customer sheet) ----------

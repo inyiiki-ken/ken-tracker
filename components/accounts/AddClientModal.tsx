@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { Loader2, CopyPlus, AlertTriangle, Info } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
@@ -26,6 +26,7 @@ import { getMakingCharge, getPerPcRate, getPerPcFallback } from '@/lib/pricingCo
 import { getMasterlistMapping } from '@/lib/masterlistMapping';
 import { getFieldLabel } from '@/lib/labelConfig';
 import { getEffectiveStatuses } from '@/lib/statusRegistry';
+import { suggestOrderCodes, exampleCode, codeKey, dayKey, splitCode } from '@/lib/orderCode';
 
 // S6 FIX: Use timestamp + crypto random to avoid collisions
 function generateCustomerId(): string {
@@ -36,7 +37,7 @@ function generateCustomerId(): string {
   return `CUST-${ts}${rand}`;
 }
 
-function resolveCustomerId(minerName: string, existingRecords: DatabaseRowType[]): { id: string; nearMatch?: string } {
+function resolveCustomerId(minerName: string, existingRecords: DatabaseRowType[]): { id: string; existing: boolean; nearMatch?: string } {
   // Same matching rule as the server (ignores case, spaces and punctuation), so
   // the hint shown here is exactly what the server will do on save.
   const normalized = customerKey(minerName);
@@ -45,7 +46,7 @@ function resolveCustomerId(minerName: string, existingRecords: DatabaseRowType[]
     if (!r.customerId) return false;
     return customerKey(r.minerName || '') === normalized;
   });
-  if (exactMatch?.customerId) return { id: exactMatch.customerId };
+  if (exactMatch?.customerId) return { id: exactMatch.customerId, existing: true };
 
   // Check for near-match (first+last) — warn only, don't reuse ID.
   // Uses the readable name (the key above has no spaces).
@@ -65,7 +66,7 @@ function resolveCustomerId(minerName: string, existingRecords: DatabaseRowType[]
     if (near) nearMatchName = normalizeMinerName(near.minerName || '');
   }
 
-  return { id: generateCustomerId(), nearMatch: nearMatchName };
+  return { id: generateCustomerId(), existing: false, nearMatch: nearMatchName };
 }
 
 interface Props {
@@ -180,11 +181,35 @@ export default function AddClientModal({ onClose, userFirstName, userEmail, onRe
     setForm(p => ({ ...p, ...updates }));
   };
 
+  // Codes saved from this form but not yet back in `existingRecords` (the
+  // refresh is async), so "Save & Add Another" moves on to the next number.
+  const [savedHere, setSavedHere] = useState<DatabaseRowType[]>([]);
+  const codeRecords = useMemo(() => [...existingRecords, ...savedHere], [existingRecords, savedHere]);
+
+  // Order code = the masterlist's own code (prefix + running number per live,
+  // e.g. AMB01). Suggested from this tenant's records for the chosen liver /
+  // page / date, so the item lines up with the masterlist when it's uploaded.
+  const codeSuggestions = useMemo(
+    () => suggestOrderCodes(codeRecords, { page: form.page, liverName: form.liverName, date: form.dateOfLive }),
+    [codeRecords, form.page, form.liverName, form.dateOfLive]
+  );
+  const codeHint = useMemo(() => codeSuggestions[0]?.next || exampleCode(existingRecords), [codeSuggestions, existingRecords]);
+  const [codeTouched, setCodeTouched] = useState(false);
+  useEffect(() => {
+    if (codeTouched) return;
+    const next = codeSuggestions[0]?.next ?? '';
+    setForm(p => (p.orderId === next ? p : { ...p, orderId: next }));
+  }, [codeSuggestions, codeTouched]);
+
+  // Running codes (AMB01…) restart every live, so they only clash on the same
+  // date. Any other barcode must be unique everywhere.
   const isDuplicateBarcode = useMemo(() => {
     if (!form.orderId.trim()) return false;
-    const target = form.orderId.trim().toUpperCase();
-    return existingRecords.some(r => r.orderId?.trim().toUpperCase() === target);
-  }, [form.orderId, existingRecords]);
+    const target = codeKey(form.orderId);
+    const running = !!splitCode(form.orderId);
+    const day = dayKey(form.dateOfLive);
+    return codeRecords.some(r => codeKey(r.orderId) === target && (!running || dayKey(r.dateOfLive) === day));
+  }, [form.orderId, form.dateOfLive, codeRecords]);
 
   // CR6: Exact match reuses ID, near-match warns but creates new ID
   const duplicateNameWarning = useMemo(() => {
@@ -243,7 +268,11 @@ export default function AddClientModal({ onClose, userFirstName, userEmail, onRe
       const timestamp = new Date().toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' });
       const creator = userEmail ? userEmail.split('@')[0] : (form.liverName || 'unknown');
       const auditTrail = `[Created by ${creator} on ${timestamp}]`;
-      const { id: customerId } = resolveCustomerId(finalMinerName, existingRecords);
+      // Only pass an id we know is the client's existing one. A new client is
+      // given its id by the server from a fresh read of the sheet, so adding
+      // the same new client twice in a row can't split them into two ids.
+      const resolved = resolveCustomerId(finalMinerName, existingRecords);
+      const customerId = resolved.existing ? resolved.id : undefined;
 
       const safePhpRate = parseFloat(phpRate) > 0 ? parseFloat(phpRate) : DEFAULT_PHP_RATE;
       const safeSilverSell = parseFloat(silverSellRate) > 0 ? parseFloat(silverSellRate) : DEFAULT_SILVER_SELL_RATE;
@@ -297,6 +326,7 @@ export default function AddClientModal({ onClose, userFirstName, userEmail, onRe
         goldRate: getRatesForDate(form.dateOfLive).goldRate,
       });
       
+      if (finalOrderId) setSavedHere(p => [...p, { id: 0, orderId: finalOrderId, dateOfLive: form.dateOfLive, page: form.page, liverName: form.liverName } as DatabaseRowType]);
       toast.success(isBulkAdd ? 'Item added! Ready for next item.' : 'Client record created');
       onRefresh?.();
       
@@ -313,6 +343,7 @@ export default function AddClientModal({ onClose, userFirstName, userEmail, onRe
           clientRate: '', 
           supplierRateOverride: '' 
         }));
+        setCodeTouched(false);
       } else {
         onClose();
       }
@@ -400,10 +431,25 @@ export default function AddClientModal({ onClose, userFirstName, userEmail, onRe
               </div>
               <Input 
                 value={form.orderId} 
-                onChange={e => set('orderId', e.target.value.toUpperCase())} 
+                onChange={e => { setCodeTouched(true); set('orderId', e.target.value.toUpperCase()); }} 
                 className={`h-8 text-xs bg-background uppercase transition-colors ${isDuplicateBarcode ? 'border-destructive focus-visible:ring-destructive' : 'border-border'}`} 
-                placeholder="e.g. AM-SL-030909" 
+                placeholder={codeHint ? `e.g. ${codeHint}` : 'Code from the masterlist'} 
               />
+              {codeSuggestions.length > 1 && (
+                <div className="flex flex-wrap items-center gap-1 mt-1">
+                  <span className="text-[10px] text-muted-foreground">Next code:</span>
+                  {codeSuggestions.map(c => (
+                    <button
+                      key={c.prefix}
+                      type="button"
+                      onClick={() => { setCodeTouched(true); set('orderId', c.next); }}
+                      className={`text-[10px] font-mono px-1.5 py-0.5 rounded border ${form.orderId === c.next ? 'border-primary text-primary bg-primary/10' : 'border-border text-muted-foreground hover:text-foreground'}`}
+                    >
+                      {c.next}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
 
             <div>

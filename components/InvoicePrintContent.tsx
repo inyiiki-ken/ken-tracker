@@ -1,7 +1,7 @@
 "use client";
 
 import { DatabaseRowType } from '@/types';
-import { roundPrice, calcShippingFee, isPcItem, getQty, clientRateAED, isFreeSf, isPromoSf, calcTotalPaid, getEffectiveCurrency, getPaymentCurrency } from '@/lib/calculations';
+import { roundPrice, calcShippingFee, isPcItem, getQty, clientRateAED, isFreeSf, isPromoSf, calcTotalPaid, getEffectiveCurrency, getPaymentCurrency, calcGroupBalance } from '@/lib/calculations';
 import { getUsdToAed, getCcSurchargeRate } from '@/lib/pricingConfig';
 import { getRatesForDate } from '@/lib/ratesStore';
 import { numberToWords } from '@/lib/numberToWords';
@@ -14,6 +14,8 @@ interface Props {
   records: DatabaseRowType[];
   currency: string;
   ccIncludeShipping?: boolean;
+  /** The customer's earlier invoices (same account): shipping already charged there, and their store credit. */
+  priorRecords?: DatabaseRowType[];
 }
 
 export const DEFAULT_INVOICE_NOTES = [
@@ -53,7 +55,7 @@ function calcPhpItemAmount(r: DatabaseRowType): number {
   return rnd(totalAED * rRates.phpRate);
 }
 
-export default function InvoicePrintContent({ records, currency, ccIncludeShipping = false }: Props) {
+export default function InvoicePrintContent({ records, currency, ccIncludeShipping = false, priorRecords = [] }: Props) {
   const { settings, invoiceLogo, headerLogo, pageLogos } = useBrand();
   const BRAND_NAME = `${settings.companyName.toUpperCase()} ${settings.legalSuffix || ''}`.trim();
   // Each customer's own policy notes (Settings → Company Details); blank = built-in list.
@@ -151,7 +153,15 @@ export default function InvoicePrintContent({ records, currency, ccIncludeShippi
   // Promo SF takes priority: find the record that has it set (may not be `first`)
   const promoRecord = records.find(r => isPromoSf(r));
   const anyFreeSf = !promoRecord && records.some(r => isFreeSf(r));
-  const shippingAED = anyFreeSf ? 0 : calcShippingFee(promoRecord || first);
+  // Shipping is charged once per customer account (calcGroupBalance), so a later
+  // invoice doesn't charge it again when an earlier one already did.
+  const priorPromo = priorRecords.find(r => isPromoSf(r));
+  const priorShippingAED = priorRecords.length && (priorPromo || !priorRecords.some(r => isFreeSf(r)))
+    ? calcShippingFee(priorPromo || priorRecords[0]) : 0;
+  const shippingAlreadyCharged = priorShippingAED > 0;
+  const shippingAED = anyFreeSf || shippingAlreadyCharged ? 0 : calcShippingFee(promoRecord || first);
+  // Store credit left over from the earlier invoices, used against this one.
+  const priorCreditAED = priorRecords.length ? Math.max(0, -calcGroupBalance(priorRecords)) : 0;
   // ── Billing Modifiers: parse charges, discounts, and shipping overrides ──
   // Collect all billing modifiers across records
   const allModifiers = records.map(r => parseBillingModifiers(r.additionalCharges));
@@ -225,7 +235,7 @@ export default function InvoicePrintContent({ records, currency, ccIncludeShippi
   if (allPhpPayments && currency !== 'PHP') {
     const phpItemAmounts = records.map(r => calcPhpItemAmount(r));
     const phpSubtotal = phpItemAmounts.reduce((s, a) => s + a, 0);
-    const phpShipping = anyFreeSf ? 0 : rnd(calcShippingFee(promoRecord || first) * phpRate);
+    const phpShipping = anyFreeSf || shippingAlreadyCharged ? 0 : rnd(calcShippingFee(promoRecord || first) * phpRate);
     const phpAdditional = rnd((additionalAED - discountAED) * phpRate); // net charges in PHP
     const phpCcItemsTotal = phpItemAmounts.reduce((s, amt, idx) => {
       const r = records[idx];
@@ -244,7 +254,10 @@ export default function InvoicePrintContent({ records, currency, ccIncludeShippi
   // When canonically paid: force displayed paid = total so all 3 rows are consistent.
   // (Avoids showing e.g. Total=332, Paid=333, Balance=0 which looks wrong.)
   const displayedPaid = isCanonicallyPaid ? total : totalPaidConverted_rounded;
-  const balanceDue = isCanonicallyPaid ? 0 : total - totalPaidConverted_rounded;
+  const balanceBeforeCredit = isCanonicallyPaid ? 0 : total - totalPaidConverted_rounded;
+  // Earlier credit only brings this invoice down to zero; any rest stays with the earlier invoice.
+  const creditApplied = balanceBeforeCredit > 0 ? Math.min(balanceBeforeCredit, rnd(convertFromAED(priorCreditAED))) : 0;
+  const balanceDue = balanceBeforeCredit - creditApplied;
 
   const totalGrams = records.reduce((s, r) => {
     const cat = (r.category || '').toLowerCase();
@@ -254,6 +267,7 @@ export default function InvoicePrintContent({ records, currency, ccIncludeShippi
 
   const clampedBalance = Math.max(0, balanceDue);
   const isStoreCredit = displayedPaid > 0 && balanceDue < 0;
+  const paidOrCredited = displayedPaid + creditApplied;
   const isLayaway = records.every(r => r.status === 'Layaway');
   const isTabbyTamara = records.every(r => {
     const mop = (r.modeOfPayment || '').toLowerCase().trim();
@@ -299,7 +313,7 @@ export default function InvoicePrintContent({ records, currency, ccIncludeShippi
 
   const summaryRows: { label: string; value: string; red?: boolean; green?: boolean }[] = [
     { label: 'TOTAL GRAMS', value: totalGrams > 0 ? totalGrams.toFixed(2) : '—' },
-    { label: 'SHIPPING', value: shipping > 0 ? fmtAmt(shipping) : 'FREE' },
+    { label: 'SHIPPING', value: shipping > 0 ? fmtAmt(shipping) : shippingAlreadyCharged ? 'CHARGED ON EARLIER INVOICE' : 'FREE' },
     // Itemized charge descriptions
     ...chargeDescriptions.map(c => ({ label: c.label.toUpperCase(), value: fmtAmt(c.amount) })),
     // Itemized discount descriptions
@@ -310,10 +324,11 @@ export default function InvoicePrintContent({ records, currency, ccIncludeShippi
     { label: 'TOTAL INVOICE AMOUNT', value: fmtAmt(totalInvoiceDisplay) },
     // TOTAL PAID shown after invoice total
     ...(displayedPaid > 0 ? [{ label: 'TOTAL PAID', value: `- ${fmtAmt(displayedPaid)}`, red: true }] : []),
+    ...(creditApplied > 0 ? [{ label: '🎁 STORE CREDIT FROM EARLIER INVOICE', value: `- ${fmtAmt(creditApplied)}`, green: true }] : []),
     // Balance / store credit
     ...(isStoreCredit
       ? [{ label: '🎁 STORE CREDIT', value: `- ${fmtAmt(Math.abs(balanceDue))}`, red: false, green: true }]
-      : (clampedBalance > 0 && clampedBalance < totalInvoiceDisplay) ? [{ label: 'BALANCE DUE', value: fmtAmt(clampedBalance), red: true }] : []),
+      : (clampedBalance > 0 && (clampedBalance < totalInvoiceDisplay || paidOrCredited > 0)) ? [{ label: 'BALANCE DUE', value: fmtAmt(clampedBalance), red: true }] : []),
   ];
 
   const emptyRows = Math.max(0, 7 - items.length);
