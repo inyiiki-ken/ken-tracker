@@ -16,6 +16,7 @@
 import type { DatabaseRowType } from '@/types';
 import { isPulloutStatus, isSaleStatus } from '@/lib/appConfig';
 import { parseDateRobust } from '@/lib/calculations';
+import { getTimezoneOffsetMs } from '@/lib/businessConfig';
 
 export type FulfilmentStage = 'excluded' | 'active' | 'pullout' | 'dispatched' | 'delivered';
 
@@ -42,6 +43,12 @@ export function dayKey(v?: string): string {
   if (!v) return '';
   const d = parseDateRobust(v);
   if (!d || isNaN(d.getTime())) return '';
+  // A full timestamp (Dispatch / Delivered dates) is a moment: take its day on
+  // the business's clock, as formatDate shows it, not the phone's.
+  if (/^\s*\d{4}-\d{2}-\d{2}[T ]\d/.test(v)) {
+    const u = new Date(d.getTime() + getTimezoneOffsetMs());
+    return `${u.getUTCFullYear()}-${String(u.getUTCMonth() + 1).padStart(2, '0')}-${String(u.getUTCDate()).padStart(2, '0')}`;
+  }
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, '0');
   const day = String(d.getDate()).padStart(2, '0');

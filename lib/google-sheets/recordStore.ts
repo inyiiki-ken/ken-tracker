@@ -2,7 +2,7 @@ import "server-only";
 import type { GoogleSpreadsheetCell, GoogleSpreadsheetWorksheet } from "google-spreadsheet";
 import { getActiveWorksheet, invalidateActiveRows } from "./tenant-context";
 import { readConfig } from "./config-store";
-import { rowToDatabaseRecord } from "./row-mapper";
+import { rowToDatabaseRecord, databaseRecordToRow } from "./row-mapper";
 import { DATABASE_HEADERS, OPTIONAL_DATABASE_KEYS } from "./sheet-config";
 import type { DatabaseRowType } from "@/types";
 import { trimAudit } from "@/lib/auditTrim";
@@ -26,6 +26,29 @@ export function appendAudit(existing: string | undefined, entry: string): string
   const lines = String(existing ?? "").split("\n").filter(Boolean);
   lines.push(entry);
   return trimAudit(lines, AUDIT_MAX_ENTRIES).join("\n");
+}
+
+/** Lines to add to a row's change history (the sheet column `header`), see writeRowsByCells. */
+export type AuditMerge = { header: string; lines: string[] };
+
+/**
+ * The cell's lines, then the new ones from `lines` (those after the last line
+ * the cell already holds; earlier ones were trimmed off and stay off),
+ * trimmed like appendAudit.
+ */
+function mergeAudit(current: string, lines: string[]): string {
+  const have = String(current ?? "").split("\n").filter(Boolean);
+  const seen = new Set(have);
+  const incoming = lines.filter(Boolean);
+  let last = -1;
+  incoming.forEach((l, i) => { if (seen.has(l)) last = i; });
+  for (const l of incoming.slice(last + 1)) if (!seen.has(l)) { have.push(l); seen.add(l); }
+  return trimAudit(have, AUDIT_MAX_ENTRIES).join("\n");
+}
+
+/** The sheet column the change history is written to (aliases included). */
+export function auditHeader(headers: Set<string> | undefined, aliases: Record<string, string[]>): string {
+  return Object.keys(databaseRecordToRow({ auditTrail: "" }, headers, aliases))[0] ?? DATABASE_HEADERS.auditTrail;
 }
 
 /** The set of column headers actually present in a worksheet, so writes can
@@ -111,7 +134,7 @@ export async function setAndSaveCells(
 
 export async function writeRowsByCells(
   sheet: any,
-  updates: { rowNumber: number; rowKey?: string; patch: Record<string, unknown>; expect?: Record<string, string> }[]
+  updates: { rowNumber: number; rowKey?: string; patch: Record<string, unknown>; expect?: Record<string, string>; audit?: AuditMerge }[]
 ): Promise<number> {
   if (updates.length === 0) return 0;
 
@@ -205,6 +228,15 @@ export async function writeRowsByCells(
         const col = colOf.get(header);
         if (col === undefined) continue;
         edits.push([sheet.getCell(u.rowNumber - 1, col), value === undefined || value === null ? "" : value]);
+        touched = true;
+      }
+      // Change history: added to what the cell holds now, read under the lock,
+      // so lines written since the caller loaded the row (e.g. a confirmed
+      // delivery's cash) are never overwritten by an older copy.
+      const auditCol = u.audit ? colOf.get(u.audit.header) : undefined;
+      if (u.audit && auditCol !== undefined) {
+        const cell = sheet.getCell(u.rowNumber - 1, auditCol);
+        edits.push([cell, mergeAudit(String(cell.value ?? ""), u.audit.lines)]);
         touched = true;
       }
       if (touched) count++;

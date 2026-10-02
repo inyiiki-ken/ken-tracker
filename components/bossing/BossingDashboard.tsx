@@ -28,15 +28,17 @@ import KpiCard from './KpiCard';
 import StatusBadge from '@/components/StatusBadge';
 import { startOfWeek, startOfMonth, subMonths } from 'date-fns';
 import CustomerHistoryModal from '@/components/CustomerHistoryModal';
-import { metalOf, type MetalKind } from '@/lib/metal';
 
 type DateRange = 'all' | 'week' | 'month' | '3months' | 'custom';
 type Metal = 'Gold' | 'Silver' | 'Other';
 
-/** Same rule as My Sales (TOG first, then the text), see lib/metal.ts. */
-const METAL_NAME: Record<MetalKind, Metal> = { gold: 'Gold', silver: 'Silver', other: 'Other' };
 function getMetal(record: DatabaseRowType): Metal {
-  return METAL_NAME[metalOf(record)];
+  const cat = (record.category || '').toLowerCase();
+  const src = (record.source || '').toLowerCase();
+  const item = (record.itemDescription || '').toLowerCase();
+  if (cat.includes('silver') || src.includes('silver') || item.includes('silver')) return 'Silver';
+  if (cat.includes('gold') || src.includes('gold') || item.includes('gold')) return 'Gold';
+  return 'Other';
 }
 
 const METAL_ORDER: Metal[] = ['Gold', 'Silver', 'Other'];

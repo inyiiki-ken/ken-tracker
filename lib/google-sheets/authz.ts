@@ -29,26 +29,41 @@ const ROLES_TTL_MS = 30_000;
 // user isn't let in for long.
 const ROLES_STALE_MS = 5 * 60_000;
 
+// One read per sheet at a time: a page load asks for roles from several
+// actions at once, so they share the read in flight instead of each starting one.
+const rolesInflight = new Map<string, Promise<RoleRow[] | null>>();
+
+async function readRolesRows(): Promise<RoleRow[]> {
+  const sheet = await getActiveWorksheet("roles");
+  const rows = await sheet.getRows();
+  return rows.map((r) => ({
+    email: String(r.get(ROLES_HEADERS.email) ?? ""),
+    role: String(r.get(ROLES_HEADERS.role) ?? ""),
+    name: String(r.get(ROLES_HEADERS.name) ?? ""),
+  }));
+}
+
 /** The Roles sheet rows, or null when it couldn't be read and no recent copy exists. */
 async function loadRolesData(): Promise<RoleRow[] | null> {
   let sheetId = "";
   try { sheetId = await getActiveSheetId(); } catch { return null; }
   const cached = rolesCache.get(sheetId);
   if (cached && Date.now() - cached.at < ROLES_TTL_MS) return cached.rows;
+  const pending = rolesInflight.get(sheetId);
+  if (pending) return pending;
   const stale = () => (cached && Date.now() - cached.at < ROLES_STALE_MS ? cached.rows : null);
-  try {
-    const sheet = await getActiveWorksheet("roles");
-    const rows = await sheet.getRows();
-    const data = rows.map((r) => ({
-      email: String(r.get(ROLES_HEADERS.email) ?? ""),
-      role: String(r.get(ROLES_HEADERS.role) ?? ""),
-      name: String(r.get(ROLES_HEADERS.name) ?? ""),
-    }));
-    rolesCache.set(sheetId, { at: Date.now(), rows: data });
-    return data;
-  } catch {
-    return stale();
-  }
+  const read = (async () => {
+    try {
+      // One retry, so a single hiccup on a cold cache doesn't fail the load.
+      const data = await readRolesRows().catch(() => readRolesRows());
+      rolesCache.set(sheetId, { at: Date.now(), rows: data });
+      return data;
+    } catch {
+      return stale();
+    }
+  })().finally(() => { rolesInflight.delete(sheetId); });
+  rolesInflight.set(sheetId, read);
+  return read;
 }
 
 async function getRolesData(): Promise<RoleRow[]> {

@@ -297,6 +297,12 @@ export async function getPulloutRequests(params?: { liver?: string }): Promise<P
       q.onBehalf = names.get(by) !== liverKey(q.liver);
     }
   }
+  // A liver doesn't get staff emails: anyone but her shows as "Dispatch".
+  if (!c.staff && !c.viewAll) {
+    const me = c.email.toLowerCase().trim();
+    const redactBy = (v: string) => (v && v.toLowerCase().trim() !== me ? "Dispatch" : v);
+    return list.map((q) => ({ ...q, requestedBy: redactBy(q.requestedBy), updatedBy: redactBy(q.updatedBy) }));
+  }
   return list;
 }
 
@@ -518,7 +524,9 @@ export async function completePulloutRequest(params: {
       }));
       invalidateActiveRows();
     }
-    await writeRequestCells(ws, row, q, { status: "Done", updatedBy: email, updatedAt: now });
+    // Stamped after the item writes, so a sheet read that started before them
+    // never counts as newer than this Done (finishedAfterLoad).
+    await writeRequestCells(ws, row, q, { status: "Done", updatedBy: email, updatedAt: new Date().toISOString() });
     return plan;
   });
 }

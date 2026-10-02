@@ -11,7 +11,7 @@ import { gramsLabel, gramsTotalLabel, groupByCustomer } from '@/lib/calculations
 import { aedLabel, collectForAED, customersWithOtherLivers, withOtherLivers } from '@/lib/liverMoney';
 import { confirmDeliveryReport, getDeliveryReports, rejectDeliveryReport } from '@/lib/api';
 import { confirmStatusFor, isOpenReport, type DeliveryReport } from '@/lib/deliveryReports';
-import { itemsByKey, itemsFor } from '@/lib/pulloutRequests';
+import { itemsByKey, itemsFor, liverKey } from '@/lib/pulloutRequests';
 import { getEffectiveStatuses } from '@/lib/statusRegistry';
 import { useVisiblePolling } from '@/lib/useVisiblePolling';
 
@@ -140,11 +140,12 @@ export default function DeliveryReportsPanel({ records, onRefresh, onOpenReports
             const notFound = items.length === 0;
             const to = confirmStatusFor(q.kind, dispatchStatuses);
             // Per customer, capped at what they still owe (a group downpayment sits on one item).
-            // A customer who also buys from another liver gets the same item-level figure
-            // the liver was shown (see sharedCustomer).
+            // Worked out from this liver's rows only, as she was shown; a customer with open
+            // items from another liver gets the item-level figure (see sharedCustomer).
             const shared = customersWithOtherLivers(records, q.liver);
+            const hers = (rows: DatabaseRowType[]) => rows.filter(r => liverKey(r.liverName) === liverKey(q.liver));
             const expected = Array.from(groupByCustomer(items))
-              .reduce((s, [k, rows]) => s + collectForAED(rows, withOtherLivers(byCustomer.get(k) ?? rows, shared)), 0);
+              .reduce((s, [k, rows]) => s + collectForAED(rows, withOtherLivers(hers(byCustomer.get(k) ?? rows), shared)), 0);
             const isBusy = busy === q.id;
             const reason = reasons[q.id];
             return (

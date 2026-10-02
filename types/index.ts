@@ -66,10 +66,15 @@ export type DatabaseRowType = {
   hasClientAddress?: boolean;
   /**
    * Not a sheet column. Sent only to liver-only users: this customer also has
-   * items from another liver, so her own rows can't give the customer's whole
-   * balance, shipping fee or loyalty count (lib/liverMoney sharedCustomer).
+   * open items from another liver, so her own rows can't give the customer's
+   * whole balance or shipping fee (lib/liverMoney sharedCustomer).
    */
   customerHasOtherLivers?: boolean;
+  /**
+   * Not a sheet column. Sent only to liver-only users: this customer ever
+   * bought from another liver, so her own rows can't give the loyalty count.
+   */
+  customerBoughtFromOtherLivers?: boolean;
   id: number;
 };
 

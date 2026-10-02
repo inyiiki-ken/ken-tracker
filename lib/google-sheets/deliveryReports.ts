@@ -190,10 +190,15 @@ export async function getDeliveryReports(params?: { liver?: string }): Promise<D
   if (!liver && !c.viewAll) throw new Error("You don't have permission for this action.");
   if (liver) assertOwnLiver(c, liver);
   const { rows } = await readReports(false);
-  return rows
+  const list = rows
     .map(toReport)
     .filter((q) => q.id && (!liver || liverKey(q.liver) === liver))
     .sort((a, b) => a.reportedAt.localeCompare(b.reportedAt));
+  if (c.viewAll) return list;
+  // A liver doesn't get staff emails: anyone but her shows as "Dispatch".
+  const me = c.email.toLowerCase().trim();
+  const redactBy = (v: string) => (v && v.toLowerCase().trim() !== me ? "Dispatch" : v);
+  return list.map((q) => ({ ...q, reportedBy: redactBy(q.reportedBy), updatedBy: redactBy(q.updatedBy) }));
 }
 
 /**
@@ -355,7 +360,7 @@ export async function confirmDeliveryReport(params: {
     }
     // Dispatch set them Delivered by hand already: just close the report.
     if (writes.length === 0 && alreadyDelivered === skipped.length) {
-      await writeReportCells(ws, row, q, { status: "Confirmed", updatedBy: email, updatedAt: now });
+      await writeReportCells(ws, row, q, { status: "Confirmed", updatedBy: email, updatedAt: new Date().toISOString() });
       return { moved: 0, to, skipped };
     }
     if (writes.length === 0) {
@@ -364,7 +369,9 @@ export async function confirmDeliveryReport(params: {
     }
     await writeRowsByCells(db.sheet, writes);
     invalidateActiveRows();
-    await writeReportCells(ws, row, q, { status: "Confirmed", updatedBy: email, updatedAt: now });
+    // Stamped after the item writes, so a sheet read that started before them
+    // never counts as newer than this Confirmed (finishedAfterLoad).
+    await writeReportCells(ws, row, q, { status: "Confirmed", updatedBy: email, updatedAt: new Date().toISOString() });
     return { moved: writes.length, to, skipped };
   });
 }

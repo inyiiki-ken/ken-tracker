@@ -145,8 +145,9 @@ function StatusSection({ group, open, onToggle, query, copyRow, copiedId, dueOf,
             <tbody>
               {rows.slice(0, limit).map((r, i) => {
                 const due = dueOf(r);
-                const collect = collectForAED([r], customerRows.get(customerKey(r)) ?? [r]);
                 const rep = reported.get(r.id);
+                // Reported delivered / picked up: the cash is with her, nothing left to collect.
+                const collect = rep ? 0 : collectForAED([r], customerRows.get(customerKey(r)) ?? [r]);
                 return (
                   <tr key={r.id} className={`border-b border-border/30 align-top ${i % 2 === 0 ? '' : 'bg-secondary/10'}`}>
                     <td className="px-3 py-2 text-muted-foreground whitespace-nowrap">{r.dateOfLive ? formatDateShort(r.dateOfLive) : '—'}</td>
@@ -557,13 +558,16 @@ export default function LiverDashboard({ records, searchQuery, onSearchChange, l
   // Her items by key and every status, for where a Ready request's items go.
   const byKey = useMemo(() => itemsByKey(byLiver), [byLiver]);
   const statuses = useMemo(() => records.map(r => String(r.status ?? '')), [records]);
+  // Unknown (null) until her requests have loaded: never count every item as not requested.
+  const requestsOk = requestsLoaded?.liver === selectedLiver && !!requestsLoaded?.ok;
   const notRequested = useMemo(() => {
+    if (!requestsOk) return null;
     const keys = new Set<string>();
     for (const q of requests) {
       if (isOpenRequest(q) || (q.status === 'Done' && finishedAfterLoad(q.updatedAt, recordsAt, now))) for (const k of q.itemKeys) keys.add(k);
     }
     return byLiver.filter(r => isToPullOut(r) && !keys.has(itemKey(r))).length;
-  }, [requests, byLiver, recordsAt, now]);
+  }, [requestsOk, requests, byLiver, recordsAt, now]);
 
   const openPullout = () => { setPulloutOpen(true); setTimeout(() => scrollToId('liver-pullout'), 50); };
   const openDeliveries = () => { setDeliveriesOpen(true); setTimeout(() => scrollToId('liver-deliveries'), 50); };
@@ -668,7 +672,7 @@ export default function LiverDashboard({ records, searchQuery, onSearchChange, l
               </button>
               <span className="text-muted-foreground">·</span>
               <button className="underline-offset-2 hover:underline py-1" onClick={openPullout}>
-                {notRequested} to pull out
+                {notRequested ?? '…'} to pull out
               </button>
             </div>
 
@@ -687,7 +691,7 @@ export default function LiverDashboard({ records, searchQuery, onSearchChange, l
             )}
 
             {/* Today */}
-            {(ready.length > 0 || rejectedReports.length > 0 || overdueCount > 0 || dueSoon.length > 0 || notRequested > 0) && (
+            {(ready.length > 0 || rejectedReports.length > 0 || overdueCount > 0 || dueSoon.length > 0 || (notRequested ?? 0) > 0) && (
               <div className="rounded-xl border border-primary/30 bg-card p-3 space-y-0.5 text-sm">
                 <p className="flex items-center gap-2 text-xs font-cinzel font-bold text-primary/80 uppercase tracking-wide">
                   <CalendarClock className="h-4 w-4" /> Today
@@ -712,7 +716,7 @@ export default function LiverDashboard({ records, searchQuery, onSearchChange, l
                     Due soon (next {DUE_SOON_HOURS}h): {dueSoon.length} item{dueSoon.length !== 1 ? 's' : ''}
                   </button>
                 )}
-                {notRequested > 0 && (
+                {notRequested !== null && notRequested > 0 && (
                   <button className="block w-full text-left py-2" onClick={openPullout}>
                     Not yet requested: {notRequested} item{notRequested !== 1 ? 's' : ''} to pull out
                   </button>

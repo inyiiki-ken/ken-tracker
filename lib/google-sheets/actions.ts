@@ -7,7 +7,7 @@ import { parseSheetId } from "./sheetId";
 import { requireSession, requireRole, getSessionRoles, getSessionAccess } from "./authz";
 import { isDeveloper } from "./tenancy-core";
 import { rowToDatabaseRecord, databaseRecordToRow } from "./row-mapper";
-import { activeHeaderSet, ensureOptionalColumns, writeRowsByCells, withSheetWriteLock, getTenantColumnAliases, newRowKey, appendAudit } from "./recordStore";
+import { activeHeaderSet, ensureOptionalColumns, writeRowsByCells, withSheetWriteLock, getTenantColumnAliases, newRowKey, auditHeader } from "./recordStore";
 import { DATABASE_HEADERS, DATABASE_HEADER_ALIASES, OPTIONAL_DATABASE_KEYS, ROLES_HEADERS, UPLOADS_HEADERS } from "./sheet-config";
 import type { DatabaseRowType } from "@/types";
 import { buildCustomerIdIndex, resolveCustomerIdFor } from "@/lib/customerId";
@@ -15,7 +15,7 @@ import { isLiverOnly, getUserRole } from "@/config/roles";
 import { customerKey, parseDateRobust } from "@/lib/calculations";
 import { newestPurchaseRawByCustomer } from "@/lib/purchaseDates";
 import { boxStatusName, ownBox } from "@/lib/pulloutTargets";
-import { customersWithOtherLivers } from "@/lib/liverMoney";
+import { customersEverWithOtherLivers, customersWithOtherLivers } from "@/lib/liverMoney";
 
 
 /**
@@ -203,6 +203,18 @@ const LIVER_HIDDEN_FIELDS = ["supplierRate", "profit", "goldRate", "mc"] as cons
 /** Customer contact a liver may NOT see (owner decision: FB name and phone yes, address no). */
 const LIVER_HIDDEN_CONTACT = ["clientAddress"] as const;
 
+/** Every history line's "who", and any other email in it, that isn't `me` becomes "staff". */
+function redactAuditEmails(trail: string, me: string): string {
+  const mine = me.toLowerCase().trim();
+  const other = (v: string) => v.toLowerCase().trim() !== mine;
+  return trail
+    .split("\n")
+    .map((l) => l
+      .replace(/^(\S+ \| )([^|]*?)( \|)/, (all, a: string, who: string, b: string) => (other(who) ? `${a}staff${b}` : all))
+      .replace(/[^\s|\[\]()<>,;:]+@[^\s|\[\]()<>,;:]+/g, (e) => (other(e) ? "staff" : e)))
+    .join("\n");
+}
+
 /**
  * The rows, and when the sheet was read (server clock): the Liver tab compares
  * it with Done requests / Confirmed reports (finishedAfterLoad), so the phone's
@@ -213,8 +225,10 @@ export async function getRecords(_params?: { tailOnly?: boolean }): Promise<{ re
   // Signed in but not in the Roles tab: nothing to show (the app says Access denied).
   if (!access.all && access.roles.length === 0) return { records: [], readAt: new Date().toISOString() };
   const sheet = await getActiveWorksheet("database");
-  const rows = await sheet.getRows();
+  // Stamped before the read: a status written while the rows were being fetched
+  // must count as after this snapshot, never before it.
   const readAt = new Date().toISOString();
+  const rows = await sheet.getRows();
   const aliases = await getTenantColumnAliases();
   const all = rows.map((r) => rowToDatabaseRecord(r, aliases));
   if (access.all || !isLiverOnly(access.roles)) return { records: all, readAt };
@@ -226,10 +240,11 @@ export async function getRecords(_params?: { tailOnly?: boolean }): Promise<{ re
   // Her customers may also buy from other livers; reminders count from the
   // customer's newest purchase, so stamp that on her rows before dropping the rest.
   const newest = newestPurchaseRawByCustomer(all);
-  // Customers who also have items (not cancelled / returned) from another
-  // liver: her rows alone can't give their balance or loyalty count, and the
-  // server can't work those out for her (prices need the browser's rates).
+  // Customers who also have open items from another liver: her rows alone
+  // can't give their balance, and the server can't work it out for her (prices
+  // need the browser's rates). Ever bought from another liver: no loyalty count.
   const shared = customersWithOtherLivers(all, me);
+  const everShared = customersEverWithOtherLivers(all, me);
   // Where "Liver came" sends her international / reseller items, named from
   // every row like Dispatch's (her own rows may spell the box differently).
   const statuses = all.map((r) => String(r.status ?? ""));
@@ -242,9 +257,13 @@ export async function getRecords(_params?: { tailOnly?: boolean }): Promise<{ re
       // Only whether an address is on file, so her "Missing: address" hint still works.
       out.hasClientAddress = !!String(r.clientAddress ?? "").trim();
       for (const k of LIVER_HIDDEN_CONTACT) delete out[k];
+      // Change history keeps its dates and text (reminders and stage dates read
+      // them) but not other people's emails: "<ISO> | <email> | <change>".
+      if (out.auditTrail) out.auditTrail = redactAuditEmails(String(out.auditTrail), access.email);
       const last = newest.get(customerKey(r));
       if (last) out.customerLastPurchaseAt = last;
       if (shared.has(customerKey(r))) out.customerHasOtherLivers = true;
+      if (everShared.has(customerKey(r))) out.customerBoughtFromOtherLivers = true;
       const box = ownBox(r);
       if (box) out.ownBoxStatus = boxNames[box];
       return out;
@@ -295,16 +314,17 @@ export async function updateRecord(params: {
 
   const timestamp = new Date().toISOString();
   const auditEntry = `${timestamp} | ${sessionEmailForAudit || params.userEmail || "unknown"} | Updated: ${Object.keys(params.fields).join(", ")}`;
-  const existingAudit = params.existingRecord?.auditTrail;
-  const fields = {
-    ...params.fields,
-    auditTrail: appendAudit(existingAudit, auditEntry),
-  };
+  // The history line is added to the sheet's current history, not the
+  // screen's copy (which may miss lines written since it loaded).
+  const { auditTrail: _ignored, ...fields } = params.fields;
+  void _ignored;
 
-  await ensureOptionalColumns(sheet, [fields]);
-  const patchRow = databaseRecordToRow(fields, await activeHeaderSet(sheet), await getTenantColumnAliases());
+  await ensureOptionalColumns(sheet, [{ ...fields, auditTrail: auditEntry }]);
+  const headers = await activeHeaderSet(sheet);
+  const aliases = await getTenantColumnAliases();
+  const patchRow = databaseRecordToRow(fields, headers, aliases);
   const written = await writeRowsByCells(sheet, [
-    { rowNumber: params.rowId, rowKey: params.existingRecord?.rowKey, patch: patchRow },
+    { rowNumber: params.rowId, rowKey: params.existingRecord?.rowKey, patch: patchRow, audit: { header: auditHeader(headers, aliases), lines: [auditEntry] } },
   ]);
   if (written === 0) throw new Error(`No record found at row ${params.rowId}`);
   return { success: true };
@@ -323,11 +343,18 @@ export async function bulkUpdateRecords(params: {
   // committed in a single request.
   const batch = params.updates.slice(0, 300);
 
-  const writes = batch.map((upd) => ({
-    rowNumber: upd.rowId,
-    rowKey: upd.rowKey,
-    patch: databaseRecordToRow(upd.fields, dbHeaders, dbAliases) as Record<string, unknown>,
-  }));
+  // A change history sent from the screen is merged into the sheet's current
+  // one (its new lines added), so lines written since it loaded aren't lost.
+  const historyCol = auditHeader(dbHeaders, dbAliases);
+  const writes = batch.map((upd) => {
+    const { auditTrail, ...fields } = upd.fields;
+    return {
+      rowNumber: upd.rowId,
+      rowKey: upd.rowKey,
+      patch: databaseRecordToRow(fields, dbHeaders, dbAliases) as Record<string, unknown>,
+      audit: auditTrail === undefined ? undefined : { header: historyCol, lines: String(auditTrail ?? "").split("\n") },
+    };
+  });
 
   const count = await writeRowsByCells(sheet, writes);
   return { success: true, updatedCount: count };

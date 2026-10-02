@@ -12,7 +12,8 @@ import { formatDate } from '@/lib/formatters';
 import { dayKey, fulfilmentStage } from '@/lib/fulfilment';
 import { isFieldHidden } from '@/lib/appConfig';
 import { aedLabel, collectForAED, customerMoney, reportedCashAED, sharedCustomer } from '@/lib/liverMoney';
-import type { DeliveryReport } from '@/lib/deliveryReports';
+import { isOpenReport, type DeliveryReport } from '@/lib/deliveryReports';
+import { itemKey } from '@/lib/pulloutRequests';
 import { groupByDay, newestFirst, statusOf } from '@/lib/liverSales';
 import { NotesToggle, OutsourceTag, ShippedLine } from './LiverRowBits';
 
@@ -49,18 +50,21 @@ export default function LiverCustomerSheet({ customer, rows, clientMilestones, r
   const money = useMemo(() => customerMoney(items), [items]);
   const shared = sharedCustomer(items);
   const cashReported = useMemo(() => reportedCashAED(reports ?? [], items), [reports, items]);
+  // Items she reported delivered / picked up (not answered yet): nothing left to collect.
+  const reportedKeys = useMemo(() => new Set((reports ?? []).filter(isOpenReport).flatMap(q => q.itemKeys)), [reports]);
   const live = items.filter(r => fulfilmentStage(r.status) !== 'excluded');
 
   const fbName = !isFieldHidden('fbProfileName') ? String(items.find(r => r.fbProfileName?.trim())?.fbProfileName ?? '').trim() : '';
   const phone = !isFieldHidden('clientNumber') ? String(items.find(r => r.clientNumber?.trim())?.clientNumber ?? '').trim() : '';
   const customerId = items.find(r => r.customerId?.trim())?.customerId?.trim();
   // A liver gets only her own rows: her count is the customer's whole count
-  // only when the customer buys from no other liver.
+  // only when the customer never bought from another liver.
+  const boughtElsewhere = shared || items.some(r => r.customerBoughtFromOtherLivers);
   const milestone = useMemo(() => {
     if (!customerId) return undefined;
     if (clientMilestones) return clientMilestones.get(customerId);
-    return shared ? undefined : computeClientMilestones(items).get(customerId);
-  }, [clientMilestones, customerId, shared, items]);
+    return boughtElsewhere ? undefined : computeClientMilestones(items).get(customerId);
+  }, [clientMilestones, customerId, boughtElsewhere, items]);
   const badge = milestone ? getMilestoneBadge(milestone.qualifyingCount) : null;
 
   return (
@@ -118,7 +122,7 @@ export default function LiverCustomerSheet({ customer, rows, clientMilestones, r
                 <ul className="divide-y divide-border rounded-lg border border-border">
                   {dayRows.map(r => {
                     const missing = statusOf(r) === 'Waiting for Details' ? missingDetails(r) : [];
-                    const collect = collectForAED([r], items);
+                    const collect = reportedKeys.has(itemKey(r)) ? 0 : collectForAED([r], items);
                     return (
                       <li key={r.id} className="space-y-1 p-2.5">
                         <div className="flex flex-wrap items-center gap-2">

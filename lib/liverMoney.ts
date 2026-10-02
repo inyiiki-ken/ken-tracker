@@ -45,13 +45,28 @@ export function sharedCustomer(customerRows: DatabaseRowType[]): boolean {
 }
 
 /**
- * Customers (customerKey) who also have an item, not cancelled / returned, from
- * a liver other than this one: the rule behind customerHasOtherLivers. The
- * server stamps it on a liver's own rows; staff screens (the admin preview of
- * My Sales, Dispatch's delivery reports) work it out here from every row, so
- * the liver, the preview and Dispatch show the same figures.
+ * Customers (customerKey) who have an item still open (not delivered, not
+ * cancelled / returned) from a liver other than this one: the rule behind
+ * customerHasOtherLivers. An old, delivered purchase from someone else doesn't
+ * count, so it never switches her money figures off for good. The server
+ * stamps it on a liver's own rows; staff screens (the admin preview of My
+ * Sales, Dispatch's delivery reports) work it out here from every row, so the
+ * liver, the preview and Dispatch show the same figures.
  */
 export function customersWithOtherLivers(all: DatabaseRowType[], liver: string): Set<string> {
+  const me = liverKey(liver);
+  return new Set(all.filter(r => {
+    if (liverKey(r.liverName) === me) return false;
+    const stage = fulfilmentStage(r.status);
+    return stage !== 'delivered' && stage !== 'excluded';
+  }).map(customerKey));
+}
+
+/**
+ * Customers who ever bought (not cancelled / returned) from another liver: her
+ * rows alone can't give their loyalty count (customerBoughtFromOtherLivers).
+ */
+export function customersEverWithOtherLivers(all: DatabaseRowType[], liver: string): Set<string> {
   const me = liverKey(liver);
   return new Set(all.filter(r => liverKey(r.liverName) !== me && !isCancelledOrReturned(r)).map(customerKey));
 }

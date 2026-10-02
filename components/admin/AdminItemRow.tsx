@@ -1,6 +1,7 @@
 "use client";
 
 import { isPulloutStatus } from '@/lib/appConfig';
+import { fulfilmentStage } from '@/lib/fulfilment';
 import { useState, useEffect, useRef, memo, useCallback } from 'react';
 import { useDebouncedCallback } from 'use-debounce';
 import { AlertCircle, Loader2, Pencil, Copy, Check, Scissors } from 'lucide-react';
@@ -406,7 +407,8 @@ function AdminItemRow({ record, onUpdate, onGroupUpdate, onDateGroupUpdate, onDp
 
   const handleStatusChange = async (newStatus: string) => {
     setResetKey(Date.now());
-    if (/cancel/i.test(newStatus)) { setCancelStatus(newStatus); setCancelReason(''); setShowCancel(true); return; }
+    // Cancelled / Returned ask for a reason, same rule as Dispatch and Accounts.
+    if (fulfilmentStage(newStatus) === 'excluded') { setCancelStatus(newStatus); setCancelReason(''); setShowCancel(true); return; }
     if (dpLocked) {
       toast.error('Enter a downpayment amount to enable other status options');
       return;

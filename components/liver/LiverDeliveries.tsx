@@ -371,12 +371,9 @@ export function DeliveryPanel({ liver, records, recordsAt, onRefresh, previewing
                                 className="h-9 text-sm w-40 bg-background border-border"
                               />
                               {expected > 0 && (
-                                <>
-                                  <span className="text-xs text-muted-foreground">Expected {aedLabel(expected)}</span>
-                                  <Button type="button" size="sm" variant="outline" className="h-9 text-xs border-border" onClick={() => setCash(String(expected))}>
-                                    Same
-                                  </Button>
-                                </>
+                                <Button type="button" size="sm" variant="outline" className="h-9 text-xs border-border" onClick={() => setCash(String(expected))}>
+                                  Collected the full {aedLabel(expected)}
+                                </Button>
                               )}
                             </div>
                           </div>
