@@ -8,9 +8,9 @@
  */
 
 import type { DatabaseRowType } from '@/types';
-import { calcCCFee, calcGroupBalance, calcItemPriceAED, calcTotalPaid, groupShippingFee, netChargeAED, roundPrice } from '@/lib/calculations';
-import { boxFromStatus, fulfilmentStage } from '@/lib/fulfilment';
-import { itemKey } from '@/lib/pulloutRequests';
+import { calcCCFee, calcGroupBalance, calcItemPriceAED, calcTotalPaid, customerKey, groupShippingFee, netChargeAED, roundPrice } from '@/lib/calculations';
+import { boxFromStatus, fulfilmentStage, isCancelledOrReturned } from '@/lib/fulfilment';
+import { itemKey, liverKey } from '@/lib/pulloutRequests';
 import type { DeliveryReport } from '@/lib/deliveryReports';
 
 /** What the customer owes for one item (price + card fee), AED. */
@@ -42,6 +42,24 @@ export function customerMoney(rows: DatabaseRowType[]): { paid: number; due: num
  */
 export function sharedCustomer(customerRows: DatabaseRowType[]): boolean {
   return customerRows.some(r => r.customerHasOtherLivers);
+}
+
+/**
+ * Customers (customerKey) who also have an item, not cancelled / returned, from
+ * a liver other than this one: the rule behind customerHasOtherLivers. The
+ * server stamps it on a liver's own rows; staff screens (the admin preview of
+ * My Sales, Dispatch's delivery reports) work it out here from every row, so
+ * the liver, the preview and Dispatch show the same figures.
+ */
+export function customersWithOtherLivers(all: DatabaseRowType[], liver: string): Set<string> {
+  const me = liverKey(liver);
+  return new Set(all.filter(r => liverKey(r.liverName) !== me && !isCancelledOrReturned(r)).map(customerKey));
+}
+
+/** These rows with customerHasOtherLivers set for the customers in `shared`. */
+export function withOtherLivers(rows: DatabaseRowType[], shared: Set<string>): DatabaseRowType[] {
+  if (shared.size === 0) return rows;
+  return rows.map(r => (!r.customerHasOtherLivers && shared.has(customerKey(r)) ? { ...r, customerHasOtherLivers: true } : r));
 }
 
 /** A COD item (paid in cash on delivery). */
@@ -109,16 +127,23 @@ export function collectForAED(items: DatabaseRowType[], customerRows: DatabaseRo
 }
 
 /**
- * Cash she reported collecting from this customer (her Delivered reports, open
- * or confirmed, on any of the customer's items), AED. The cash isn't in the
- * payment columns until Accounts enters it, so the balance can still show it as
- * due; this lets the screen say so instead of a bare "Balance due".
+ * Cash she reported collecting from this customer (her Delivered reports on any
+ * of the customer's items), AED. The cash isn't in the payment columns until
+ * Accounts enters it, so the balance can still show it as due; this lets the
+ * screen say so instead of a bare "Balance due". An open report counts in full;
+ * a confirmed one only while its items still show money due (once Accounts
+ * enters the payment it drops out, so the note clears).
  */
 export function reportedCashAED(reports: DeliveryReport[], customerRows: DatabaseRowType[]): number {
-  const keys = new Set(customerRows.map(itemKey));
+  const byKey = new Map(customerRows.map(r => [itemKey(r), r] as const));
+  const stillDue = (q: DeliveryReport) => {
+    const items = q.itemKeys.map(k => byKey.get(k)).filter((r): r is DatabaseRowType => !!r);
+    return roundPrice(items.reduce((s, r) => s + itemDueAED(r) + netChargeAED(r) - calcTotalPaid(r), 0)) > 0;
+  };
   return roundPrice(reports
-    .filter(q => q.kind === 'Delivered' && (q.status === 'Reported' || q.status === 'Confirmed') && (q.cash ?? 0) > 0)
-    .filter(q => q.itemKeys.some(k => keys.has(k)))
+    .filter(q => q.kind === 'Delivered' && (q.cash ?? 0) > 0)
+    .filter(q => q.itemKeys.some(k => byKey.has(k)))
+    .filter(q => q.status === 'Reported' || (q.status === 'Confirmed' && stillDue(q)))
     .reduce((s, q) => s + (q.cash ?? 0), 0));
 }
 

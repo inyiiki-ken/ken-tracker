@@ -79,7 +79,8 @@ export async function isZohoEnabled(): Promise<boolean> {
 
 /** Candidate matches for a client name, so the user confirms before we link. */
 export async function findZohoContacts(params: { name: string }): Promise<ZohoContactMatch[]> {
-  await requireSession();
+  // Customer emails, phones and balances: admins only, like the rest of Invoicing.
+  await requireRole(["admin", "super_admin"]);
   const s = await loadSettings();
   if (!isZohoConfigured(s)) return [];
   return searchContacts(s, params.name);

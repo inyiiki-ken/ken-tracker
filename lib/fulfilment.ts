@@ -20,14 +20,14 @@ import { parseDateRobust } from '@/lib/calculations';
 export type FulfilmentStage = 'excluded' | 'active' | 'pullout' | 'dispatched' | 'delivered';
 
 const EXCLUDED = new Set(['cancelled', 'canceled', 'returned item', 'returned']);
-const DELIVERED = new Set(['delivered', 'given to shop', 'picked up', 'completed', 'received']);
+const DELIVERED = new Set(['delivered', 'given to shop', 'picked up', 'pickedup', 'completed', 'received']);
 const DISPATCHED = new Set(['dispatched', 'shipped', 'in transit', 'out for delivery']);
 
 export function fulfilmentStage(status?: string): FulfilmentStage {
   const s = String(status ?? '').trim().toLowerCase();
   if (!s) return 'active';
   if (EXCLUDED.has(s) || s.startsWith('cancel') || s.startsWith('returned')) return 'excluded';
-  if (DELIVERED.has(s) || /\bdelivered\b/.test(s) || /\bpicked up\b/.test(s)) return 'delivered';
+  if (DELIVERED.has(s) || /\bdelivered\b/.test(s) || /\bpicked ?up\b/.test(s)) return 'delivered';
   if (DISPATCHED.has(s)) return 'dispatched';
   // "For International Shipment" / "Shipment International" is still waiting to go out.
   if (/\b(shipment|shipping|international)\b/.test(s)) return 'pullout';

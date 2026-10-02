@@ -26,7 +26,7 @@ import {
 import { requestTargetsLabel } from '@/lib/pulloutTargets';
 import { dayKey, fulfilmentStage, isSold, outsourceOfLivers, soldDay } from '@/lib/fulfilment';
 import { metalOf, type MetalKind } from '@/lib/metal';
-import { aedLabel, collectForAED } from '@/lib/liverMoney';
+import { aedLabel, collectForAED, customersWithOtherLivers, withOtherLivers } from '@/lib/liverMoney';
 import { isOpenReport, type DeliveryKind, type DeliveryReport } from '@/lib/deliveryReports';
 import {
   DATE_RANGES, groupByDay, groupByStatus, inBounds, newestFirst, rangeBounds, statusOf, summariseLives,
@@ -209,7 +209,7 @@ function StatusSection({ group, open, onToggle, query, copyRow, copiedId, dueOf,
   );
 }
 
-// ─── Sold by ship date ────────────────────────────────────────────────────────
+// ─── Sold by day ──────────────────────────────────────────────────────────────
 function SoldBreakdown({ sold }: { sold: DatabaseRowType[] }) {
   const [show, setShow] = useState(false);
   const byDay = useMemo(() => groupByDay(sold, soldDay), [sold]);
@@ -222,7 +222,7 @@ function SoldBreakdown({ sold }: { sold: DatabaseRowType[] }) {
         aria-expanded={show}
         className="w-full flex items-center gap-2 px-4 py-3 text-left focus:outline-none hover:bg-secondary/20 transition-colors"
       >
-        <span className="text-xs font-cinzel font-bold text-primary/80 uppercase tracking-wide">Sold by ship date</span>
+        <span className="text-xs font-cinzel font-bold text-primary/80 uppercase tracking-wide">Sold by day</span>
         <div className="h-px flex-1 bg-border/40" />
         <span className="text-xs text-muted-foreground">{byDay.length} day{byDay.length !== 1 ? 's' : ''}</span>
         <ChevronDown className={`h-4 w-4 text-muted-foreground transition-transform ${show ? 'rotate-180' : ''}`} />
@@ -230,10 +230,12 @@ function SoldBreakdown({ sold }: { sold: DatabaseRowType[] }) {
 
       {show && (
         <div className="border-t border-border animate-in fade-in slide-in-from-top-1 duration-200">
+          {/* soldDay: ship day, else delivery / pick-up day, else order day. */}
+          <p className="px-3 py-2 text-[11px] text-muted-foreground">Each sale counts on its ship day, else its delivery / pick-up day, else its order day.</p>
           <table className="w-full text-xs">
             <thead>
-              <tr className="bg-secondary/20 border-b border-border">
-                <th className="text-left px-3 py-2 text-muted-foreground font-medium">Shipped</th>
+              <tr className="bg-secondary/20 border-y border-border">
+                <th className="text-left px-3 py-2 text-muted-foreground font-medium">Sold on</th>
                 <th className="text-right px-3 py-2 text-muted-foreground font-medium">Items</th>
                 <th className="text-right px-3 py-2 text-muted-foreground font-medium">Grams</th>
               </tr>
@@ -306,7 +308,7 @@ function MyLives({ rows }: { rows: DatabaseRowType[] }) {
 }
 
 // ─── Main Component ───────────────────────────────────────────────────────────
-export default function LiverDashboard({ records, searchQuery, onSearchChange, lockedLiverName, defaultLiver, onRefresh, previewing, clientMilestones }: TabProps) {
+export default function LiverDashboard({ records, searchQuery, onSearchChange, lockedLiverName, defaultLiver, onRefresh, previewing, clientMilestones, recordsReadAt }: TabProps) {
   const [selectedLiver, setSelectedLiver] = useState<string>(() => {
     if (lockedLiverName) return liverKey(lockedLiverName);
     try { return liverKey(localStorage.getItem(LIVER_STORAGE_KEY)) || liverKey(defaultLiver); } catch { return liverKey(defaultLiver); }
@@ -342,10 +344,9 @@ export default function LiverDashboard({ records, searchQuery, onSearchChange, l
     liver: selectedLiver, ok: ok || (prev?.liver === selectedLiver && prev.ok),
   })), [selectedLiver]);
   const [cancelledOpen, setCancelledOpen] = useState(false);
-  // When her records last arrived: a Done request / Confirmed report locks its
-  // items only until then (see finishedAfterLoad).
-  const [recordsAt, setRecordsAt] = useState(() => Date.now());
-  useEffect(() => { setRecordsAt(Date.now()); }, [records]);
+  // When the server last read her records (its clock, not the phone's): a Done
+  // request / Confirmed report locks its items only until then (see finishedAfterLoad).
+  const recordsAt = recordsReadAt ?? 0;
   // "Now" for the date filters and overdue items, so a screen left open
   // overnight moves on (ticks every minute and when the app comes back).
   const [now, setNow] = useState(() => Date.now());
@@ -430,9 +431,13 @@ export default function LiverDashboard({ records, searchQuery, onSearchChange, l
   }, [liverNames, selectedLiver, lockedLiverName, defaultLiver]);
 
   // Every item of hers, whatever its status (no status = Waiting for Details).
+  // Staff see every liver's rows, which the server doesn't mark: mark her
+  // customers who also buy from another liver here, the same way (no-op for a
+  // liver), so the preview shows her figures.
   const byLiver = useMemo(() => {
     if (!selectedLiver) return [];
-    return records.filter(r => liverKey(r.liverName) === selectedLiver);
+    const mine = records.filter(r => liverKey(r.liverName) === selectedLiver);
+    return mine.length === records.length ? mine : withOtherLivers(mine, customersWithOtherLivers(records, selectedLiver));
   }, [records, selectedLiver]);
 
   const query = searchQuery.trim();
@@ -456,7 +461,7 @@ export default function LiverDashboard({ records, searchQuery, onSearchChange, l
   const outInView = filtered.length - live.length;
 
   // KPIs never follow the search, so "grams sold" stays the agreed figure.
-  // Sold counts on the day it shipped; in progress on the day it was ordered.
+  // Sold counts on its sold day (ship / delivery day, see soldDay); in progress on the day it was ordered.
   const sold = useMemo(() => byLiver.filter(r =>
     matches(r) && isSold(r) && (!bounds || inBounds(soldDay(r), bounds) === true)), [byLiver, matches, bounds]);
   const inProgress = useMemo(() => byLiver.filter(r =>
@@ -470,7 +475,7 @@ export default function LiverDashboard({ records, searchQuery, onSearchChange, l
   const soldSilver = sold.filter(r => metalOf(r) === 'silver');
   const soldOther = sold.filter(r => metalOf(r) === 'other');
   const soldPcs = pieceCount(sold);
-  // "Sold by ship date" follows the search like the lists (every date while searching).
+  // "Sold by day" follows the search like the lists (every date while searching).
   const soldShown = useMemo(() => (query ? searched.filter(r => matches(r) && isSold(r)) : sold), [query, searched, matches, sold]);
   const customerRows = useMemo(() => groupByCustomer(byLiver), [byLiver]);
 
@@ -773,7 +778,7 @@ export default function LiverDashboard({ records, searchQuery, onSearchChange, l
               <p className="text-xs text-muted-foreground mb-1.5">
                 Period <span className="text-muted-foreground/80">· {query
                   ? 'lists show every date while searching; Sold and In progress still use this period'
-                  : 'lists by order date, sold by ship date'}</span>
+                  : 'lists by order date, sold by ship / delivery day'}</span>
               </p>
               <div className="flex gap-1.5 flex-wrap">
                 {DATE_RANGES.map(r => (
@@ -865,7 +870,7 @@ export default function LiverDashboard({ records, searchQuery, onSearchChange, l
                   <button
                     key={g.key}
                     onClick={() => openGroup(g.key)}
-                    className="text-xs font-semibold px-3 py-1.5 rounded-full bg-secondary border border-border text-muted-foreground hover:bg-secondary/70"
+                    className="min-h-9 text-xs font-semibold px-3 py-2 rounded-full bg-secondary border border-border text-muted-foreground hover:bg-secondary/70"
                   >
                     {g.label} <span className="text-foreground font-bold">{g.items.length}</span>
                   </button>

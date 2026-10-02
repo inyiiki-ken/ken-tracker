@@ -15,7 +15,7 @@ import { isLiverOnly, getUserRole } from "@/config/roles";
 import { customerKey, parseDateRobust } from "@/lib/calculations";
 import { newestPurchaseRawByCustomer } from "@/lib/purchaseDates";
 import { boxStatusName, ownBox } from "@/lib/pulloutTargets";
-import { isCancelledOrReturned } from "@/lib/fulfilment";
+import { customersWithOtherLivers } from "@/lib/liverMoney";
 
 
 /**
@@ -203,32 +203,38 @@ const LIVER_HIDDEN_FIELDS = ["supplierRate", "profit", "goldRate", "mc"] as cons
 /** Customer contact a liver may NOT see (owner decision: FB name and phone yes, address no). */
 const LIVER_HIDDEN_CONTACT = ["clientAddress"] as const;
 
-export async function getRecords(_params?: { tailOnly?: boolean }): Promise<DatabaseRowType[]> {
+/**
+ * The rows, and when the sheet was read (server clock): the Liver tab compares
+ * it with Done requests / Confirmed reports (finishedAfterLoad), so the phone's
+ * clock never decides whether her items are still moving.
+ */
+export async function getRecords(_params?: { tailOnly?: boolean }): Promise<{ records: DatabaseRowType[]; readAt: string }> {
   const access = await getSessionAccess();
   // Signed in but not in the Roles tab: nothing to show (the app says Access denied).
-  if (!access.all && access.roles.length === 0) return [];
+  if (!access.all && access.roles.length === 0) return { records: [], readAt: new Date().toISOString() };
   const sheet = await getActiveWorksheet("database");
   const rows = await sheet.getRows();
+  const readAt = new Date().toISOString();
   const aliases = await getTenantColumnAliases();
   const all = rows.map((r) => rowToDatabaseRecord(r, aliases));
-  if (access.all || !isLiverOnly(access.roles)) return all;
+  if (access.all || !isLiverOnly(access.roles)) return { records: all, readAt };
 
   // A liver only ever gets her own items (her "name" in the Roles tab). No
   // name yet ⇒ nothing; the Liver tab explains what to ask the admin.
   const me = liverKey(access.liverName);
-  if (!me) return [];
+  if (!me) return { records: [], readAt };
   // Her customers may also buy from other livers; reminders count from the
   // customer's newest purchase, so stamp that on her rows before dropping the rest.
   const newest = newestPurchaseRawByCustomer(all);
   // Customers who also have items (not cancelled / returned) from another
   // liver: her rows alone can't give their balance or loyalty count, and the
   // server can't work those out for her (prices need the browser's rates).
-  const shared = new Set(all.filter((r) => liverKey(r.liverName) !== me && !isCancelledOrReturned(r)).map((r) => customerKey(r)));
+  const shared = customersWithOtherLivers(all, me);
   // Where "Liver came" sends her international / reseller items, named from
   // every row like Dispatch's (her own rows may spell the box differently).
   const statuses = all.map((r) => String(r.status ?? ""));
   const boxNames = { intl: boxStatusName("intl", statuses), reseller: boxStatusName("reseller", statuses) };
-  return all
+  const records = all
     .filter((r) => liverKey(r.liverName) === me)
     .map((r) => {
       const out: DatabaseRowType = { ...r };
@@ -243,6 +249,7 @@ export async function getRecords(_params?: { tailOnly?: boolean }): Promise<Data
       if (box) out.ownBoxStatus = boxNames[box];
       return out;
     });
+  return { records, readAt };
 }
 
 /** Matches src/api/createRecord.ts: sets a "created" audit trail entry. */
@@ -870,6 +877,8 @@ export interface GetRewardInventoryOutputType {
 export async function getRewardInventory(
   _params?: Record<string, never>
 ): Promise<GetRewardInventoryOutputType> {
+  // Customers' reward history: same roles as getPurchases.
+  await requireRole(["purchasing", "admin", "super_admin"]);
   const raw = await readConfig("__REWARD_INVENTORY__");
   if (!raw) return { items: [], history: [] };
   try {

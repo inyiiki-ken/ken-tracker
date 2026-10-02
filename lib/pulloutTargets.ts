@@ -21,7 +21,7 @@ const BOX_PATTERN: Record<OwnBox, RegExp> = {
   reseller: /\bresell/,
 };
 // Statuses that already mean shipped / done, never a box to wait in.
-const NOT_A_BOX = /cancel|return|deliver|dispatched|shipped|given to|picked up|in transit/;
+const NOT_A_BOX = /cancel|return|deliver|dispatched|shipped|given to|picked ?up|in transit/;
 
 /**
  * The status this customer's sheet already uses for a box: the default name in

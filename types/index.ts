@@ -95,4 +95,6 @@ export type TabProps = {
   previewing?: boolean;
   /** Pre-computed client milestones (computed once in App.tsx) */
   clientMilestones?: Map<string, import('@/lib/milestones').ClientMilestone>;
+  /** When the server read `records` (ms, server clock); 0 before the first load. */
+  recordsReadAt?: number;
 };

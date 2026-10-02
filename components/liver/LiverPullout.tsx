@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronDown, ChevronRight, PackageOpen, XCircle } from 'lucide-react';
+import { ChevronDown, PackageOpen, XCircle } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -532,15 +532,10 @@ export function PulloutPanel({ liver, records, allRecords, recordsAt, onRefresh,
                       </td>
                       <td colSpan={3} className="px-3 py-2">
                         <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
-                          {/* Tapping the name ticks the customer, like the rest of the row; the arrow opens her sheet. */}
-                          <span className="font-semibold"><Highlight text={g.name} query={query} /></span>
-                          {onOpenCustomer && (
-                            <button type="button" aria-label={`${g.name}: phone and balance`} title="Phone and balance"
-                              className="-my-1.5 h-8 w-8 inline-grid place-items-center rounded border border-border text-muted-foreground hover:bg-secondary"
-                              onClick={e => { e.stopPropagation(); onOpenCustomer(g.key); }}>
-                              <ChevronRight className="h-4 w-4" />
-                            </button>
-                          )}
+                          {/* Tapping the name opens her sheet, like the other lists; the checkbox and the rest of the row tick her items. */}
+                          {onOpenCustomer
+                            ? <CustomerNameButton name={g.name} query={query} onOpen={() => onOpenCustomer(g.key)} bold />
+                            : <span className="font-semibold"><Highlight text={g.name} query={query} /></span>}
                           <span className="text-xs text-muted-foreground">{g.rows.length} item{g.rows.length !== 1 ? 's' : ''} · {weightOf(g.rows)}</span>
                           {!g.shared && g.money.due > 0 && (
                             <span className={`text-xs font-semibold ${g.money.balance <= 0 ? 'text-success' : g.cashReported > 0 ? 'text-muted-foreground' : 'text-destructive'}`}>

@@ -88,6 +88,8 @@ function AppContent() {
   useEffect(() => { applyMotionToDom(); }, []);
 
   const [records, setRecords] = useState<DatabaseRowType[]>([]);
+  // When the server read them (its clock), for the Liver tab's item locks.
+  const [recordsReadAt, setRecordsReadAt] = useState(0);
   const recordsRef = useRef<DatabaseRowType[]>([]);
   useEffect(() => { recordsRef.current = records; }, [records]);
   const [loading, setLoading] = useState(true);
@@ -138,10 +140,12 @@ function AppContent() {
         getOptionsConfig({}).catch(() => null),
         getCustomToggles({}).catch(() => ({ config: '' })),
       ]);
-      setRecords(recordsRes as DatabaseRowType[]);
-      setKnownStatuses(recordsRes as DatabaseRowType[]);
-      setKnownOptions(recordsRes as DatabaseRowType[]);
-      setDiscoveredOptions(recordsRes as DatabaseRowType[]);
+      const loaded = recordsRes.records as DatabaseRowType[];
+      setRecords(loaded);
+      setRecordsReadAt(Date.parse(recordsRes.readAt) || Date.now());
+      setKnownStatuses(loaded);
+      setKnownOptions(loaded);
+      setDiscoveredOptions(loaded);
       if (rolesRes) setDynamicRoles(rolesRes as any[]);
       if (ratesRes?.config) applyRatesConfig(ratesRes.config);
       if (pricingRes?.config) applyPricingConfig(pricingRes.config);
@@ -494,7 +498,7 @@ function AppContent() {
       )}
       {/* A liver-only user has only her own rows, so loyalty counts would be short: no badge. */}
       {shownTab === 'liver' && (lockedLiverName || picksLiver) && (
-        <LiverDashboard records={records} searchQuery={searchQueries.liver} onSearchChange={handleSearchChange} onUpdate={handleUpdate} lockedLiverName={lockedLiverName} defaultLiver={picksLiver ? ownLiverName : undefined} onRefresh={() => fetchData(true)} previewing={previewing} clientMilestones={liverOnly ? undefined : clientMilestones} />
+        <LiverDashboard records={records} searchQuery={searchQueries.liver} onSearchChange={handleSearchChange} onUpdate={handleUpdate} lockedLiverName={lockedLiverName} defaultLiver={picksLiver ? ownLiverName : undefined} onRefresh={() => fetchData(true)} previewing={previewing} clientMilestones={liverOnly ? undefined : clientMilestones} recordsReadAt={recordsReadAt} />
       )}
       {shownTab === 'purchasing' && (
         <PurchasingTab userEmail={user.email} />

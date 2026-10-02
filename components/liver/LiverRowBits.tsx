@@ -25,13 +25,14 @@ export function Highlight({ text, query }: { text?: string; query?: string }) {
 
 /**
  * A customer's name that opens her sheet (phone, balance). Dotted underline and
- * an arrow so it looks tappable on a phone, where there is no hover.
+ * an arrow so it looks tappable on a phone, where there is no hover; a finger-
+ * sized tap area (36px) that barely grows the row.
  */
 export function CustomerNameButton({ name, query, onOpen, bold }: { name: string; query?: string; onOpen: () => void; bold?: boolean }) {
   return (
     <button
       type="button"
-      className={`inline-flex items-center gap-0.5 py-1 text-left underline decoration-dotted underline-offset-2 ${bold ? 'font-semibold' : 'font-medium'}`}
+      className={`inline-flex items-center gap-0.5 min-h-9 py-2 -my-1 text-left underline decoration-dotted underline-offset-2 ${bold ? 'font-semibold' : 'font-medium'}`}
       onClick={e => { e.stopPropagation(); onOpen(); }}
     >
       <Highlight text={name} query={query} />
@@ -79,7 +80,7 @@ export function NotesToggle({ r }: { r: DatabaseRowType }) {
       <button
         type="button"
         onClick={e => { e.stopPropagation(); setOpen(v => !v); }}
-        className="inline-flex items-center gap-1 text-xs text-info hover:underline py-1"
+        className="inline-flex items-center gap-1 min-h-9 py-2 -my-1 text-xs text-info hover:underline"
         aria-expanded={open}
       >
         <StickyNote className="h-3.5 w-3.5" /> {count} note{count !== 1 ? 's' : ''}

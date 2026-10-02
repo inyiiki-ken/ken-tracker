@@ -8,7 +8,7 @@ import { Input } from '@/components/ui/input';
 import type { DatabaseRowType } from '@/types';
 import { formatDateShort } from '@/lib/formatters';
 import { gramsLabel, gramsTotalLabel, groupByCustomer } from '@/lib/calculations';
-import { aedLabel, collectForAED } from '@/lib/liverMoney';
+import { aedLabel, collectForAED, customersWithOtherLivers, withOtherLivers } from '@/lib/liverMoney';
 import { confirmDeliveryReport, getDeliveryReports, rejectDeliveryReport } from '@/lib/api';
 import { confirmStatusFor, isOpenReport, type DeliveryReport } from '@/lib/deliveryReports';
 import { itemsByKey, itemsFor } from '@/lib/pulloutRequests';
@@ -140,8 +140,11 @@ export default function DeliveryReportsPanel({ records, onRefresh, onOpenReports
             const notFound = items.length === 0;
             const to = confirmStatusFor(q.kind, dispatchStatuses);
             // Per customer, capped at what they still owe (a group downpayment sits on one item).
+            // A customer who also buys from another liver gets the same item-level figure
+            // the liver was shown (see sharedCustomer).
+            const shared = customersWithOtherLivers(records, q.liver);
             const expected = Array.from(groupByCustomer(items))
-              .reduce((s, [k, rows]) => s + collectForAED(rows, byCustomer.get(k) ?? rows), 0);
+              .reduce((s, [k, rows]) => s + collectForAED(rows, withOtherLivers(byCustomer.get(k) ?? rows, shared)), 0);
             const isBusy = busy === q.id;
             const reason = reasons[q.id];
             return (
