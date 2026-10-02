@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronDown, PackageOpen, XCircle } from 'lucide-react';
+import { ChevronDown, ChevronRight, PackageOpen, XCircle } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -12,9 +12,10 @@ import { customerKey, gramsLabel, gramsTotalLabel, groupByCustomer, parseDateRob
 import { boxFromDelivery, statusChangedInfo } from '@/lib/fulfilment';
 import StatusBadge from '@/components/StatusBadge';
 import { dueFor, getReminderRules, lastPurchases } from '@/lib/reminders';
-import { aedLabel, collectForAED, customerMoney } from '@/lib/liverMoney';
+import { aedLabel, collectForAED, customerMoney, reportedCashAED, sharedCustomer } from '@/lib/liverMoney';
+import type { DeliveryReport } from '@/lib/deliveryReports';
 import { DATE_RANGES, rangeBounds, type DateRange } from '@/lib/liverSales';
-import { Highlight, NotesToggle, OutsourceTag, notesOf } from './LiverRowBits';
+import { CustomerNameButton, Highlight, NotesToggle, OutsourceTag, notesOf } from './LiverRowBits';
 import {
   addItemsToPulloutRequest, createPulloutRequest, ensurePulloutRowKeys, getPulloutRequests,
   setPulloutRequestStatus, updatePulloutRequest,
@@ -78,6 +79,7 @@ function GroupCheckbox({ checked, partial, disabled, onChange, label }: {
   return (
     <input
       type="checkbox"
+      className="h-5 w-5 align-middle"
       aria-label={label}
       ref={el => { if (el) el.indeterminate = partial; }}
       checked={checked}
@@ -89,7 +91,7 @@ function GroupCheckbox({ checked, partial, disabled, onChange, label }: {
 }
 
 // ─── Items to pull out + pullout requests ────────────────────────────────────
-export function PulloutPanel({ liver, records, allRecords, recordsAt, onRefresh, previewing, visibleIds, query, onRequestsChange, onLoaded, onOpenCustomer, open: openProp, onOpenChange }: {
+export function PulloutPanel({ liver, records, allRecords, recordsAt, onRefresh, previewing, visibleIds, query, onRequestsChange, onLoaded, onOpenCustomer, reports, open: openProp, onOpenChange }: {
   liver: string;
   /** This liver's items. */
   records: DatabaseRowType[];
@@ -111,6 +113,8 @@ export function PulloutPanel({ liver, records, allRecords, recordsAt, onRefresh,
   onLoaded?: (ok: boolean) => void;
   /** Tap a customer's name: her per-customer sheet. */
   onOpenCustomer?: (customer: string) => void;
+  /** Her delivery reports, for cash she reported but Accounts hasn't entered yet. */
+  reports?: DeliveryReport[];
   /** Items to pull out folded open or shut; null = open when something waits to be requested or is Ready. */
   open?: boolean | null;
   onOpenChange?: (open: boolean) => void;
@@ -262,10 +266,11 @@ export function PulloutPanel({ liver, records, allRecords, recordsAt, onRefresh,
         // Paid / balance over all her items for this customer, not only these.
         const all = allByCustomer.get(key) ?? rows;
         const money = customerMoney(all);
-        return { key, name: sorted[0].minerName || '—', rows: sorted, all, newest: orderTime(sorted[0]), money };
+        const cashReported = reportedCashAED(reports ?? [], all);
+        return { key, name: sorted[0].minerName || '—', rows: sorted, all, newest: orderTime(sorted[0]), money, shared: sharedCustomer(all), cashReported };
       })
       .sort((a, b) => b.newest - a.newest);
-  }, [toPullOut, records]);
+  }, [toPullOut, records, reports]);
 
   // Customers she ticked only some of.
   const partial = useMemo(() => groups.flatMap(g => {
@@ -527,15 +532,20 @@ export function PulloutPanel({ liver, records, allRecords, recordsAt, onRefresh,
                       </td>
                       <td colSpan={3} className="px-3 py-2">
                         <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
-                          {onOpenCustomer ? (
-                            <button type="button" className="font-semibold underline-offset-2 hover:underline text-left" onClick={e => { e.stopPropagation(); onOpenCustomer(g.key); }}>
-                              <Highlight text={g.name} query={query} />
+                          {/* Tapping the name ticks the customer, like the rest of the row; the arrow opens her sheet. */}
+                          <span className="font-semibold"><Highlight text={g.name} query={query} /></span>
+                          {onOpenCustomer && (
+                            <button type="button" aria-label={`${g.name}: phone and balance`} title="Phone and balance"
+                              className="-my-1.5 h-8 w-8 inline-grid place-items-center rounded border border-border text-muted-foreground hover:bg-secondary"
+                              onClick={e => { e.stopPropagation(); onOpenCustomer(g.key); }}>
+                              <ChevronRight className="h-4 w-4" />
                             </button>
-                          ) : <span className="font-semibold"><Highlight text={g.name} query={query} /></span>}
+                          )}
                           <span className="text-xs text-muted-foreground">{g.rows.length} item{g.rows.length !== 1 ? 's' : ''} · {weightOf(g.rows)}</span>
-                          {g.money.due > 0 && (
-                            <span className={`text-xs font-semibold ${g.money.balance > 0 ? 'text-destructive' : 'text-success'}`}>
+                          {!g.shared && g.money.due > 0 && (
+                            <span className={`text-xs font-semibold ${g.money.balance <= 0 ? 'text-success' : g.cashReported > 0 ? 'text-muted-foreground' : 'text-destructive'}`}>
                               {g.money.balance > 0 ? `Balance due ${aedLabel(g.money.balance)}` : 'Paid'}
+                              {g.money.balance > 0 && g.cashReported > 0 && <span className="font-normal"> · cash reported {aedLabel(g.cashReported)}, waiting for Accounts</span>}
                             </span>
                           )}
                         </div>
@@ -552,7 +562,7 @@ export function PulloutPanel({ liver, records, allRecords, recordsAt, onRefresh,
                       return (
                         <tr key={r.id} className={`border-b border-border/30 align-top ${locked ? 'opacity-70' : 'cursor-pointer'}`} onClick={() => loaded && !locked && toggle(r.id)}>
                           <td className="w-8 px-3 py-2 text-center">
-                            <input type="checkbox" aria-label={`Tick ${r.itemDescription || 'item'}`} disabled={!loaded || locked} checked={locked || picked.has(r.id)} onChange={() => toggle(r.id)} onClick={e => e.stopPropagation()} />
+                            <input type="checkbox" className="h-5 w-5 align-middle" aria-label={`Tick ${r.itemDescription || 'item'}`} disabled={!loaded || locked} checked={locked || picked.has(r.id)} onChange={() => toggle(r.id)} onClick={e => e.stopPropagation()} />
                           </td>
                           <td className="px-1 py-2 text-muted-foreground whitespace-nowrap">{r.dateOfLive ? formatDateShort(r.dateOfLive) : '—'}</td>
                           <td className="px-3 py-2 min-w-0 break-words">
@@ -561,8 +571,9 @@ export function PulloutPanel({ liver, records, allRecords, recordsAt, onRefresh,
                               {r.orderId && <span><Highlight text={r.orderId} query={query} /></span>}
                               <OutsourceTag r={r} />
                             </div>
+                            {/* In a request whose day hasn't passed: not overdue (same as the banner). */}
                             {due && (
-                              <div className={`text-xs ${due.due.getTime() < Date.now() ? 'text-destructive font-semibold' : 'text-muted-foreground'}`}>
+                              <div className={`text-xs ${due.due.getTime() < Date.now() && !(q && !isOverdueRequest(q, today)) ? 'text-destructive font-semibold' : 'text-muted-foreground'}`}>
                                 Due {formatDateShort(due.due.toISOString())}
                               </div>
                             )}
@@ -619,7 +630,7 @@ export function PulloutPanel({ liver, records, allRecords, recordsAt, onRefresh,
                     {partial.map(p => `You left ${p.left} of ${p.name}'s items`).join(' · ')} — {partial.length === 1 && partial[0].left === 1 ? 'it' : 'they'} will go separately.
                   </p>
                 )}
-                <Textarea value={note} onChange={e => setNote(e.target.value)} placeholder="Note for Dispatch (optional)" className="text-xs min-h-[48px] bg-background" />
+                <Textarea value={note} maxLength={500} onChange={e => setNote(e.target.value)} placeholder="Note for Dispatch (optional)" className="text-xs min-h-[48px] bg-background" />
                 {joinTarget ? (
                   <div className="flex flex-wrap gap-2">
                     <Button size="sm" className="h-9 text-xs" disabled={saving || previewing} onClick={() => submit(joinTarget)}>
@@ -681,7 +692,7 @@ export function PulloutPanel({ liver, records, allRecords, recordsAt, onRefresh,
                         {/* COD / Pick Up only matters when some item is local. */}
                         {(items.length === 0 || items.some(r => !ownBox(r))) && <MethodToggle value={editMethod} onChange={setEditMethod} />}
                       </div>
-                      <Textarea value={editNote} onChange={e => setEditNote(e.target.value)} placeholder="Note for Dispatch (optional)" className="text-xs min-h-[48px] bg-background" />
+                      <Textarea value={editNote} maxLength={500} onChange={e => setEditNote(e.target.value)} placeholder="Note for Dispatch (optional)" className="text-xs min-h-[48px] bg-background" />
                       <div className="flex gap-2">
                         <Button size="sm" className="h-9 text-xs" disabled={saving || previewing} onClick={() => saveEdit(q)}>{previewing ? 'Preview only' : 'Save'}</Button>
                         <Button size="sm" variant="ghost" className="h-9 text-xs" onClick={() => setEditing('')}>Close</Button>
@@ -806,9 +817,7 @@ export function CancelledItems({ records, query, onOpenCustomer, open: openProp,
                       </td>
                       <td className="px-3 py-2 min-w-0 break-words">
                         {onOpenCustomer ? (
-                          <button type="button" className="font-medium text-left underline-offset-2 hover:underline" onClick={() => onOpenCustomer(customerKey(r))}>
-                            <Highlight text={r.minerName || '—'} query={query} />
-                          </button>
+                          <CustomerNameButton name={r.minerName || '—'} query={query} onOpen={() => onOpenCustomer(customerKey(r))} />
                         ) : <div className="font-medium"><Highlight text={r.minerName || '—'} query={query} /></div>}
                         <div className="text-xs text-muted-foreground sm:hidden">
                           <Highlight text={[r.itemDescription, r.orderId].filter(Boolean).join(' · ')} query={query} />

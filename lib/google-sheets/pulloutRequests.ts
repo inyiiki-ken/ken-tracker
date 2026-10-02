@@ -133,11 +133,14 @@ async function caller(): Promise<Caller> {
   const a = await getSessionAccess();
   // Checks switched off, or a developer ⇒ no checks.
   if (a.all) return { email: a.email || (await getSessionEmail()) || "", staff: true, viewAll: true, liverName: "" };
+  // No role (e.g. a Roles row with a misspelt role): nothing, as in getRecords.
+  if (a.roles.length === 0) throw new Error("You don't have permission for this action.");
   return {
     email: a.email,
     staff: a.roles.some((r) => STAFF_ROLES.includes(r)),
     viewAll: a.roles.some((r) => VIEW_ALL_ROLES.includes(r)),
-    liverName: liverKey(a.liverName),
+    // Only a liver acts as one; a name on a staff row alone doesn't make her one.
+    liverName: a.roles.includes("liver") ? liverKey(a.liverName) : "",
   };
 }
 
@@ -152,11 +155,22 @@ function newId(): string {
   return `PR-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`.toUpperCase();
 }
 
-/** Earliest day a request may be set to: yesterday in UTC, slack for every timezone. */
+/** Longest note / Dispatch reply kept (a sheet cell holds 50,000 characters). */
+const NOTE_MAX = 500, REPLY_MAX = 300;
+
+/**
+ * A real calendar day from yesterday (UTC, slack for every timezone) up to
+ * about two months ahead.
+ */
 function checkDay(d: string) {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) throw new Error("Pick the day you will pull out the items.");
+  const t = new Date(d + "T00:00:00Z");
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(d) || isNaN(t.getTime()) || t.toISOString().slice(0, 10) !== d) {
+    throw new Error("Pick the day you will pull out the items.");
+  }
   const earliest = new Date(Date.now() - 24 * 3600_000).toISOString().slice(0, 10);
   if (d < earliest) throw new Error("Pick today or a later day.");
+  const latest = new Date(Date.now() + 60 * 86400_000).toISOString().slice(0, 10);
+  if (d > latest) throw new Error("Pick a day within the next two months.");
 }
 
 function cleanKeys(keys: string[]): string[] {
@@ -173,7 +187,7 @@ function cleanInput(input: PulloutRequestInput) {
     date,
     method: method(input.method),
     keys,
-    note: str(input.note),
+    note: str(input.note).slice(0, NOTE_MAX),
   };
 }
 
@@ -351,7 +365,7 @@ export async function addItemsToPulloutRequest(params: { id: string; itemKeys: s
       items: [...q.itemKeys, ...keys].join(","),
       summary: [q.summary, itemSummary(items)].filter(Boolean).join("\n"),
       // A note typed with the new items is added below her earlier one.
-      ...(str(params.note) ? { note: [q.note, str(params.note)].filter(Boolean).join("\n") } : {}),
+      ...(str(params.note) ? { note: [q.note, str(params.note)].filter(Boolean).join("\n").slice(0, NOTE_MAX) } : {}),
       updatedBy: c.email,
       updatedAt: new Date().toISOString(),
     });
@@ -383,8 +397,9 @@ export async function updatePulloutRequest(params: {
       if (d !== q.date) { checkDay(d); patch.date = d; }
     }
     if (params.method !== undefined && method(params.method) !== q.method) patch.method = method(params.method);
-    if (params.note !== undefined && str(params.note) !== q.note) patch.note = str(params.note);
-    if (params.reply !== undefined && str(params.reply) !== q.dispatchReply) patch.reply = str(params.reply);
+    const note = str(params.note).slice(0, NOTE_MAX), reply = str(params.reply).slice(0, REPLY_MAX);
+    if (params.note !== undefined && note !== q.note) patch.note = note;
+    if (params.reply !== undefined && reply !== q.dispatchReply) patch.reply = reply;
     if (Object.keys(patch).length === 0) return;
     patch.updatedBy = c.email;
     patch.updatedAt = new Date().toISOString();
@@ -424,7 +439,7 @@ export async function setPulloutRequestStatus(params: {
       updatedBy: c.email,
       updatedAt: new Date().toISOString(),
     };
-    if (params.reply !== undefined) patch.reply = str(params.reply);
+    if (params.reply !== undefined) patch.reply = str(params.reply).slice(0, REPLY_MAX);
     await writeRequestCells(ws, row, q, patch);
   });
 }

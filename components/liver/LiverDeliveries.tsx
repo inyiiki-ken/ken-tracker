@@ -16,7 +16,7 @@ import {
 } from '@/lib/deliveryReports';
 import { finishedAfterLoad, isRealItemKey, itemKey, itemLine, itemsByKey, itemsFor } from '@/lib/pulloutRequests';
 import { useVisiblePolling } from '@/lib/useVisiblePolling';
-import { Highlight } from './LiverRowBits';
+import { CustomerNameButton, Highlight } from './LiverRowBits';
 
 const STATUS_STYLE: Record<DeliveryReportStatus, string> = {
   Reported: 'border-warning/40 bg-warning/10 text-warning',
@@ -302,13 +302,13 @@ export function DeliveryPanel({ liver, records, recordsAt, onRefresh, previewing
                 const collect = collectForAED(free, byCustomer.get(g.customer) ?? g.rows);
                 const editing = active === g.key;
                 const ticked = free.filter(r => picked.has(r.id));
+                // Cash expected for the items she ticked (what Dispatch will see as "expected").
+                const expected = editing ? collectForAED(ticked, byCustomer.get(g.customer) ?? g.rows) : 0;
                 return (
                   <div key={g.key} className="px-4 py-3 space-y-2">
                     <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
                       {onOpenCustomer ? (
-                        <button type="button" className="font-semibold text-sm text-left underline-offset-2 hover:underline" onClick={() => onOpenCustomer(g.customer)}>
-                          <Highlight text={g.name} query={query} />
-                        </button>
+                        <span className="text-sm"><CustomerNameButton name={g.name} query={query} onOpen={() => onOpenCustomer(g.customer)} bold /></span>
                       ) : <span className="font-semibold text-sm"><Highlight text={g.name} query={query} /></span>}
                       <span className="text-xs text-muted-foreground">
                         {g.kind === 'Delivered' ? 'For COD' : 'For Pick Up'} · {g.rows.length} item{g.rows.length !== 1 ? 's' : ''} · {weightOf(g.rows)}
@@ -362,13 +362,23 @@ export function DeliveryPanel({ liver, records, recordsAt, onRefresh, previewing
                         {g.kind === 'Delivered' && (
                           <div className="flex flex-col gap-1">
                             <label className="text-xs text-muted-foreground">Cash you collected, AED (optional)</label>
-                            <Input
-                              inputMode="decimal"
-                              value={cash}
-                              onChange={e => setCash(e.target.value)}
-                              placeholder={collect > 0 ? String(collect) : 'e.g. 1250'}
-                              className="h-9 text-sm w-40 bg-background border-border"
-                            />
+                            <div className="flex flex-wrap items-center gap-2">
+                              <Input
+                                inputMode="decimal"
+                                value={cash}
+                                onChange={e => setCash(e.target.value)}
+                                placeholder="e.g. 1250"
+                                className="h-9 text-sm w-40 bg-background border-border"
+                              />
+                              {expected > 0 && (
+                                <>
+                                  <span className="text-xs text-muted-foreground">Expected {aedLabel(expected)}</span>
+                                  <Button type="button" size="sm" variant="outline" className="h-9 text-xs border-border" onClick={() => setCash(String(expected))}>
+                                    Same
+                                  </Button>
+                                </>
+                              )}
+                            </div>
                           </div>
                         )}
                         <Input value={note} onChange={e => setNote(e.target.value)} placeholder="Note for Dispatch (optional)" className="h-9 text-xs bg-background border-border" />

@@ -195,20 +195,25 @@ export function outsourceName(r: DatabaseRowType): string {
 
 /**
  * Which outsource each liver sells for (e.g. JAY -> JOLAI), keyed by
- * `keyOf(liverName)`. A liver with items in the Outsource box (or with a
- * Source) belongs to the outsource those items name most; a liver whose items
- * are all on a known outsource's page belongs to it too, so she stays under it
- * after her items ship. Livers with neither are the shop's own.
+ * `keyOf(liverName)`. A liver with items in the Outsource box belongs to the
+ * outsource those items name most. A liver whose items are all on one page
+ * that an outsource sells on belongs to it too, so she stays under it after her
+ * items ship. Livers with neither are the shop's own. (A Source alone doesn't
+ * count: shop stock has one too, e.g. "Shop Stock".)
  */
 export function outsourceOfLivers(records: DatabaseRowType[], keyOf: (v: unknown) => string): Map<string, string> {
-  const signal = (r: DatabaseRowType) => orderBox(r) === 'outsource' || !!String(r.source ?? '').trim();
+  const signal = (r: DatabaseRowType) => orderBox(r) === 'outsource';
   const counts = new Map<string, Map<string, number>>();
   const known = new Set<string>();
+  // Page an outsource's items were sold on -> that outsource (e.g. JOLAI page -> JOLAI SUPPLY).
+  const pageOut = new Map<string, string>();
   for (const r of records) {
     const liver = keyOf(r.liverName);
     if (!liver || !signal(r)) continue;
     const out = outsourceName(r);
     known.add(out);
+    const page = String(r.page ?? '').trim();
+    if (page && !pageOut.has(page)) pageOut.set(page, out);
     if (!counts.has(liver)) counts.set(liver, new Map());
     const c = counts.get(liver)!;
     c.set(out, (c.get(out) ?? 0) + 1);
@@ -217,17 +222,24 @@ export function outsourceOfLivers(records: DatabaseRowType[], keyOf: (v: unknown
   for (const [liver, c] of counts) {
     result.set(liver, [...c.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0][0]);
   }
-  // No outsource items (any more): all on one known outsource's page.
+  // No outsource items (any more): all on one page named after an outsource, or
+  // on a page an outsource's items were sold on. That second case is skipped for
+  // a page with open non-outsource items (the shop's own page, most likely).
   const pages = new Map<string, Set<string>>();
+  const shopPages = new Set<string>();
   for (const r of records) {
     const liver = keyOf(r.liverName);
     if (!liver || result.has(liver)) continue;
+    const page = String(r.page ?? '').trim();
     if (!pages.has(liver)) pages.set(liver, new Set());
-    pages.get(liver)!.add(String(r.page ?? '').trim());
+    pages.get(liver)!.add(page);
+    if (!['dispatched', 'delivered', 'cancelled'].includes(orderBox(r))) shopPages.add(page);
   }
   for (const [liver, set] of pages) {
     const [only] = [...set];
-    if (set.size === 1 && only && known.has(only)) result.set(liver, only);
+    if (set.size !== 1 || !only) continue;
+    const out = known.has(only) ? only : shopPages.has(only) ? undefined : pageOut.get(only);
+    if (out) result.set(liver, out);
   }
   return result;
 }

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from 'react';
-import { StickyNote } from 'lucide-react';
+import { ChevronRight, StickyNote } from 'lucide-react';
 import type { DatabaseRowType } from '@/types';
 import { formatDateShort } from '@/lib/formatters';
 import { fulfilmentStage, outsourceName } from '@/lib/fulfilment';
@@ -23,13 +23,30 @@ export function Highlight({ text, query }: { text?: string; query?: string }) {
   );
 }
 
+/**
+ * A customer's name that opens her sheet (phone, balance). Dotted underline and
+ * an arrow so it looks tappable on a phone, where there is no hover.
+ */
+export function CustomerNameButton({ name, query, onOpen, bold }: { name: string; query?: string; onOpen: () => void; bold?: boolean }) {
+  return (
+    <button
+      type="button"
+      className={`inline-flex items-center gap-0.5 py-1 text-left underline decoration-dotted underline-offset-2 ${bold ? 'font-semibold' : 'font-medium'}`}
+      onClick={e => { e.stopPropagation(); onOpen(); }}
+    >
+      <Highlight text={name} query={query} />
+      <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden />
+    </button>
+  );
+}
+
 /** Outsource items: a small tag, with the supplier when it isn't her own name. */
 export function OutsourceTag({ r }: { r: DatabaseRowType }) {
   if (!/outsourc/i.test(String(r.status ?? ''))) return null;
   const who = outsourceName(r);
   const showWho = who && who.toUpperCase() !== String(r.liverName ?? '').trim().toUpperCase();
   return (
-    <span className="inline-flex items-center rounded border border-success/30 bg-success/10 px-1 text-[10px] font-semibold text-success">
+    <span className="inline-flex items-center rounded border border-success/30 bg-success/10 px-1 text-xs font-semibold text-success">
       Outsource{showWho ? ` · ${who}` : ''}
     </span>
   );

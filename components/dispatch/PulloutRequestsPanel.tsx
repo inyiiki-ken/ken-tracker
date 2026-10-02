@@ -232,6 +232,7 @@ export default function PulloutRequestsPanel({ records, onRefresh }: {
                 <div className="flex gap-2">
                   <Input
                     value={reply}
+                    maxLength={300}
                     onChange={e => setReplies(p => ({ ...p, [q.id]: e.target.value }))}
                     placeholder="Reply to the liver (e.g. Ring not found — call me)"
                     className="h-8 text-xs bg-background border-border"

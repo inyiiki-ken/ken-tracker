@@ -15,6 +15,7 @@ import { isLiverOnly, getUserRole } from "@/config/roles";
 import { customerKey, parseDateRobust } from "@/lib/calculations";
 import { newestPurchaseRawByCustomer } from "@/lib/purchaseDates";
 import { boxStatusName, ownBox } from "@/lib/pulloutTargets";
+import { isCancelledOrReturned } from "@/lib/fulfilment";
 
 
 /**
@@ -219,6 +220,10 @@ export async function getRecords(_params?: { tailOnly?: boolean }): Promise<Data
   // Her customers may also buy from other livers; reminders count from the
   // customer's newest purchase, so stamp that on her rows before dropping the rest.
   const newest = newestPurchaseRawByCustomer(all);
+  // Customers who also have items (not cancelled / returned) from another
+  // liver: her rows alone can't give their balance or loyalty count, and the
+  // server can't work those out for her (prices need the browser's rates).
+  const shared = new Set(all.filter((r) => liverKey(r.liverName) !== me && !isCancelledOrReturned(r)).map((r) => customerKey(r)));
   // Where "Liver came" sends her international / reseller items, named from
   // every row like Dispatch's (her own rows may spell the box differently).
   const statuses = all.map((r) => String(r.status ?? ""));
@@ -233,6 +238,7 @@ export async function getRecords(_params?: { tailOnly?: boolean }): Promise<Data
       for (const k of LIVER_HIDDEN_CONTACT) delete out[k];
       const last = newest.get(customerKey(r));
       if (last) out.customerLastPurchaseAt = last;
+      if (shared.has(customerKey(r))) out.customerHasOtherLivers = true;
       const box = ownBox(r);
       if (box) out.ownBoxStatus = boxNames[box];
       return out;
@@ -660,6 +666,7 @@ export async function backfillRowKeys(): Promise<{ success: boolean; updated: nu
 // ---------- Uploads ----------
 
 export async function getUploads() {
+  await requireRole(["admin", "super_admin"]);
   const rows = await getActiveRows("uploads");
   return rows.map((r) => ({
     staffUploader: r.get(UPLOADS_HEADERS.staffUploader) ?? "",
@@ -673,7 +680,7 @@ export async function createUpload(params: {
   status?: string;
   userEmail?: string;
 }): Promise<{ success: boolean }> {
-  await requireSession();
+  await requireRole(["admin", "super_admin"]);
   const sheet = await getActiveWorksheet("uploads");
   await sheet.addRow({
     [UPLOADS_HEADERS.staffUploader]: params.userEmail ?? "unknown",
@@ -688,6 +695,15 @@ export async function createUpload(params: {
 // Each masterlist upload tags its rows with "import:<id>" in the Audit Trail.
 // We remember the most recent import so it can be reverted in one click.
 
+/** Import ids look like "1696000000000-ab12cd" (UploadMasterlistFAB). */
+const IMPORT_ID_RE = /^[\w-]{6,}$/;
+
+/** True when an Audit Trail carries exactly this import's tag (not one that merely starts with it). */
+function hasImportTag(audit: string, importId: string): boolean {
+  const tag = `import:${importId}`;
+  return audit.split(/[|\s]+/).some((part) => part.trim() === tag);
+}
+
 export interface LastImportInfo {
   importId: string;
   fileName: string;
@@ -698,13 +714,16 @@ export interface LastImportInfo {
 
 /** Remember the most recent import (called right after a successful upload). */
 export async function recordLastImport(info: LastImportInfo): Promise<{ success: boolean }> {
-  await requireSession();
+  // Admins only: Undo deletes whatever this record points at.
+  await requireRole(["admin", "super_admin"]);
+  if (!IMPORT_ID_RE.test(String(info?.importId ?? ""))) throw new Error("Invalid import id.");
   await writeConfig("__LAST_IMPORT__", JSON.stringify(info));
   return { success: true };
 }
 
 /** The most recent import that can still be undone (null if none / already undone). */
 export async function getLastImport(): Promise<LastImportInfo | null> {
+  await requireRole(["admin", "super_admin"]);
   const raw = await readConfig("__LAST_IMPORT__");
   if (!raw) return null;
   try {
@@ -728,14 +747,14 @@ export async function undoLastImport(
   const last = await getLastImport();
   const importId = params?.importId || last?.importId;
   if (!importId) return { success: false, deleted: 0, fileName: "", error: "No import to undo." };
+  if (!IMPORT_ID_RE.test(importId)) return { success: false, deleted: 0, fileName: "", error: "That import can't be undone." };
 
   const sheet = await getActiveWorksheet("database");
   const rows = await sheet.getRows();
   const auditHeader = DATABASE_HEADERS.auditTrail;
-  const needle = `import:${importId}`;
 
   const targets = rows
-    .filter((r) => String(r.get(auditHeader) ?? "").includes(needle))
+    .filter((r) => hasImportTag(String(r.get(auditHeader) ?? ""), importId))
     .sort((a, b) => b.rowNumber - a.rowNumber);
 
   // Delete all rows in ONE request (bottom-up ranges), instead of one API call
@@ -783,8 +802,8 @@ export async function undoLastImport(
 // special row on the Uploads sheet itself, marked status === "__RATES_CONFIG__",
 // with the JSON blob stored in the masterlistFile column.
 
-/** Crown's cost rates — never sent to a liver (her browser only needs the sell side). */
-const LIVER_HIDDEN_RATES = ["silverCostRate", "silverBrandedCostRate"] as const;
+/** Crown's cost rates and gold rate — never sent to a liver (her browser only needs the sell side). */
+const LIVER_HIDDEN_RATES = ["silverCostRate", "silverBrandedCostRate", "goldRate"] as const;
 
 function withoutCostRates(json: string): string {
   if (!json) return json;
@@ -804,6 +823,8 @@ function withoutCostRates(json: string): string {
 export async function getRatesConfig(_params?: Record<string, never>): Promise<{ config: string }> {
   const config = await readConfig("__RATES_CONFIG__");
   const access = await getSessionAccess();
+  // Signed in but not in the Roles tab: nothing (same as getRecords).
+  if (!access.all && access.roles.length === 0) return { config: "" };
   if (access.all || !isLiverOnly(access.roles)) return { config };
   return { config: withoutCostRates(config) };
 }
@@ -959,8 +980,22 @@ export async function deletePageLogo(params: { page: string }): Promise<{ succes
 // Same marker-row pattern as rates config: per-tenant pricing numbers
 // (USD→AED, making-charge tiers, per-pc rates) stored as a JSON blob.
 
+/** Supplier-cost inputs in the pricing config — never sent to a liver. */
+const LIVER_HIDDEN_PRICING = ["makingCharges", "perPcRates", "perPcFallback", "b1t1Multiplier"] as const;
+
 export async function getPricingConfig(_params?: Record<string, never>): Promise<{ config: string }> {
-  return { config: await readConfig("__PRICING_CONFIG__") };
+  const config = await readConfig("__PRICING_CONFIG__");
+  const access = await getSessionAccess();
+  if (!access.all && access.roles.length === 0) return { config: "" };
+  if (access.all || !isLiverOnly(access.roles) || !config) return { config };
+  // A liver keeps USD→AED, card surcharge and shipping fees for her Collect / Balance amounts.
+  try {
+    const parsed = JSON.parse(config) as Record<string, unknown>;
+    for (const k of LIVER_HIDDEN_PRICING) delete parsed[k];
+    return { config: JSON.stringify(parsed) };
+  } catch {
+    return { config: "" };
+  }
 }
 
 export async function savePricingConfig(params: { config: string }): Promise<{ success: boolean }> {
@@ -1141,6 +1176,7 @@ function num(v: unknown): number {
 }
 
 export async function getPurchases(_params?: Record<string, never>): Promise<PurchaseOrder[]> {
+  await requireRole(["purchasing", "admin", "super_admin"]);
   const ws = await getPurchasingSheet();
   const rows = await ws.getRows();
   return rows.map((r) => {

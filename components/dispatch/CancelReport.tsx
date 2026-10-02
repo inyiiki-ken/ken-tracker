@@ -9,7 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Printer } from 'lucide-react';
 import { DatabaseRowType } from '@/types';
 import { formatDate } from '@/lib/formatters';
-import { gramsLabel, sumGrams } from '@/lib/calculations';
+import { gramsLabel, gramsTotalLabel } from '@/lib/calculations';
 import { orderBox, cancelDay } from '@/lib/fulfilment';
 import { SHARED_STYLES } from './PulloutReport';
 
@@ -75,7 +75,7 @@ export default function CancelReport({ records, onClose }: Props) {
         .sign div { flex: 1; border-top: 1px solid #111; padding-top: 4px; font-size: 10px; }
       </style></head><body>
       <h1 class="font-cinzel" style="font-size:20px;margin:0 0 4px;">CANCELLED / RETURNED ITEMS</h1>
-      <p class="meta">Cancelled: ${esc(rangeLabel)} &nbsp;|&nbsp; Liver: ${esc(liver === ALL ? 'All' : liver)} &nbsp;|&nbsp; ${picked.length} item${picked.length !== 1 ? 's' : ''} &nbsp;|&nbsp; ${sumGrams(picked).toFixed(2)}g &nbsp;|&nbsp; Generated: ${esc(new Date().toLocaleString())}</p>`;
+      <p class="meta">Cancelled: ${esc(rangeLabel)} &nbsp;|&nbsp; Liver: ${esc(liver === ALL ? 'All' : liver)} &nbsp;|&nbsp; ${picked.length} item${picked.length !== 1 ? 's' : ''} &nbsp;|&nbsp; ${gramsTotalLabel(picked)} &nbsp;|&nbsp; Generated: ${esc(new Date().toLocaleString())}</p>`;
 
     if (picked.length === 0) html += `<p>No cancelled or returned items for these dates.</p>`;
 
@@ -84,11 +84,11 @@ export default function CancelReport({ records, onClose }: Props) {
       html += `<div class="source-block">
         <div class="source-header">
           <span class="source-title">${esc(lv)}</span>
-          <div class="source-math"><span>Items: ${all.length}</span><span>Total Grams: ${sumGrams(all).toFixed(2)}g</span></div>
+          <div class="source-math"><span>Items: ${all.length}</span><span>Total Grams: ${gramsTotalLabel(all)}</span></div>
         </div><div class="source-body">`;
       byCust.forEach((items, cust) => {
         html += `<div class="client-block">
-          <div class="client-header"><span>${esc(cust)}</span><span class="client-meta">${items.length} item${items.length !== 1 ? 's' : ''} &nbsp;·&nbsp; ${sumGrams(items).toFixed(2)}g</span></div>
+          <div class="client-header"><span>${esc(cust)}</span><span class="client-meta">${items.length} item${items.length !== 1 ? 's' : ''} &nbsp;·&nbsp; ${gramsTotalLabel(items)}</span></div>
           <table><thead><tr>
             <th style="width:28px">Done</th><th>Order ID</th><th>Item Description</th><th class="r">Grams</th>
             <th>Ordered</th><th>Cancelled</th><th>Status</th><th>Reason</th>
@@ -142,7 +142,7 @@ export default function CancelReport({ records, onClose }: Props) {
           </div>
         </div>
         <p className="text-xs text-muted-foreground">
-          {picked.length} item{picked.length !== 1 ? 's' : ''} · {sumGrams(picked).toFixed(2)}g cancelled {rangeLabel}
+          {picked.length} item{picked.length !== 1 ? 's' : ''} · {gramsTotalLabel(picked)} cancelled {rangeLabel}
         </p>
         <Button onClick={print} disabled={picked.length === 0}>
           <Printer className="h-4 w-4 mr-1" /> Print report

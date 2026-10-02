@@ -10,6 +10,8 @@
 import type { DatabaseRowType } from '@/types';
 import { calcCCFee, calcGroupBalance, calcItemPriceAED, calcTotalPaid, groupShippingFee, netChargeAED, roundPrice } from '@/lib/calculations';
 import { boxFromStatus, fulfilmentStage } from '@/lib/fulfilment';
+import { itemKey } from '@/lib/pulloutRequests';
+import type { DeliveryReport } from '@/lib/deliveryReports';
 
 /** What the customer owes for one item (price + card fee), AED. */
 export function itemDueAED(r: DatabaseRowType): number {
@@ -30,6 +32,16 @@ export function customerMoney(rows: DatabaseRowType[]): { paid: number; due: num
   const paid = roundPrice(counted.reduce((s, r) => s + calcTotalPaid(r), 0));
   const owed = calcGroupBalance(counted);
   return { paid, due: roundPrice(owed + paid), balance: Math.max(0, owed) };
+}
+
+/**
+ * The customer also bought from another liver (the server marks a liver's rows,
+ * customerHasOtherLivers). Her rows alone can't give the whole balance, a group
+ * downpayment saved on another liver's item, or the shipping fee, so she sees
+ * item-level figures only and Accounts / Dispatch have the rest.
+ */
+export function sharedCustomer(customerRows: DatabaseRowType[]): boolean {
+  return customerRows.some(r => r.customerHasOtherLivers);
 }
 
 /** A COD item (paid in cash on delivery). */
@@ -88,10 +100,26 @@ export function customerCollectAED(rows: DatabaseRowType[]): number {
  * for that customer).
  */
 export function collectForAED(items: DatabaseRowType[], customerRows: DatabaseRowType[]): number {
+  // Shared customer: each item's own figure, no shipping fee or group cap (see sharedCustomer).
+  if (sharedCustomer(customerRows)) return roundPrice(items.reduce((s, r) => s + collectAED(r), 0));
   const carrier = shippingCarrier(customerRows);
   const sf = carrier && items.some(r => r.id === carrier.id) ? codShippingAED(customerRows) : 0;
   const own = items.reduce((s, r) => s + collectAED(r), 0) + sf;
   return own > 0 ? Math.min(roundPrice(own), customerCollectAED(customerRows)) : 0;
+}
+
+/**
+ * Cash she reported collecting from this customer (her Delivered reports, open
+ * or confirmed, on any of the customer's items), AED. The cash isn't in the
+ * payment columns until Accounts enters it, so the balance can still show it as
+ * due; this lets the screen say so instead of a bare "Balance due".
+ */
+export function reportedCashAED(reports: DeliveryReport[], customerRows: DatabaseRowType[]): number {
+  const keys = new Set(customerRows.map(itemKey));
+  return roundPrice(reports
+    .filter(q => q.kind === 'Delivered' && (q.status === 'Reported' || q.status === 'Confirmed') && (q.cash ?? 0) > 0)
+    .filter(q => q.itemKeys.some(k => keys.has(k)))
+    .reduce((s, q) => s + (q.cash ?? 0), 0));
 }
 
 /** "AED 1,250". */

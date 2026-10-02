@@ -64,6 +64,12 @@ export type DatabaseRowType = {
   ownBoxStatus?: string;
   /** Not a sheet column. Sent to liver-only users instead of clientAddress: whether one is on file. */
   hasClientAddress?: boolean;
+  /**
+   * Not a sheet column. Sent only to liver-only users: this customer also has
+   * items from another liver, so her own rows can't give the customer's whole
+   * balance, shipping fee or loyalty count (lib/liverMoney sharedCustomer).
+   */
+  customerHasOtherLivers?: boolean;
   id: number;
 };
 

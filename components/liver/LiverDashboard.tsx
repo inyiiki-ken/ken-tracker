@@ -18,7 +18,7 @@ import RemindersDialog from '@/components/RemindersDialog';
 import { PulloutPanel, CancelledItems } from './LiverPullout';
 import { DeliveryPanel, recentlyRejected } from './LiverDeliveries';
 import LiverCustomerSheet from './LiverCustomerSheet';
-import { Highlight, NotesToggle, OutsourceTag, ShippedLine } from './LiverRowBits';
+import { CustomerNameButton, Highlight, NotesToggle, OutsourceTag, ShippedLine } from './LiverRowBits';
 import {
   finishedAfterLoad, isOpenRequest, isOverdueRequest, isToPullOut, itemKey, itemsByKey, itemsFor, liverKey, pullOutOnLabel, todayISO,
   type PulloutRequest,
@@ -92,7 +92,7 @@ function scrollToId(id: string) {
 }
 
 // ─── Status Section ───────────────────────────────────────────────────────────
-function StatusSection({ group, open, onToggle, query, copyRow, copiedId, dueOf, onOpenCustomer, reported, customerRows }: {
+function StatusSection({ group, open, onToggle, query, copyRow, copiedId, dueOf, onOpenCustomer, reported, inRequest, customerRows }: {
   group: StatusGroup;
   open: boolean;
   onToggle: () => void;
@@ -103,6 +103,8 @@ function StatusSection({ group, open, onToggle, query, copyRow, copiedId, dueOf,
   onOpenCustomer: (customer: string) => void;
   /** Items in an open delivery report, and what she reported. */
   reported: Map<number, DeliveryKind>;
+  /** Items in an open request whose day hasn't passed: their deadline isn't shown as overdue. */
+  inRequest: Set<number>;
   /** All her items per customer (customerKey), for Collect. */
   customerRows: Map<string, DatabaseRowType[]>;
 }) {
@@ -149,9 +151,7 @@ function StatusSection({ group, open, onToggle, query, copyRow, copiedId, dueOf,
                   <tr key={r.id} className={`border-b border-border/30 align-top ${i % 2 === 0 ? '' : 'bg-secondary/10'}`}>
                     <td className="px-3 py-2 text-muted-foreground whitespace-nowrap">{r.dateOfLive ? formatDateShort(r.dateOfLive) : '—'}</td>
                     <td className="px-3 py-2 min-w-0 break-words">
-                      <button type="button" className="font-medium text-left underline-offset-2 hover:underline" onClick={() => onOpenCustomer(customerKey(r))}>
-                        <Highlight text={r.minerName || '—'} query={query} />
-                      </button>
+                      <CustomerNameButton name={r.minerName || '—'} query={query} onOpen={() => onOpenCustomer(customerKey(r))} />
                       {/* On phones the Item column is hidden: what it is goes under the name. */}
                       <div className="text-[11px] text-muted-foreground sm:hidden">
                         <Highlight text={[r.itemDescription, r.orderId].filter(Boolean).join(' · ')} query={query} />
@@ -161,8 +161,8 @@ function StatusSection({ group, open, onToggle, query, copyRow, copiedId, dueOf,
                       {rep ? (
                         <div className="text-xs text-primary">Reported {rep.toLowerCase()} · waiting for Dispatch</div>
                       ) : due && (
-                        <div className={`text-xs ${due.getTime() < now ? 'text-destructive font-semibold' : 'text-muted-foreground'}`}>
-                          Due {formatDateShort(due.toISOString())}
+                        <div className={`text-xs ${due.getTime() < now && !inRequest.has(r.id) ? 'text-destructive font-semibold' : 'text-muted-foreground'}`}>
+                          Due {formatDateShort(due.toISOString())}{inRequest.has(r.id) ? ' · in your request' : ''}
                         </div>
                       )}
                       {collect > 0 && <div className="text-xs font-semibold text-attention">Collect {aedLabel(collect)}</div>}
@@ -739,6 +739,7 @@ export default function LiverDashboard({ records, searchQuery, onSearchChange, l
                 onRequestsChange={setRequests}
                 onLoaded={onRequestsLoaded}
                 onOpenCustomer={setCustomer}
+                reports={reports}
                 open={pulloutOpen}
                 onOpenChange={setPulloutOpen}
               />
@@ -893,6 +894,7 @@ export default function LiverDashboard({ records, searchQuery, onSearchChange, l
                       dueOf={dueOf}
                       onOpenCustomer={setCustomer}
                       reported={reported}
+                      inRequest={inRequest}
                       customerRows={customerRows}
                     />
                   ))}
@@ -923,7 +925,7 @@ export default function LiverDashboard({ records, searchQuery, onSearchChange, l
         )}
 
         {customer && (
-          <LiverCustomerSheet customer={customer} rows={byLiver} clientMilestones={clientMilestones} onClose={() => setCustomer(null)} />
+          <LiverCustomerSheet customer={customer} rows={byLiver} clientMilestones={clientMilestones} reports={reports} onClose={() => setCustomer(null)} />
         )}
 
         {!selectedLiver && (

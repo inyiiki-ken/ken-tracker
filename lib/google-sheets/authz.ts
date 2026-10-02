@@ -24,13 +24,18 @@ function authzEnabled(): boolean {
 type RoleRow = { email: string; role: string; name: string };
 const rolesCache = new Map<string, { at: number; rows: RoleRow[] }>();
 const ROLES_TTL_MS = 30_000;
+// When a read fails (a hiccup, a 429), the last good copy stands in for a few
+// minutes so one failed read doesn't blank everyone's data. Short, so a removed
+// user isn't let in for long.
+const ROLES_STALE_MS = 5 * 60_000;
 
-/** The Roles sheet rows, or null when it couldn't be read (never cached). */
+/** The Roles sheet rows, or null when it couldn't be read and no recent copy exists. */
 async function loadRolesData(): Promise<RoleRow[] | null> {
   let sheetId = "";
   try { sheetId = await getActiveSheetId(); } catch { return null; }
   const cached = rolesCache.get(sheetId);
   if (cached && Date.now() - cached.at < ROLES_TTL_MS) return cached.rows;
+  const stale = () => (cached && Date.now() - cached.at < ROLES_STALE_MS ? cached.rows : null);
   try {
     const sheet = await getActiveWorksheet("roles");
     const rows = await sheet.getRows();
@@ -42,7 +47,7 @@ async function loadRolesData(): Promise<RoleRow[] | null> {
     rolesCache.set(sheetId, { at: Date.now(), rows: data });
     return data;
   } catch {
-    return null;
+    return stale();
   }
 }
 

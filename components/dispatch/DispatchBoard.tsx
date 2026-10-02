@@ -137,7 +137,9 @@ export default function DispatchBoard({ records, searchQuery, onSearchChange, on
         for (const [out, dateMap] of byOutsource) {
           byOutsource.set(out, new Map([...dateMap.entries()].sort((x, y) => {
             const [lx, dx] = x[0].split(LIVER_SEP), [ly, dy] = y[0].split(LIVER_SEP);
-            return lx.localeCompare(ly) || dy.localeCompare(dx);
+            // Newest first; the sheet mixes date formats, so compare real dates (unknown last).
+            const t = (d: string) => (d ? parseDateRobust(d)?.getTime() : undefined) ?? -Infinity;
+            return lx.localeCompare(ly) || (t(dy) - t(dx) || 0);
           })));
         }
         return [b.key, byOutsource];

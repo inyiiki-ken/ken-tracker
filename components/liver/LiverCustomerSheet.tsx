@@ -6,12 +6,13 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import StatusBadge from '@/components/StatusBadge';
 import type { DatabaseRowType } from '@/types';
 import type { ClientMilestone } from '@/lib/milestones';
-import { getMilestoneBadge } from '@/lib/milestones';
+import { computeClientMilestones, getMilestoneBadge } from '@/lib/milestones';
 import { customerKey, gramsLabel, gramsTotalLabel } from '@/lib/calculations';
 import { formatDate } from '@/lib/formatters';
 import { dayKey, fulfilmentStage } from '@/lib/fulfilment';
 import { isFieldHidden } from '@/lib/appConfig';
-import { aedLabel, collectForAED, customerMoney } from '@/lib/liverMoney';
+import { aedLabel, collectForAED, customerMoney, reportedCashAED, sharedCustomer } from '@/lib/liverMoney';
+import type { DeliveryReport } from '@/lib/deliveryReports';
 import { groupByDay, newestFirst, statusOf } from '@/lib/liverSales';
 import { NotesToggle, OutsourceTag, ShippedLine } from './LiverRowBits';
 
@@ -31,24 +32,35 @@ function missingDetails(r: DatabaseRowType): string[] {
  * status, shipped date, notes, loyalty badge, contact (FB name and phone, never
  * the address) and money (paid / balance due / cash to collect).
  */
-export default function LiverCustomerSheet({ customer, rows, clientMilestones, onClose }: {
+export default function LiverCustomerSheet({ customer, rows, clientMilestones, reports, onClose }: {
   /** customerKey of the customer. */
   customer: string;
   /** This liver's items (only hers). */
   rows: DatabaseRowType[];
+  /** Every customer's milestones (staff); a liver-only user has none, see below. */
   clientMilestones?: Map<string, ClientMilestone>;
+  /** Her delivery reports, for cash she reported but Accounts hasn't entered yet. */
+  reports?: DeliveryReport[];
   onClose: () => void;
 }) {
   const items = useMemo(() => newestFirst(rows.filter(r => customerKey(r) === customer)), [rows, customer]);
   const byDay = useMemo(() => groupByDay(items, r => dayKey(r.dateOfLive)), [items]);
   const first = items[0];
   const money = useMemo(() => customerMoney(items), [items]);
+  const shared = sharedCustomer(items);
+  const cashReported = useMemo(() => reportedCashAED(reports ?? [], items), [reports, items]);
   const live = items.filter(r => fulfilmentStage(r.status) !== 'excluded');
 
   const fbName = !isFieldHidden('fbProfileName') ? String(items.find(r => r.fbProfileName?.trim())?.fbProfileName ?? '').trim() : '';
   const phone = !isFieldHidden('clientNumber') ? String(items.find(r => r.clientNumber?.trim())?.clientNumber ?? '').trim() : '';
   const customerId = items.find(r => r.customerId?.trim())?.customerId?.trim();
-  const milestone = customerId ? clientMilestones?.get(customerId) : undefined;
+  // A liver gets only her own rows: her count is the customer's whole count
+  // only when the customer buys from no other liver.
+  const milestone = useMemo(() => {
+    if (!customerId) return undefined;
+    if (clientMilestones) return clientMilestones.get(customerId);
+    return shared ? undefined : computeClientMilestones(items).get(customerId);
+  }, [clientMilestones, customerId, shared, items]);
   const badge = milestone ? getMilestoneBadge(milestone.qualifyingCount) : null;
 
   return (
@@ -77,10 +89,23 @@ export default function LiverCustomerSheet({ customer, rows, clientMilestones, o
               </div>
             )}
 
-            {money.due > 0 && (
-              <p className={`rounded-lg border px-3 py-2 text-sm font-semibold ${money.balance > 0 ? 'border-destructive/40 bg-destructive/10 text-destructive' : 'border-success/40 bg-success/10 text-success'}`}>
+            {shared ? (
+              live.length > 0 && (
+                <p className="rounded-lg border border-border bg-secondary/20 px-3 py-2 text-xs text-muted-foreground">
+                  {money.paid > 0 && <span className="font-semibold text-foreground">Paid {aedLabel(money.paid)} on your items · </span>}
+                  Also buys from another liver: Accounts has the full balance.
+                </p>
+              )
+            ) : money.due > 0 && (
+              <p className={`rounded-lg border px-3 py-2 text-sm font-semibold ${
+                money.balance <= 0 ? 'border-success/40 bg-success/10 text-success'
+                : cashReported > 0 ? 'border-border bg-secondary/20 text-foreground'
+                : 'border-destructive/40 bg-destructive/10 text-destructive'}`}>
                 {money.balance > 0 ? `Balance due ${aedLabel(money.balance)}` : 'Paid'}
                 <span className="ml-2 text-xs font-normal text-muted-foreground">Paid {aedLabel(money.paid)} of {aedLabel(money.due)}</span>
+                {money.balance > 0 && cashReported > 0 && (
+                  <span className="block text-xs font-normal text-muted-foreground">Cash reported {aedLabel(cashReported)} · waiting for Accounts</span>
+                )}
               </p>
             )}
 

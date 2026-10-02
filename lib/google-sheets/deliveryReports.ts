@@ -113,10 +113,13 @@ type Caller = { email: string; viewAll: boolean; liverName: string };
 async function caller(): Promise<Caller> {
   const a = await getSessionAccess();
   if (a.all) return { email: a.email || (await getSessionEmail()) || "", viewAll: true, liverName: "" };
+  // No role (e.g. a Roles row with a misspelt role): nothing, as in getRecords.
+  if (a.roles.length === 0) throw new Error("You don't have permission for this action.");
   return {
     email: a.email,
     viewAll: a.roles.some((r) => VIEW_ALL_ROLES.includes(r)),
-    liverName: liverKey(a.liverName),
+    // Only a liver acts as one; a name on a staff row alone doesn't make her one.
+    liverName: a.roles.includes("liver") ? liverKey(a.liverName) : "",
   };
 }
 

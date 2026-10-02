@@ -3,9 +3,9 @@ import type { DatabaseRowType } from '@/types';
 export type MetalKind = 'gold' | 'silver' | 'other';
 
 /**
- * Gold, silver or something else (diamond, VCA…). One rule for My Sales and
- * Bossing so their gold/silver figures agree. The TOG column decides first
- * (925 / 18K), then the category, item description or source.
+ * Gold, silver or something else (diamond, VCA…) for My Sales. The TOG column
+ * decides first (925 / 18K), then the category, item description or source.
+ * Bossing keeps its own text-only rule (BossingDashboard getMetal).
  */
 export function metalOf(r: DatabaseRowType): MetalKind {
   const tog = String(r.tog ?? '');

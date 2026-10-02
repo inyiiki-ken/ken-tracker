@@ -1,7 +1,6 @@
 "use client";
 
 import { isSold, soldDay } from '@/lib/fulfilment';
-import { metalOf, type MetalKind } from '@/lib/metal';
 import { useMemo, useState } from 'react';
 import { Calendar, ChevronDown, Printer, History, TrendingUp, Download } from 'lucide-react';
 import { toast } from 'sonner';
@@ -33,10 +32,13 @@ import CustomerHistoryModal from '@/components/CustomerHistoryModal';
 type DateRange = 'all' | 'week' | 'month' | '3months' | 'custom';
 type Metal = 'Gold' | 'Silver' | 'Other';
 
-const METAL_NAME: Record<MetalKind, Metal> = { gold: 'Gold', silver: 'Silver', other: 'Other' };
-/** Same metal rule as My Sales (lib/metal). */
 function getMetal(record: DatabaseRowType): Metal {
-  return METAL_NAME[metalOf(record)];
+  const cat = (record.category || '').toLowerCase();
+  const src = (record.source || '').toLowerCase();
+  const item = (record.itemDescription || '').toLowerCase();
+  if (cat.includes('silver') || src.includes('silver') || item.includes('silver')) return 'Silver';
+  if (cat.includes('gold') || src.includes('gold') || item.includes('gold')) return 'Gold';
+  return 'Other';
 }
 
 const METAL_ORDER: Metal[] = ['Gold', 'Silver', 'Other'];
