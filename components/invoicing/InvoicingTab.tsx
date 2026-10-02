@@ -12,7 +12,7 @@ import { Badge } from '@/components/ui/badge';
 import { TabProps, DatabaseRowType } from '@/types';
 import InvoiceModal from '@/components/InvoiceModal';
 import ResellerImportDialog from '@/components/invoicing/ResellerImportDialog';
-import { calcRemainingBalance, calcGroupBalance } from '@/lib/calculations';
+import { calcRemainingBalance, calcGroupBalance, calcInvoiceLedger, parseDateRobust } from '@/lib/calculations';
 import { formatDate } from '@/lib/formatters';
 import { getPaymentCurrency } from '@/lib/calculations';
 import { toast } from 'sonner';
@@ -228,10 +228,14 @@ function EditDownpaymentDialog({ records, invoiceNum, onUpdate, onClose }: EditD
 interface InvoiceRowProps {
   invoiceNum: string;
   records: DatabaseRowType[];
+  /** What is still owed on this invoice after the customer's earlier invoices (shipping once, credit carried). */
+  balance: number;
+  /** The customer's earlier invoices, so the statement shows shipping already charged and their credit. */
+  priorRecords: DatabaseRowType[];
   onUpdate: TabProps['onUpdate'];
 }
 
-function InvoiceRow({ invoiceNum, records, onUpdate }: InvoiceRowProps) {
+function InvoiceRow({ invoiceNum, records, balance, priorRecords, onUpdate }: InvoiceRowProps) {
   const [showModal, setShowModal] = useState(false);
   const [showEdit, setShowEdit] = useState(false);
   const [showZoho, setShowZoho] = useState(false);
@@ -246,7 +250,7 @@ function InvoiceRow({ invoiceNum, records, onUpdate }: InvoiceRowProps) {
   const displayNum = invoiceNum === '__no_invoice__' ? '—' : invoiceNum;
   const dates = records.map(r => r.dateOfLive).filter(Boolean) as string[];
   const firstDate = dates.length > 0 ? formatDate(dates[0]) : '—';
-  const totalBalance = calcGroupBalance(records);
+  const totalBalance = balance;
   const totalItems = records.length;
   const mop = records[0]?.modeOfPayment || '';
   const isPaid = totalBalance <= 0;
@@ -322,7 +326,7 @@ function InvoiceRow({ invoiceNum, records, onUpdate }: InvoiceRowProps) {
         )}
       </div>
 
-      {showModal && <InvoiceModal records={records} onClose={() => setShowModal(false)} />}
+      {showModal && <InvoiceModal records={records} priorRecords={priorRecords} onClose={() => setShowModal(false)} />}
       {showEdit && (
         <EditDownpaymentDialog records={records} invoiceNum={invoiceNum} onUpdate={onUpdate} onClose={() => setShowEdit(false)} />
       )}
@@ -350,8 +354,23 @@ function CustomerCard({ minerName, invoiceGroups, onUpdate }: CustomerCardProps)
   const totalInvoices = invoiceGroups.size;
   const allRecords = useMemo(() => [...invoiceGroups.values()].flat(), [invoiceGroups]);
   const totalItems = allRecords.length;
-  const totalBalance = [...invoiceGroups.values()].reduce((s, g) => s + calcGroupBalance(g), 0);
+  // One account per customer: shipping once and payments/credit shared across
+  // all their invoices (same as Accounts). Summing per-invoice balances charged
+  // shipping on every invoice and ignored one invoice's store credit.
+  const totalBalance = calcGroupBalance(allRecords);
   const isPaid = totalBalance <= 0;
+  const invoices = useMemo(() => {
+    const firstTime = (recs: DatabaseRowType[]) =>
+      Math.min(...recs.map(r => parseDateRobust(r.dateOfLive)?.getTime() ?? Number.MAX_SAFE_INTEGER));
+    const list = [...invoiceGroups.entries()].sort((a, b) => firstTime(a[1]) - firstTime(b[1]));
+    const ledger = calcInvoiceLedger(list.map(([, recs]) => recs));
+    return list.map(([invoiceNum, recs], i) => ({
+      invoiceNum,
+      recs,
+      balance: ledger[i].balance,
+      prior: list.slice(0, i).flatMap(([, p]) => p),
+    }));
+  }, [invoiceGroups]);
 
   return (
     <div className="mb-2 rounded-xl border border-border bg-card overflow-hidden">
@@ -389,8 +408,8 @@ function CustomerCard({ minerName, invoiceGroups, onUpdate }: CustomerCardProps)
 
       {expanded && (
         <div className="px-3 pb-3 space-y-1.5 border-t border-border pt-2 animate-in fade-in slide-in-from-top-1 duration-200">
-          {[...invoiceGroups.entries()].map(([invoiceNum, recs]) => (
-            <InvoiceRow key={invoiceNum} invoiceNum={invoiceNum} records={recs} onUpdate={onUpdate} />
+          {invoices.map(inv => (
+            <InvoiceRow key={inv.invoiceNum} invoiceNum={inv.invoiceNum} records={inv.recs} balance={inv.balance} priorRecords={inv.prior} onUpdate={onUpdate} />
           ))}
         </div>
       )}
