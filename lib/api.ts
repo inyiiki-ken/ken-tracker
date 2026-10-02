@@ -107,3 +107,11 @@ export {
   undoCompletePulloutRequest,
   ensurePulloutRowKeys,
 } from "./google-sheets/pulloutRequests";
+
+export {
+  getDeliveryReports,
+  createDeliveryReport,
+  withdrawDeliveryReport,
+  confirmDeliveryReport,
+  rejectDeliveryReport,
+} from "./google-sheets/deliveryReports";

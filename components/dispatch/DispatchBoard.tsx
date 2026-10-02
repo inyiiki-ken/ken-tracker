@@ -12,6 +12,7 @@ import DispatchClientCard from './DispatchClientCard';
 import PulloutReport from './PulloutReport';
 import CancelReport from './CancelReport';
 import PulloutRequestsPanel from './PulloutRequestsPanel';
+import DeliveryReportsPanel from './DeliveryReportsPanel';
 import CancelReasonField from '@/components/CancelReasonField';
 import RemindersDialog from '@/components/RemindersDialog';
 import { computeOverdue } from '@/lib/reminders';
@@ -88,6 +89,9 @@ export default function DispatchBoard({ records, searchQuery, onSearchChange, on
   const [showReport, setShowReport] = useState(false);
   const [showCancelReport, setShowCancelReport] = useState(false);
   const [showReminders, setShowReminders] = useState(() => computeOverdue(records).length > 0);
+  // Items a liver reported delivered / picked up: not overdue while Dispatch checks.
+  const [reportedIds, setReportedIds] = useState<Set<number>>(new Set());
+  const anyOverdue = computeOverdue(records).some(sec => sec.items.some(r => !reportedIds.has(r.id)));
 
   // One queue per box (lib/fulfilment ORDER_BOXES), named like Crown's physical
   // boxes. Items still with Admin / Accounts (Pending, Waiting for…, on hold,
@@ -256,7 +260,7 @@ export default function DispatchBoard({ records, searchQuery, onSearchChange, on
         onSearchChange={onSearchChange}
         rightContent={
           <div className="flex items-center gap-2">
-            {computeOverdue(records).length > 0 && (
+            {anyOverdue && (
               <Button
                 variant="outline"
                 size="sm"
@@ -278,6 +282,7 @@ export default function DispatchBoard({ records, searchQuery, onSearchChange, on
       />
 
       <PulloutRequestsPanel records={records} onRefresh={onRefresh} />
+      <DeliveryReportsPanel records={records} onRefresh={onRefresh} onOpenReportsChange={setReportedIds} />
 
       {/* Work queue: pick a queue on the left, work it on the right. Replaces the
           six stacked accordions — one click instead of expand/collapse, and the
@@ -383,7 +388,7 @@ export default function DispatchBoard({ records, searchQuery, onSearchChange, on
 
       {/* Courier & Pullout Reminders Dialog */}
       {showReminders && (
-        <RemindersDialog records={records} title="Courier & Pullout Reminders" onClose={() => setShowReminders(false)} />
+        <RemindersDialog records={records} exclude={reportedIds} title="Courier & Pullout Reminders" onClose={() => setShowReminders(false)} />
       )}
     </div>
   );

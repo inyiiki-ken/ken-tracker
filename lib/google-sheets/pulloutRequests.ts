@@ -2,6 +2,7 @@
 
 import type { GoogleSpreadsheetRow, GoogleSpreadsheetWorksheet } from "google-spreadsheet";
 import { getActiveDoc, invalidateActiveRows } from "./tenant-context";
+import { getAppTab } from "./appTabs";
 import { requireRole, getSessionAccess, liverNameForEmail } from "./authz";
 import { getSessionEmail } from "./tenancy-core";
 import { databaseRecordToRow } from "./row-mapper";
@@ -52,45 +53,8 @@ const VIEW_ALL_ROLES = [...STAFF_ROLES, "bossing", "accounts"];
 
 const CHANGED = "This request changed — refresh.";
 
-let inflight: Promise<GoogleSpreadsheetWorksheet> | null = null;
-// Sheets whose request-tab header row was already checked by this server process.
-const headersChecked = new Set<string>();
-
-async function getTab(): Promise<GoogleSpreadsheetWorksheet> {
-  const doc = await getActiveDoc();
-  const headers = Object.values(H);
-  const existing = doc.sheetsByTitle[TAB];
-  if (existing) {
-    if (headersChecked.has(doc.spreadsheetId)) return existing;
-    await existing.loadHeaderRow().catch(() => undefined);
-    // New columns go at the END of the header row; existing columns and rows are never touched.
-    const current = [...(existing.headerValues ?? [])].map((h) => String(h ?? ""));
-    const have = new Set(current.map((h) => h.trim()));
-    const missing = headers.filter((h) => !have.has(h));
-    if (missing.length && current.length) {
-      while (current.length && !current[current.length - 1].trim()) current.pop();
-      const next = [...current, ...missing];
-      if (existing.columnCount < next.length) {
-        await existing.resize({ rowCount: existing.rowCount, columnCount: next.length });
-      }
-      await existing.setHeaderRow(next);
-    }
-    headersChecked.add(doc.spreadsheetId);
-    return existing;
-  }
-  if (inflight) return inflight;
-  inflight = doc.addSheet({ title: TAB, headerValues: headers })
-    .catch(async (err) => {
-      // Created a moment ago from another PC/server: reload the tab list and use it.
-      if (/already exists/i.test(String(err?.message ?? err))) {
-        await doc.loadInfo();
-        const t = doc.sheetsByTitle[TAB];
-        if (t) return t;
-      }
-      throw err;
-    })
-    .finally(() => { inflight = null; });
-  return inflight;
+function getTab(): Promise<GoogleSpreadsheetWorksheet> {
+  return getAppTab(TAB, Object.values(H));
 }
 
 // Every open My Sales / Dispatch screen polls; a short cache keeps that to one

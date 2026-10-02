@@ -16,12 +16,14 @@ import StatusBadge from '@/components/StatusBadge';
 import { computeOverdue, dueFor, getReminderRules, lastPurchases } from '@/lib/reminders';
 import RemindersDialog from '@/components/RemindersDialog';
 import { PulloutPanel, CancelledItems } from './LiverPullout';
+import { DeliveryPanel, recentlyRejected } from './LiverDeliveries';
 import LiverCustomerSheet from './LiverCustomerSheet';
 import { Highlight, NotesToggle, OutsourceTag, ShippedLine } from './LiverRowBits';
 import { isOpenRequest, isOverdueRequest, isToPullOut, itemKey, liverKey, todayISO, type PulloutRequest } from '@/lib/pulloutRequests';
 import { dayKey, fulfilmentStage, isSold, soldDay } from '@/lib/fulfilment';
 import { metalOf, type MetalKind } from '@/lib/metal';
 import { aedLabel, collectAED } from '@/lib/liverMoney';
+import { isOpenReport, type DeliveryKind, type DeliveryReport } from '@/lib/deliveryReports';
 import {
   DATE_RANGES, groupByDay, groupByStatus, inBounds, newestFirst, rangeBounds, summariseLives,
   type DateRange, type StatusGroup,
@@ -75,7 +77,7 @@ function scrollToId(id: string) {
 }
 
 // ─── Status Section ───────────────────────────────────────────────────────────
-function StatusSection({ group, open, onToggle, query, copyRow, copiedId, dueOf, onOpenCustomer }: {
+function StatusSection({ group, open, onToggle, query, copyRow, copiedId, dueOf, onOpenCustomer, reported }: {
   group: StatusGroup;
   open: boolean;
   onToggle: () => void;
@@ -84,6 +86,8 @@ function StatusSection({ group, open, onToggle, query, copyRow, copiedId, dueOf,
   copiedId: number | null;
   dueOf: (r: DatabaseRowType) => Date | null;
   onOpenCustomer: (customer: string) => void;
+  /** Items in an open delivery report, and what she reported. */
+  reported: Map<number, DeliveryKind>;
 }) {
   const [limit, setLimit] = useState(PAGE_ROWS);
   const rows = useMemo(() => newestFirst(group.items), [group.items]);
@@ -121,6 +125,7 @@ function StatusSection({ group, open, onToggle, query, copyRow, copiedId, dueOf,
               {rows.slice(0, limit).map((r, i) => {
                 const due = dueOf(r);
                 const collect = collectAED(r);
+                const rep = reported.get(r.id);
                 return (
                   <tr key={r.id} className={`border-b border-border/30 align-top ${i % 2 === 0 ? '' : 'bg-secondary/10'}`}>
                     <td className="px-3 py-2 text-muted-foreground whitespace-nowrap">{r.dateOfLive ? formatDateShort(r.dateOfLive) : '—'}</td>
@@ -134,7 +139,9 @@ function StatusSection({ group, open, onToggle, query, copyRow, copiedId, dueOf,
                       </div>
                       <OutsourceTag r={r} />
                       <ShippedLine r={r} />
-                      {due && (
+                      {rep ? (
+                        <div className="text-xs text-primary">Reported {rep.toLowerCase()} · waiting for Dispatch</div>
+                      ) : due && (
                         <div className={`text-xs ${due.getTime() < now ? 'text-destructive font-semibold' : 'text-muted-foreground'}`}>
                           Due {formatDateShort(due.toISOString())}
                         </div>
@@ -298,7 +305,10 @@ export default function LiverDashboard({ records, searchQuery, onSearchChange, l
   const [customer, setCustomer] = useState<string | null>(null);
   // Her pullout requests, as the panel loads them.
   const [requests, setRequests] = useState<PulloutRequest[]>([]);
-  useEffect(() => { setRequests([]); }, [selectedLiver]);
+  // Her delivery reports (Delivered / Picked up), as that card loads them.
+  const [reports, setReports] = useState<DeliveryReport[]>([]);
+  const [deliveriesOpen, setDeliveriesOpen] = useState<boolean | null>(null);
+  useEffect(() => { setRequests([]); setReports([]); }, [selectedLiver]);
   // "Now" for the date filters and overdue items, so a screen left open
   // overnight moves on (ticks every minute and when the app comes back).
   const [now, setNow] = useState(() => Date.now());
@@ -406,12 +416,24 @@ export default function LiverDashboard({ records, searchQuery, onSearchChange, l
   const lastBuys = useMemo(() => lastPurchases(records), [records]);
   const dueOf = useCallback((r: DatabaseRowType) => dueFor(r, rules, lastBuys)?.due ?? null, [rules, lastBuys]);
 
-  // Items in an open request whose day hasn't passed: not overdue while she's on it.
+  // Items in an open delivery report, and what she reported.
+  const reported = useMemo(() => {
+    const kinds = new Map<string, DeliveryKind>();
+    for (const q of reports) if (isOpenReport(q)) for (const k of q.itemKeys) kinds.set(k, q.kind);
+    const m = new Map<number, DeliveryKind>();
+    for (const r of byLiver) { const k = kinds.get(itemKey(r)); if (k) m.set(r.id, k); }
+    return m;
+  }, [reports, byLiver]);
+
+  // Not overdue while she's on it: items in an open request whose day hasn't
+  // passed, and items she reported delivered / picked up (until Dispatch answers).
   const inRequest = useMemo(() => {
     const keys = new Set<string>();
     for (const q of requests) if (isOpenRequest(q) && !isOverdueRequest(q)) for (const k of q.itemKeys) keys.add(k);
-    return new Set(byLiver.filter(r => keys.has(itemKey(r))).map(r => r.id));
-  }, [requests, byLiver]);
+    const ids = new Set(byLiver.filter(r => keys.has(itemKey(r))).map(r => r.id));
+    reported.forEach((_, id) => ids.add(id));
+    return ids;
+  }, [requests, byLiver, reported]);
 
   // Her own overdue items (status deadlines) — pops up once when she opens the tab.
   const myOverdue = useMemo(
@@ -440,6 +462,7 @@ export default function LiverDashboard({ records, searchQuery, onSearchChange, l
     });
   }, [byLiver, dueOf, inRequest, now]);
   const ready = requests.filter(q => q.status === 'Ready');
+  const rejectedReports = recentlyRejected(reports, now);
   const notRequested = useMemo(() => {
     const keys = new Set<string>();
     const since = now - 24 * 3600_000;
@@ -450,6 +473,7 @@ export default function LiverDashboard({ records, searchQuery, onSearchChange, l
   }, [requests, byLiver, now]);
 
   const openPullout = () => { setPulloutOpen(true); setTimeout(() => scrollToId('liver-pullout'), 50); };
+  const openDeliveries = () => { setDeliveriesOpen(true); setTimeout(() => scrollToId('liver-deliveries'), 50); };
 
   const rangeLabel = DATE_RANGES.find(x => x.key === range)?.label.toLowerCase() ?? '';
   const emptyText = (() => {
@@ -535,7 +559,7 @@ export default function LiverDashboard({ records, searchQuery, onSearchChange, l
             )}
 
             {/* Today */}
-            {(ready.length > 0 || overdueCount > 0 || dueSoon.length > 0 || notRequested > 0) && (
+            {(ready.length > 0 || rejectedReports.length > 0 || overdueCount > 0 || dueSoon.length > 0 || notRequested > 0) && (
               <div className="rounded-xl border border-primary/30 bg-card p-3 space-y-1.5 text-sm">
                 <p className="flex items-center gap-2 text-xs font-cinzel font-bold text-primary/80 uppercase tracking-wide">
                   <CalendarClock className="h-4 w-4" /> Today
@@ -545,6 +569,11 @@ export default function LiverDashboard({ records, searchQuery, onSearchChange, l
                     Ready to collect: {q.itemKeys.length} item{q.itemKeys.length !== 1 ? 's' : ''} · {q.date === todayISO() ? 'today' : formatDateShort(q.date)} · {q.method}
                   </button>
                 ))}
+                {rejectedReports.length > 0 && (
+                  <button className="block w-full text-left text-destructive py-0.5" onClick={openDeliveries}>
+                    Dispatch didn&apos;t confirm: {rejectedReports.length} delivery report{rejectedReports.length !== 1 ? 's' : ''} — see why
+                  </button>
+                )}
                 {overdueCount > 0 && (
                   <button className="block w-full text-left text-destructive py-0.5" onClick={() => setShowReminders(true)}>
                     Overdue: {overdueCount} item{overdueCount !== 1 ? 's' : ''}
@@ -589,6 +618,19 @@ export default function LiverDashboard({ records, searchQuery, onSearchChange, l
                 onOpenChange={setPulloutOpen}
               />
             </div>
+            <DeliveryPanel
+              key={`d-${selectedLiver}`}
+              liver={selectedLiver}
+              records={byLiver}
+              onRefresh={onRefresh}
+              previewing={previewing}
+              visibleIds={searchedIds}
+              query={query}
+              onReportsChange={setReports}
+              onOpenCustomer={setCustomer}
+              open={deliveriesOpen}
+              onOpenChange={setDeliveriesOpen}
+            />
             <CancelledItems key={`c-${selectedLiver}`} records={searched} query={query} onOpenCustomer={setCustomer} />
 
             {/* Period */}
@@ -714,6 +756,7 @@ export default function LiverDashboard({ records, searchQuery, onSearchChange, l
                       copiedId={copiedId}
                       dueOf={dueOf}
                       onOpenCustomer={setCustomer}
+                      reported={reported}
                     />
                   ))}
                 </div>
