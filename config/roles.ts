@@ -110,10 +110,11 @@
 
     // 2. Dynamic roles
     if (dynamicRoles && dynamicRoles.length > 0) {
-      const found = dynamicRoles.find(r => getEmailFromRole(r) === e);
+      // A person listed on more than one row gets the roles of every row.
+      const found = dynamicRoles.filter(r => getEmailFromRole(r) === e);
 
-      if (found) {
-        const roles = getRolesFromDynamic(found);
+      if (found.length) {
+        const roles = found.flatMap(getRolesFromDynamic);
         if (roles.includes('super_admin')) assignedRoles.push('super_admin');
         if (roles.includes('admin') || roles.includes('super_admin')) assignedRoles.push('admin');
         if (roles.includes('dispatch')) assignedRoles.push('dispatch');

@@ -198,6 +198,8 @@ function liverKey(v: unknown): string {
 
 /** Crown's cost side — never sent to a liver. Prices are worked out from clientRate. */
 const LIVER_HIDDEN_FIELDS = ["supplierRate", "profit", "goldRate", "mc"] as const;
+/** Customer contact a liver may NOT see (owner decision: FB name and phone yes, address no). */
+const LIVER_HIDDEN_CONTACT = ["clientAddress"] as const;
 
 export async function getRecords(_params?: { tailOnly?: boolean }): Promise<DatabaseRowType[]> {
   const access = await getSessionAccess();
@@ -221,6 +223,9 @@ export async function getRecords(_params?: { tailOnly?: boolean }): Promise<Data
     .map((r) => {
       const out: DatabaseRowType = { ...r };
       for (const k of LIVER_HIDDEN_FIELDS) delete out[k];
+      // Only whether an address is on file, so her "Missing: address" hint still works.
+      out.hasClientAddress = !!String(r.clientAddress ?? "").trim();
+      for (const k of LIVER_HIDDEN_CONTACT) delete out[k];
       const last = newest.get(customerKey(r));
       if (last) out.customerLastPurchaseAt = last.toISOString();
       return out;

@@ -14,9 +14,8 @@
  */
 
 import type { DatabaseRowType } from '@/types';
-import { isPulloutStatus } from '@/lib/appConfig';
+import { isPulloutStatus, isSaleStatus } from '@/lib/appConfig';
 import { parseDateRobust } from '@/lib/calculations';
-import { statusChangedAt } from '@/lib/pulloutRequests';
 
 export type FulfilmentStage = 'excluded' | 'active' | 'pullout' | 'dispatched' | 'delivered';
 
@@ -39,7 +38,7 @@ export function fulfilmentStage(status?: string): FulfilmentStage {
 }
 
 /** yyyy-mm-dd, or '' when the value isn't a date. */
-function dayKey(v?: string): string {
+export function dayKey(v?: string): string {
   if (!v) return '';
   const d = parseDateRobust(v);
   if (!d || isNaN(d.getTime())) return '';
@@ -54,10 +53,63 @@ export function shipmentDay(r: DatabaseRowType): string {
   return dayKey(r.dispatchDate) || dayKey(r.deliveredDate) || dayKey(r.dateOfLive) || 'Unknown Date';
 }
 
+// ─── Sold ─────────────────────────────────────────────────────────────────────
+// What counts as SOLD for a liver (My Sales) and for Bossing. Kept in one place
+// so both tabs agree; change it here only.
+
+/** Sold = shipped or delivered, or a status in Settings → App Settings → sale statuses. Never a cancelled/returned item. */
+export function isSoldStatus(status?: string): boolean {
+  const stage = fulfilmentStage(status);
+  if (stage === 'excluded') return false;
+  return stage === 'dispatched' || stage === 'delivered' || isSaleStatus(status);
+}
+
+export function isSold(r: Pick<DatabaseRowType, 'status'>): boolean {
+  return isSoldStatus(r.status);
+}
+
+/** The day a sale counts on: the day it shipped (see shipmentDay); '' when no date at all. */
+export function soldDay(r: DatabaseRowType): string {
+  const d = shipmentDay(r);
+  return d === 'Unknown Date' ? '' : d;
+}
+
+// ─── Cancelled / returned ─────────────────────────────────────────────────────
+
+const ISO_AT_START = /^(\d{4}-\d{2}-\d{2}T[^ |]+)\s*\|/;
+
+/**
+ * When the item got its current status: the latest change-history line that
+ * touched "status" (source 'history'), else the live date (source 'order'),
+ * e.g. an item cancelled straight in the sheet.
+ */
+export function statusChangedInfo(r: DatabaseRowType): { date: Date; source: 'history' | 'order' } | null {
+  const lines = String(r.auditTrail ?? '').split('\n');
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (!/\bstatus\b/i.test(lines[i])) continue;
+    const m = lines[i].match(ISO_AT_START);
+    if (m) {
+      const d = new Date(m[1]);
+      if (!Number.isNaN(d.getTime())) return { date: d, source: 'history' };
+    }
+  }
+  const d = parseDateRobust(r.dateOfLive);
+  return d ? { date: d, source: 'order' } : null;
+}
+
+export function statusChangedAt(r: DatabaseRowType): Date | null {
+  return statusChangedInfo(r)?.date ?? null;
+}
+
 /** The day an item was cancelled / returned: when its status last changed, else the live date. */
 export function cancelDay(r: DatabaseRowType): string {
   const d = statusChangedAt(r);
   return d ? dayKey(d.toISOString()) || 'Unknown Date' : 'Unknown Date';
+}
+
+/** Cancelled or returned (Dispatch's "Cancelled / Returned" box). */
+export function isCancelledOrReturned(r: Pick<DatabaseRowType, 'status'>): boolean {
+  return fulfilmentStage(String(r.status ?? '')) === 'excluded';
 }
 
 /**

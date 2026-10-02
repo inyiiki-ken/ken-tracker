@@ -9,6 +9,7 @@ import {
 } from "./masterlistMapping";
 import { usesGold, getRatesForDate } from "./ratesStore";
 import { getMakingCharge } from "./pricingConfig";
+import { parseDateRobust } from "./calculations";
 
 /**
  * Replaces the old Apps Script processUpload() entirely. Instead of
@@ -90,9 +91,18 @@ function toNum(v: string): number {
   return Number.isFinite(x) ? x : 0;
 }
 
-/** "Tuesday, August 25, 2026" -> "August 25, 2026" (weekday confuses date parsing). */
+/**
+ * "Tuesday, August 25, 2026" -> "2026-08-25". A date whose day and month can't
+ * be mixed up (month name, year first, or a day above 12) is saved as
+ * yyyy-mm-dd so every tab reads the same day; "03/09/2026" stays as typed.
+ */
 function cleanDate(v: string): string {
-  return String(v ?? "").trim().replace(/^[a-z]+day,?\s+/i, "");
+  const s = String(v ?? "").trim().replace(/^[a-z]+day,?\s+/i, "");
+  const num = s.match(/^(\d{1,2})[/.-](\d{1,2})[/.-]\d{2,4}\b/);
+  if (num && +num[1] <= 12 && +num[2] <= 12) return s;
+  const d = parseDateRobust(s);
+  if (!d) return s;
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
 /** Read a cell by 0-based col index (or "" if the column isn't mapped/present). */

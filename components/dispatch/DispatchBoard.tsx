@@ -16,7 +16,7 @@ import CancelReasonField from '@/components/CancelReasonField';
 import RemindersDialog from '@/components/RemindersDialog';
 import { computeOverdue } from '@/lib/reminders';
 import { parseDateRobust } from '@/lib/calculations';
-import { ORDER_BOXES, OrderBox, orderBox, isStillWithAdmin, shipmentDay, cancelDay, outsourceName } from '@/lib/fulfilment';
+import { ORDER_BOXES, OrderBox, orderBox, isStillWithAdmin, shipmentDay, cancelDay, outsourceName, fulfilmentStage } from '@/lib/fulfilment';
 import { getEffectiveStatuses } from '@/lib/statusRegistry';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { toast } from 'sonner';
@@ -145,7 +145,8 @@ export default function DispatchBoard({ records, searchQuery, onSearchChange, on
   }, []);
   const applyBulkStatus = async (cancelReason?: string) => {
     if (!bulkStatus || selected.size === 0) return;
-    const cancelling = /cancel/i.test(bulkStatus);
+    // Cancelled or returned: the reason is asked for first (the liver sees it).
+    const cancelling = fulfilmentStage(bulkStatus) === 'excluded';
     if (cancelling && cancelReason === undefined) {
       setBulkCancelReason('');
       setBulkCancelOpen(true);
@@ -365,13 +366,13 @@ export default function DispatchBoard({ records, searchQuery, onSearchChange, on
       <Dialog open={bulkCancelOpen} onOpenChange={setBulkCancelOpen}>
         <DialogContent className="bg-card border-border max-w-sm">
           <DialogHeader>
-            <DialogTitle>Cancel {selected.size} item{selected.size !== 1 ? 's' : ''}?</DialogTitle>
+            <DialogTitle>{/^cancel/i.test(bulkStatus) ? 'Cancel' : `Set to ${bulkStatus}:`} {selected.size} item{selected.size !== 1 ? 's' : ''}?</DialogTitle>
           </DialogHeader>
           <CancelReasonField value={bulkCancelReason} onChange={setBulkCancelReason} />
           <div className="flex justify-end gap-2 pt-2">
             <Button variant="ghost" size="sm" onClick={() => setBulkCancelOpen(false)}>Keep them</Button>
             <Button size="sm" className="bg-destructive text-destructive-foreground" onClick={() => applyBulkStatus(bulkCancelReason)}>
-              Cancel items
+              {/^cancel/i.test(bulkStatus) ? 'Cancel items' : `Set to ${bulkStatus}`}
             </Button>
           </div>
         </DialogContent>

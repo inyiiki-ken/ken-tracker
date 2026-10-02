@@ -9,7 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Printer } from 'lucide-react';
 import { DatabaseRowType } from '@/types';
 import { formatDate } from '@/lib/formatters';
-import { getQty } from '@/lib/calculations';
+import { gramsLabel, sumGrams } from '@/lib/calculations';
 import { orderBox, cancelDay } from '@/lib/fulfilment';
 import { SHARED_STYLES } from './PulloutReport';
 
@@ -28,12 +28,8 @@ function todayKey(): string {
 
 const esc = (v: unknown) => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
 
-const isPc = (r: DatabaseRowType) => {
-  const c = (r.category || '').toLowerCase();
-  return c.includes('per pc') || c.includes('screw type') || c.includes('diamond');
-};
-const gramsDisplay = (r: DatabaseRowType) => isPc(r) ? `${getQty(r)} PC` : r.grams ? `${Number(r.grams).toFixed(2)}g` : '—';
-const sumGrams = (items: DatabaseRowType[]) => items.reduce((s, r) => isPc(r) ? s : s + (Number(r.grams) || 0), 0);
+// Same grams rule as My Sales (lib/calculations): per-piece items show "1 PC".
+const gramsDisplay = gramsLabel;
 
 /** Printable list of cancelled / returned items, to take to the box on paper. */
 export default function CancelReport({ records, onClose }: Props) {

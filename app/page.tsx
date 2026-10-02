@@ -47,6 +47,7 @@ import UploadMasterlistFAB from '@/components/UploadMasterlistFAB';
 import PreviewAsUser from '@/components/PreviewAsUser';
 import RateCalculatorWidget from '@/components/RateCalculatorWidget';
 import { autoStageDates, fulfilmentStage } from '@/lib/fulfilment';
+import { liverKey } from '@/lib/pulloutRequests';
 type TabKey = 'admin' | 'dispatch' | 'accounts' | 'bossing' | 'liver' | 'purchasing' | 'invoicing' | 'livesellers' | 'settings' | 'godmode';
 
 /** The tab a user lands on: the first of these they can see. */
@@ -287,18 +288,19 @@ function AppContent() {
     });
   }, [devContext, previewEmail, dynamicRoles, user?.email]);
 
-  // Each user's "My Sales" is locked to their OWN liver name (the "name" column
-  // in the Roles tab), so a liver only ever sees their own sales — never other
-  // livers'. When previewing, we lock to the previewed user's name instead.
-  const lockedLiverName = useMemo(() => {
+  // The user's own liver name (the "name" column in the Roles tab). A liver's
+  // "My Sales" is locked to it, so she only ever sees her own sales — never
+  // other livers'. When previewing, the previewed user's name instead.
+  const ownLiverName = useMemo(() => {
     const email = (previewEmail || user?.email || '').toLowerCase().trim();
     if (!email) return undefined;
-    const fromRoles = dynamicRoles?.find((r: any) => String(r?.email ?? '').toLowerCase().trim() === email);
-    const name = fromRoles?.name ? String(fromRoles.name).toUpperCase().trim() : '';
+    // Listed on more than one row: the first row that has a name.
+    const fromRoles = dynamicRoles?.find((r: any) => String(r?.email ?? '').toLowerCase().trim() === email && String(r?.name ?? '').trim());
+    const name = fromRoles?.name ? liverKey(fromRoles.name) : '';
     if (name) return name;
     // Fallback to the (usually empty) static map for backwards compatibility.
     const entry = Object.entries(EMAIL_TO_LIVER_NAME).find(([k]) => k.toLowerCase() === email);
-    return entry ? String(entry[1]).toUpperCase().trim() : undefined;
+    return entry ? liverKey(entry[1]) : undefined;
   }, [previewEmail, user?.email, dynamicRoles]);
 
   if (authLoading) return <LoadingSkeleton />;
@@ -322,6 +324,10 @@ function AppContent() {
   // When previewing, render EXACTLY the target user's roles (from the Roles tab).
   const effectiveRoles = previewing ? getUserRole(previewEmail!, dynamicRoles) : realRoles;
   const isSuperAdmin = effectiveRoles.includes('super_admin');
+  // Admin, Bossing and Accounts choose any liver on My Sales (their own name
+  // preselected if they sell); everyone else is locked to their own name.
+  const picksLiver = effectiveRoles.some(r => r === 'super_admin' || r === 'admin' || r === 'bossing' || r === 'accounts');
+  const lockedLiverName = picksLiver ? undefined : ownLiverName;
   const visibleTabKeys = getVisibleTabs(effectiveRoles);
 
   // Labels come from the per-tenant tab config (getTabLabel falls back to the
@@ -476,7 +482,7 @@ function AppContent() {
       {shownTab === 'bossing' && (
         <BossingDashboard records={records} searchQuery={searchQueries.bossing} onSearchChange={handleSearchChange} onUpdate={handleUpdate} />
       )}
-      {shownTab === 'liver' && !lockedLiverName && !effectiveRoles.some(r => r === 'super_admin' || r === 'admin' || r === 'bossing' || r === 'accounts') && (
+      {shownTab === 'liver' && !lockedLiverName && !picksLiver && (
         <div className="px-4 py-16 text-center text-sm text-muted-foreground">
           {rolesFailed ? (
             <>Couldn&apos;t load your account — tap <b>Refresh</b>.</>
@@ -485,8 +491,8 @@ function AppContent() {
           )}
         </div>
       )}
-      {shownTab === 'liver' && (lockedLiverName || effectiveRoles.some(r => r === 'super_admin' || r === 'admin' || r === 'bossing' || r === 'accounts')) && (
-        <LiverDashboard records={records} searchQuery={searchQueries.liver} onSearchChange={handleSearchChange} onUpdate={handleUpdate} lockedLiverName={lockedLiverName} onRefresh={() => fetchData(true)} previewing={previewing} />
+      {shownTab === 'liver' && (lockedLiverName || picksLiver) && (
+        <LiverDashboard records={records} searchQuery={searchQueries.liver} onSearchChange={handleSearchChange} onUpdate={handleUpdate} lockedLiverName={lockedLiverName} defaultLiver={picksLiver ? ownLiverName : undefined} onRefresh={() => fetchData(true)} previewing={previewing} clientMilestones={clientMilestones} />
       )}
       {shownTab === 'purchasing' && (
         <PurchasingTab userEmail={user.email} />

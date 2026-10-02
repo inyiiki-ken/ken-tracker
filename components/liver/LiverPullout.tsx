@@ -2,29 +2,39 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronDown, PackageOpen, XCircle } from 'lucide-react';
-import { startOfWeek, startOfMonth } from 'date-fns';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import type { DatabaseRowType } from '@/types';
-import { formatDate, formatDateObj } from '@/lib/formatters';
-import { customerKey, groupByCustomer, parseDateRobust } from '@/lib/calculations';
-import { boxFromDelivery } from '@/lib/fulfilment';
+import { formatDate, formatDateShort } from '@/lib/formatters';
+import { customerKey, gramsLabel, gramsTotalLabel, groupByCustomer, parseDateRobust, sumGrams, pieceCount } from '@/lib/calculations';
+import { boxFromDelivery, statusChangedInfo } from '@/lib/fulfilment';
+import StatusBadge from '@/components/StatusBadge';
+import { dueFor, getReminderRules, lastPurchases } from '@/lib/reminders';
+import { aedLabel, collectAED, customerMoney } from '@/lib/liverMoney';
+import { DATE_RANGES, rangeBounds, type DateRange } from '@/lib/liverSales';
+import { Highlight, NotesToggle, OutsourceTag, notesOf } from './LiverRowBits';
 import {
   addItemsToPulloutRequest, createPulloutRequest, ensurePulloutRowKeys, getPulloutRequests,
   setPulloutRequestStatus, updatePulloutRequest,
 } from '@/lib/api';
 import {
-  PULLOUT_METHODS, isCancelledItem, isOpenRequest, isOverdueRequest, isRealItemKey, isToPullOut,
-  itemKey, itemLine, itemSummary, itemsByKey, itemsFor, statusChangedAt, todayISO,
+  PULLOUT_METHODS, isCancelledItem, methodStatus, isOpenRequest, isOverdueRequest, isRealItemKey, isToPullOut,
+  itemKey, itemLine, itemSummary, itemsByKey, itemsFor, todayISO,
   type PulloutMethod, type PulloutRequest, type PulloutRequestStatus,
 } from '@/lib/pulloutRequests';
 import { liverCameStatus, ownBox } from '@/lib/pulloutTargets';
 import { useVisiblePolling } from '@/lib/useVisiblePolling';
 
-function gramsOf(items: DatabaseRowType[]): number {
-  return items.reduce((s, r) => s + (Number(r.grams) || 0), 0);
+/** Weight of some items, e.g. "12.40g + 2 pcs" (per-piece items in pieces). */
+function weightOf(items: DatabaseRowType[]): string {
+  return sumGrams(items) > 0 || pieceCount(items) > 0 ? gramsTotalLabel(items) : '0g';
+}
+
+/** The free-text remarks on an item (not Dispatch's notes). */
+function notesOfRemarks(r: DatabaseRowType): string {
+  return notesOf(r).remarks;
 }
 
 function orderTime(r: DatabaseRowType): number {
@@ -41,7 +51,7 @@ function MethodToggle({ value, onChange, disabled }: { value: PulloutMethod | nu
           size="sm"
           disabled={disabled}
           variant={value === m.key ? 'default' : 'outline'}
-          className={`text-xs h-7 ${value === m.key ? 'bg-primary text-primary-foreground' : 'border-border'}`}
+          className={`text-xs h-9 px-4 ${value === m.key ? 'bg-primary text-primary-foreground' : 'border-border'}`}
           onClick={() => onChange(m.key)}
         >
           {m.label}
@@ -80,7 +90,7 @@ function GroupCheckbox({ checked, partial, disabled, onChange, label }: {
 }
 
 // ─── Items to pull out + pullout requests ────────────────────────────────────
-export function PulloutPanel({ liver, records, allRecords, onRefresh, previewing }: {
+export function PulloutPanel({ liver, records, allRecords, onRefresh, previewing, visibleIds, query, onRequestsChange, onOpenCustomer, open: openProp, onOpenChange }: {
   liver: string;
   /** This liver's items. */
   records: DatabaseRowType[];
@@ -90,6 +100,17 @@ export function PulloutPanel({ liver, records, allRecords, onRefresh, previewing
   onRefresh?: () => void;
   /** An admin previewing her view: nothing is sent. */
   previewing?: boolean;
+  /** While searching: the rows to show. Ticks and requests still cover every item. */
+  visibleIds?: Set<number> | null;
+  /** The search text, to highlight. */
+  query?: string;
+  /** Her requests, whenever they load (the page's Today card and overdue list use them). */
+  onRequestsChange?: (list: PulloutRequest[]) => void;
+  /** Tap a customer's name: her per-customer sheet. */
+  onOpenCustomer?: (customer: string) => void;
+  /** Items to pull out folded open or shut; null = open when something waits to be requested or is Ready. */
+  open?: boolean | null;
+  onOpenChange?: (open: boolean) => void;
 }) {
   const [requests, setRequests] = useState<PulloutRequest[]>([]);
   const [loaded, setLoaded] = useState(false);
@@ -119,6 +140,8 @@ export function PulloutPanel({ liver, records, allRecords, onRefresh, previewing
   const failedRef = useRef(false);
   const onRefreshRef = useRef(onRefresh);
   onRefreshRef.current = onRefresh;
+  const onRequestsChangeRef = useRef(onRequestsChange);
+  onRequestsChangeRef.current = onRequestsChange;
   const lastRefreshRef = useRef(Date.now());
 
   const refreshRecords = useCallback((force = false) => {
@@ -138,6 +161,7 @@ export function PulloutPanel({ liver, records, allRecords, onRefresh, previewing
       const turnedDone = list.some(q => q.status === 'Done' && prev.has(q.id) && prev.get(q.id) !== 'Done');
       statusRef.current = new Map(list.map(q => [q.id, q.status]));
       setRequests(list);
+      onRequestsChangeRef.current?.(list);
       setLoaded(true);
       failedRef.current = false;
       setFailed(false);
@@ -200,18 +224,32 @@ export function PulloutPanel({ liver, records, allRecords, onRefresh, previewing
   const pickedItems = useMemo(() => free.filter(r => picked.has(r.id)), [free, picked]);
   const today = todayISO();
 
+  // Searching shows only matching rows; what she ticked before stays ticked.
+  const shows = useCallback((r: DatabaseRowType) => !visibleIds || visibleIds.has(r.id), [visibleIds]);
+  const visibleFree = useMemo(() => free.filter(shows), [free, shows]);
+  const hiddenPicked = pickedItems.filter(r => !shows(r)).length;
+
+  // Deadlines ("Due Oct 03") on each row, same rules as the overdue warning.
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- re-read the Settings deadlines on each refresh
+  const rules = useMemo(() => getReminderRules(), [allRecords]);
+  const lastBuys = useMemo(() => lastPurchases(allRecords), [allRecords]);
+
   // A day left open overnight moves on to today.
   useEffect(() => { if (date < today) setDate(today); }, [date, today]);
 
   // One group per customer, newest order first.
   const groups = useMemo(() => {
+    const allByCustomer = groupByCustomer(records);
     return Array.from(groupByCustomer(toPullOut).values())
       .map(rows => {
         const sorted = [...rows].sort((a, b) => orderTime(b) - orderTime(a));
-        return { key: customerKey(sorted[0]), name: sorted[0].minerName || '—', rows: sorted, newest: orderTime(sorted[0]) };
+        const key = customerKey(sorted[0]);
+        // Paid / balance over all her items for this customer, not only these.
+        const money = customerMoney(allByCustomer.get(key) ?? rows);
+        return { key, name: sorted[0].minerName || '—', rows: sorted, newest: orderTime(sorted[0]), money };
       })
       .sort((a, b) => b.newest - a.newest);
-  }, [toPullOut]);
+  }, [toPullOut, records]);
 
   // Customers she ticked only some of.
   const partial = useMemo(() => groups.flatMap(g => {
@@ -360,14 +398,14 @@ export function PulloutPanel({ liver, records, allRecords, onRefresh, previewing
 
   const withdraw = async (q: PulloutRequest) => {
     if (previewing) return;
-    if (!window.confirm('Cancel this pullout request?')) return;
+    if (!window.confirm('Withdraw this request? Your items stay in Items to pull out.')) return;
     setSaving(true);
     try {
       await setPulloutRequestStatus({ id: q.id, status: 'Cancelled', seenUpdatedAt: q.updatedAt });
-      toast.success('Request cancelled');
+      toast.success('Request withdrawn');
       await load();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Could not cancel the request');
+      toast.error(err instanceof Error ? err.message : 'Could not withdraw the request');
       await load();
     } finally {
       setSaving(false);
@@ -376,6 +414,24 @@ export function PulloutPanel({ liver, records, allRecords, onRefresh, previewing
 
   const requestedCount = toPullOut.length - free.length;
   const sendLabel = previewing ? 'Preview only' : saving ? 'Sending…' : null;
+  // Folded open when something waits to be requested or a request is Ready, until she folds it.
+  const autoOpen = free.length > 0 || requests.some(q => q.status === 'Ready');
+  const [openLocal, setOpenLocal] = useState<boolean | null>(null);
+  const isOpen = (openProp ?? openLocal) ?? autoOpen;
+  const setOpen = (v: boolean) => { setOpenLocal(v); onOpenChange?.(v); };
+  const shownGroups = visibleIds ? groups.map(g => ({ ...g, rows: g.rows.filter(shows) })).filter(g => g.rows.length > 0) : groups;
+
+  /** "Pull out today" / "Pull out on Thu, Oct 05". */
+  const pullOutOn = (d: string) => {
+    if (d === today) return 'Pull out today';
+    const day = /^\d{4}-\d{2}-\d{2}$/.test(d) ? new Date(`${d}T12:00:00`) : null;
+    return `Pull out on ${day ? day.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: '2-digit' }) : formatDate(d)}`;
+  };
+  /** Done: where the items went, e.g. "Done · set to For COD". */
+  const doneLabel = (q: PulloutRequest, items: DatabaseRowType[]) => {
+    const to = Array.from(new Set(items.length ? items.map(r => liverCameStatus(r, q.method, statuses)) : [methodStatus(q.method)]));
+    return `Done · set to ${to.join(' / ')}`;
+  };
 
   return (
     <div className="space-y-3">
@@ -391,47 +447,64 @@ export function PulloutPanel({ liver, records, allRecords, onRefresh, previewing
 
       {/* Items to pull out */}
       <div className="rounded-xl border border-warning/40 bg-card overflow-hidden">
-        <div className="flex items-center gap-2 px-4 py-3">
+        <button
+          type="button"
+          onClick={() => setOpen(!isOpen)}
+          className="w-full flex flex-wrap items-center gap-x-2 gap-y-1 px-4 py-3 text-left hover:bg-secondary/20"
+          aria-expanded={isOpen}
+        >
           <PackageOpen className="h-4 w-4 text-warning" />
           <span className="text-xs font-cinzel font-bold text-primary/80 uppercase tracking-wide">Items to pull out</span>
-          <span className="text-[10px] text-muted-foreground">
+          <span className="text-xs text-muted-foreground">
             {loaded && toPullOut.length > 0
               ? `${free.length} to request · ${requestedCount} already requested`
               : `${toPullOut.length} item${toPullOut.length !== 1 ? 's' : ''}`}
-            {' · '}{gramsOf(toPullOut).toFixed(2)}g
+            {toPullOut.length > 0 && <>{' · '}{weightOf(toPullOut)}</>}
           </span>
-          <div className="h-px flex-1 bg-border/40" />
-        </div>
-        {toPullOut.length === 0 ? (
+          <ChevronDown className={`ml-auto h-4 w-4 text-muted-foreground transition-transform ${isOpen ? 'rotate-180' : ''}`} />
+        </button>
+        {!isOpen ? null : toPullOut.length === 0 ? (
           <p className="border-t border-border px-4 py-4 text-xs text-muted-foreground">Nothing to pull out right now.</p>
         ) : (
           <div className="border-t border-border">
             {!loaded && <p className="px-4 py-2 text-xs text-muted-foreground">Loading your requests…</p>}
+            {visibleIds && (
+              <p className="px-4 py-2 text-xs text-muted-foreground">
+                Showing items that match your search
+                {hiddenPicked > 0 && <> · <b className="text-foreground">{pickedItems.length} ticked · {hiddenPicked} hidden by search</b></>}
+              </p>
+            )}
+            {shownGroups.length === 0 ? (
+              <p className="px-4 py-3 text-xs text-muted-foreground">No items to pull out match your search.</p>
+            ) : (
+            <>
+            <label className={`flex items-center gap-2 px-3 py-2 text-xs font-medium text-muted-foreground border-b border-border ${!loaded || visibleFree.length === 0 ? 'opacity-50' : 'cursor-pointer'}`}>
+              <GroupCheckbox
+                label="Tick all"
+                checked={visibleFree.length > 0 && visibleFree.every(r => picked.has(r.id))}
+                partial={visibleFree.some(r => picked.has(r.id)) && !visibleFree.every(r => picked.has(r.id))}
+                disabled={!loaded || visibleFree.length === 0}
+                onChange={on => setMany(visibleFree, on)}
+              />
+              Tick all{visibleIds ? ' shown' : ''}
+            </label>
             <table className="w-full text-xs">
               <thead>
                 <tr className="bg-secondary/20 border-b border-border">
-                  <th className="w-8 px-3 py-2">
-                    <GroupCheckbox
-                      label="Tick all"
-                      checked={free.length > 0 && free.every(r => picked.has(r.id))}
-                      partial={pickedItems.length > 0 && pickedItems.length < free.length}
-                      disabled={!loaded || free.length === 0}
-                      onChange={on => setPicked(on ? new Set(free.map(r => r.id)) : new Set())}
-                    />
-                  </th>
-                  <th className="text-left px-3 py-2 text-muted-foreground font-medium">Ordered</th>
+                  <th className="w-8" />
+                  <th className="text-left px-1 py-2 text-muted-foreground font-medium">Ordered</th>
                   <th className="text-left px-3 py-2 text-muted-foreground font-medium">Item</th>
                   <th className="text-right px-3 py-2 text-muted-foreground font-medium">Grams</th>
                 </tr>
               </thead>
               <tbody>
-                {groups.flatMap(g => {
+                {shownGroups.flatMap(g => {
                   const freeRows = g.rows.filter(r => freeIds.has(r.id));
                   const n = freeRows.filter(r => picked.has(r.id)).length;
                   return [
                     <tr key={`g-${g.key}`} className={`border-b border-border/30 bg-secondary/20 ${freeRows.length ? 'cursor-pointer' : ''}`}
                       onClick={() => loaded && freeRows.length && setMany(freeRows, n < freeRows.length)}>
-                      <td className="px-3 py-2 text-center">
+                      <td className="w-8 px-3 py-2 text-center">
                         <GroupCheckbox
                           label={`Tick all of ${g.name}`}
                           checked={freeRows.length > 0 && n === freeRows.length}
@@ -441,8 +514,19 @@ export function PulloutPanel({ liver, records, allRecords, onRefresh, previewing
                         />
                       </td>
                       <td colSpan={3} className="px-3 py-2">
-                        <span className="font-semibold">{g.name}</span>
-                        <span className="text-[10px] text-muted-foreground"> · {g.rows.length} item{g.rows.length !== 1 ? 's' : ''} · {gramsOf(g.rows).toFixed(2)}g</span>
+                        <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                          {onOpenCustomer ? (
+                            <button type="button" className="font-semibold underline-offset-2 hover:underline text-left" onClick={e => { e.stopPropagation(); onOpenCustomer(g.key); }}>
+                              <Highlight text={g.name} query={query} />
+                            </button>
+                          ) : <span className="font-semibold"><Highlight text={g.name} query={query} /></span>}
+                          <span className="text-xs text-muted-foreground">{g.rows.length} item{g.rows.length !== 1 ? 's' : ''} · {weightOf(g.rows)}</span>
+                          {g.money.due > 0 && (
+                            <span className={`text-xs font-semibold ${g.money.balance > 0 ? 'text-destructive' : 'text-success'}`}>
+                              {g.money.balance > 0 ? `Balance due ${aedLabel(g.money.balance)}` : 'Paid'}
+                            </span>
+                          )}
+                        </div>
                       </td>
                     </tr>,
                     ...g.rows.map(r => {
@@ -450,22 +534,35 @@ export function PulloutPanel({ liver, records, allRecords, onRefresh, previewing
                       const q = requestedFor.get(k);
                       const done = !q && recentlyDone.has(k);
                       const locked = !!q || done;
+                      const due = dueFor(r, rules, lastBuys);
+                      const collect = collectAED(r);
                       return (
-                        <tr key={r.id} className={`border-b border-border/30 ${locked ? 'opacity-70' : 'cursor-pointer'}`} onClick={() => loaded && !locked && toggle(r.id)}>
-                          <td className="px-3 py-2 text-center">
-                            <input type="checkbox" disabled={!loaded || locked} checked={locked || picked.has(r.id)} onChange={() => toggle(r.id)} onClick={e => e.stopPropagation()} />
+                        <tr key={r.id} className={`border-b border-border/30 align-top ${locked ? 'opacity-70' : 'cursor-pointer'}`} onClick={() => loaded && !locked && toggle(r.id)}>
+                          <td className="w-8 px-3 py-2 text-center">
+                            <input type="checkbox" aria-label={`Tick ${r.itemDescription || 'item'}`} disabled={!loaded || locked} checked={locked || picked.has(r.id)} onChange={() => toggle(r.id)} onClick={e => e.stopPropagation()} />
                           </td>
-                          <td className="px-3 py-2 text-muted-foreground whitespace-nowrap">{r.dateOfLive ? formatDate(r.dateOfLive) : '—'}</td>
-                          <td className="px-3 py-2 max-w-[160px]">
-                            <div className="truncate">{r.itemDescription || '—'}</div>
-                            {q && (
-                              <div className="text-[10px] text-primary">
-                                In request · pull out {formatDate(q.date)} · {q.status === 'Ready' ? 'Ready for you' : 'waiting for Dispatch'}
+                          <td className="px-1 py-2 text-muted-foreground whitespace-nowrap">{r.dateOfLive ? formatDateShort(r.dateOfLive) : '—'}</td>
+                          <td className="px-3 py-2 min-w-0 break-words">
+                            <div><Highlight text={r.itemDescription || '—'} query={query} /></div>
+                            <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
+                              {r.orderId && <span><Highlight text={r.orderId} query={query} /></span>}
+                              <OutsourceTag r={r} />
+                            </div>
+                            {due && (
+                              <div className={`text-xs ${due.due.getTime() < Date.now() ? 'text-destructive font-semibold' : 'text-muted-foreground'}`}>
+                                Due {formatDateShort(due.due.toISOString())}
                               </div>
                             )}
-                            {done && <div className="text-[10px] text-primary">Dispatch set it out · updating…</div>}
+                            {collect > 0 && <div className="text-xs font-semibold text-attention">Collect {aedLabel(collect)}</div>}
+                            {q && (
+                              <div className="text-xs text-primary">
+                                In request · {q.date === today ? 'pull out today' : `pull out on ${formatDateShort(q.date)}`} · {q.status === 'Ready' ? 'Ready for you' : 'waiting for Dispatch'}
+                              </div>
+                            )}
+                            {done && <div className="text-xs text-primary">Dispatch set it out · updating…</div>}
+                            <NotesToggle r={r} />
                           </td>
-                          <td className="px-3 py-2 text-right">{r.grams ? `${r.grams}g` : '—'}</td>
+                          <td className="px-3 py-2 text-right whitespace-nowrap">{gramsLabel(r)}</td>
                         </tr>
                       );
                     }),
@@ -473,6 +570,8 @@ export function PulloutPanel({ liver, records, allRecords, onRefresh, previewing
                 })}
               </tbody>
             </table>
+            </>
+            )}
 
             {/* Request form */}
             {loaded && free.length === 0 ? (
@@ -480,45 +579,45 @@ export function PulloutPanel({ liver, records, allRecords, onRefresh, previewing
             ) : loaded && (
               <div className="p-4 space-y-3 bg-secondary/10">
                 <p className="text-xs font-medium">
-                  Request pullout {pickedItems.length > 0 && <span className="text-primary">· {pickedItems.length} item{pickedItems.length !== 1 ? 's' : ''} · {gramsOf(pickedItems).toFixed(2)}g</span>}
+                  Request pullout {pickedItems.length > 0 && <span className="text-primary">· {pickedItems.length} item{pickedItems.length !== 1 ? 's' : ''} · {weightOf(pickedItems)}</span>}
                 </p>
                 <div className="flex flex-wrap gap-3 items-end">
                   <div className="flex flex-col gap-1">
-                    <label className="text-[10px] text-muted-foreground">Day you will come</label>
-                    <Input type="date" min={today} value={date} onChange={e => setDate(e.target.value)} className="h-8 text-xs w-40 bg-background border-border" />
+                    <label className="text-xs text-muted-foreground">Day you will come</label>
+                    <Input type="date" min={today} value={date} onChange={e => setDate(e.target.value)} className="h-9 text-xs w-40 bg-background border-border" />
                   </div>
                   {(needsMethod || pickedItems.length === 0) && (
                     <div className="flex flex-col gap-1">
-                      <label className="text-[10px] text-muted-foreground">COD or Pick Up</label>
+                      <label className="text-xs text-muted-foreground">COD or Pick Up</label>
                       <MethodToggle value={method} onChange={m => { setMethod(m); setMethodChosen(true); }} />
                     </div>
                   )}
                 </div>
                 {needsMethod && !suggested && codCount > 0 && (
-                  <p className="text-[11px] text-warning">
+                  <p className="text-xs text-warning">
                     {codCount} of these {codCount === 1 ? 'is a COD client' : 'are COD clients'} — consider sending two requests.
                   </p>
                 )}
                 {ownBoxNotes.length > 0 && (
-                  <p className="text-[11px] text-muted-foreground">{ownBoxNotes.join(' · ')} when you come.</p>
+                  <p className="text-xs text-muted-foreground">{ownBoxNotes.join(' · ')} when you come.</p>
                 )}
                 {partial.length > 0 && (
-                  <p className="text-[11px] text-warning">
+                  <p className="text-xs text-warning">
                     {partial.map(p => `You left ${p.left} of ${p.name}'s items`).join(' · ')} — {partial.length === 1 && partial[0].left === 1 ? 'it' : 'they'} will go separately.
                   </p>
                 )}
                 <Textarea value={note} onChange={e => setNote(e.target.value)} placeholder="Note for Dispatch (optional)" className="text-xs min-h-[48px] bg-background" />
                 {joinTarget ? (
                   <div className="flex flex-wrap gap-2">
-                    <Button size="sm" className="h-8 text-xs" disabled={saving || previewing} onClick={() => submit(joinTarget)}>
+                    <Button size="sm" className="h-9 text-xs" disabled={saving || previewing} onClick={() => submit(joinTarget)}>
                       {sendLabel ?? `Add to my request for ${formatDate(joinTarget.date)}`}
                     </Button>
-                    <Button size="sm" variant="outline" className="h-8 text-xs border-border" disabled={saving || previewing} onClick={() => submit()}>
+                    <Button size="sm" variant="outline" className="h-9 text-xs border-border" disabled={saving || previewing} onClick={() => submit()}>
                       Send as a new request
                     </Button>
                   </div>
                 ) : (
-                  <Button size="sm" className="h-8 text-xs" disabled={saving || previewing} onClick={() => submit()}>
+                  <Button size="sm" className="h-9 text-xs" disabled={saving || previewing} onClick={() => submit()}>
                     {sendLabel ?? 'Send request to Dispatch'}
                   </Button>
                 )}
@@ -541,46 +640,47 @@ export function PulloutPanel({ liver, records, allRecords, onRefresh, previewing
                 <div key={q.id} className={`px-4 py-3 space-y-2 ${overdue ? 'bg-destructive/5' : ''}`}>
                   <div className="flex flex-wrap items-center gap-2 text-xs">
                     <span className={overdue ? 'text-destructive font-semibold' : 'font-medium'}>
-                      Pull out on {q.date === today ? 'Today' : formatDate(q.date)}{overdue ? ' · day has passed' : ''}
+                      {pullOutOn(q.date)}{overdue ? ' · day has passed' : ''}
                     </span>
                     <span className="text-muted-foreground">{q.method}</span>
-                    <span className="text-muted-foreground">· {q.itemKeys.length} item{q.itemKeys.length !== 1 ? 's' : ''}{items.length ? ` · ${gramsOf(items).toFixed(2)}g` : ''}</span>
-                    <span className={`ml-auto text-[10px] font-semibold px-2 py-0.5 rounded-full border ${STATUS_STYLE[q.status]}`}>
-                      {q.status === 'Ready' ? 'Ready for you' : q.status}
+                    <span className="text-muted-foreground">· {q.itemKeys.length} item{q.itemKeys.length !== 1 ? 's' : ''}{items.length ? ` · ${weightOf(items)}` : ''}</span>
+                    <span className={`ml-auto text-xs font-semibold px-2 py-0.5 rounded-full border ${STATUS_STYLE[q.status]}`}>
+                      {q.status === 'Ready' ? 'Ready for you' : q.status === 'Done' ? doneLabel(q, items) : q.status}
                     </span>
                   </div>
-                  <ul className="text-[11px] text-muted-foreground space-y-0.5">
+                  <ul className="text-xs text-muted-foreground space-y-0.5">
                     {items.length > 0
-                      ? items.map(r => <li key={r.id} className="truncate">{itemLine(r)}</li>)
+                      ? items.map(r => <li key={r.id} className="break-words">{itemLine(r)}</li>)
                       : <li className="whitespace-pre-line">{q.summary}</li>}
                   </ul>
-                  {q.note && !isEditing && <p className="text-[11px] italic text-muted-foreground">“{q.note}”</p>}
+                  {q.note && !isEditing && <p className="text-xs italic text-muted-foreground">“{q.note}”</p>}
                   {q.dispatchReply && (
-                    <p className={`text-[11px] font-medium ${q.status === 'Ready' || q.status === 'Done' ? 'text-muted-foreground' : 'text-destructive'}`}>
+                    <p className={`text-xs font-medium ${q.status === 'Ready' || q.status === 'Done' ? 'text-muted-foreground' : 'text-destructive'}`}>
                       Dispatch: {q.dispatchReply}
                     </p>
                   )}
-                  {q.status === 'Ready' && <p className="text-[11px] text-muted-foreground">Need another day? Ask Dispatch.</p>}
+                  {q.status === 'Ready' && <p className="text-xs text-muted-foreground">Need another day? Ask Dispatch.</p>}
 
                   {isEditing ? (
                     <div className="space-y-2">
                       <div className="flex flex-wrap gap-3 items-end">
-                        <Input type="date" min={today} value={editDate} onChange={e => setEditDate(e.target.value)} className="h-8 text-xs w-40 bg-background border-border" />
+                        <Input type="date" min={today} value={editDate} onChange={e => setEditDate(e.target.value)} className="h-9 text-xs w-40 bg-background border-border" />
                         <MethodToggle value={editMethod} onChange={setEditMethod} />
                       </div>
                       <Textarea value={editNote} onChange={e => setEditNote(e.target.value)} placeholder="Note for Dispatch (optional)" className="text-xs min-h-[48px] bg-background" />
                       <div className="flex gap-2">
-                        <Button size="sm" className="h-7 text-xs" disabled={saving || previewing} onClick={() => saveEdit(q)}>{previewing ? 'Preview only' : 'Save'}</Button>
-                        <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setEditing('')}>Close</Button>
+                        <Button size="sm" className="h-9 text-xs" disabled={saving || previewing} onClick={() => saveEdit(q)}>{previewing ? 'Preview only' : 'Save'}</Button>
+                        <Button size="sm" variant="ghost" className="h-9 text-xs" onClick={() => setEditing('')}>Close</Button>
                       </div>
                     </div>
                   ) : q.status === 'Requested' && (
                     <div className="flex gap-2">
-                      <Button size="sm" variant="outline" className="h-7 text-xs border-border" disabled={saving || previewing} onClick={() => startEdit(q)}>
+                      <Button size="sm" variant="outline" className="h-9 text-xs border-border" disabled={saving || previewing} onClick={() => startEdit(q)}>
                         {previewing ? 'Preview only' : 'Change'}
                       </Button>
-                      <Button size="sm" variant="ghost" className="h-7 text-xs text-destructive" disabled={saving || previewing} onClick={() => withdraw(q)}>
-                        {previewing ? 'Preview only' : 'Cancel request'}
+                      {/* Kept away from Change, so it isn't tapped by mistake. */}
+                      <Button size="sm" variant="ghost" className="ml-auto h-9 text-xs text-destructive" disabled={saving || previewing} onClick={() => withdraw(q)}>
+                        {previewing ? 'Preview only' : 'Withdraw request'}
                       </Button>
                     </div>
                   )}
@@ -594,63 +694,54 @@ export function PulloutPanel({ liver, records, allRecords, onRefresh, previewing
   );
 }
 
-// ─── Cancelled items (with the reason Dispatch typed) ────────────────────────
-type CancelRange = 'all' | 'week' | 'month' | 'custom';
-const CANCEL_RANGES: { key: CancelRange; label: string }[] = [
-  { key: 'all', label: 'All Time' },
-  { key: 'week', label: 'This Week' },
-  { key: 'month', label: 'This Month' },
-  { key: 'custom', label: 'Custom' },
-];
+// ─── Cancelled / returned items (with the reason Dispatch typed) ─────────────
 
-export function CancelledItems({ records }: { records: DatabaseRowType[] }) {
+export function CancelledItems({ records, query, onOpenCustomer }: {
+  records: DatabaseRowType[];
+  /** The search text, to highlight. */
+  query?: string;
+  onOpenCustomer?: (customer: string) => void;
+}) {
   const [open, setOpen] = useState(false);
-  const [range, setRange] = useState<CancelRange>('all');
+  const [range, setRange] = useState<DateRange>('all');
   const [start, setStart] = useState('');
   const [end, setEnd] = useState('');
 
   const rows = useMemo(() => {
-    const now = new Date();
-    let from: Date | null = null;
-    let to: Date | null = null;
-    if (range === 'week') from = startOfWeek(now, { weekStartsOn: 1 });
-    else if (range === 'month') from = startOfMonth(now);
-    else if (range === 'custom') {
-      from = start ? new Date(`${start}T00:00:00`) : null;
-      to = end ? new Date(`${end}T23:59:59.999`) : null;
-    }
+    const b = rangeBounds(range, new Date(), start, end);
     return records
       .filter(isCancelledItem)
-      .map(r => ({ r, at: statusChangedAt(r) }))
-      .filter(({ at }) => {
-        if (!from && !to) return true;
-        if (!at) return false;
-        return (!from || at >= from) && (!to || at <= to);
+      // When it was cancelled; an item cancelled straight in the sheet has only its order date.
+      .map(r => ({ r, info: statusChangedInfo(r) }))
+      .filter(({ info }) => {
+        if (!b) return true;
+        if (!info) return false;
+        return (!b.from || info.date >= b.from) && (!b.to || info.date <= b.to);
       })
-      .sort((a, b) => (b.at?.getTime() ?? 0) - (a.at?.getTime() ?? 0));
+      .sort((a, b) => (b.info?.date.getTime() ?? 0) - (a.info?.date.getTime() ?? 0));
   }, [records, range, start, end]);
 
-  const grams = gramsOf(rows.map(x => x.r));
+  const items = rows.map(x => x.r);
+  const weighs = sumGrams(items) > 0 || pieceCount(items) > 0;
 
   return (
-    <div className="rounded-xl border border-destructive/30 bg-card overflow-hidden">
-      <button onClick={() => setOpen(v => !v)} className="w-full flex items-center gap-2 px-4 py-3 text-left hover:bg-secondary/20">
+    <div id="liver-cancelled" className="rounded-xl border border-destructive/30 bg-card overflow-hidden scroll-mt-24">
+      <button onClick={() => setOpen(v => !v)} className="w-full flex flex-wrap items-center gap-x-2 gap-y-1 px-4 py-3 text-left hover:bg-secondary/20" aria-expanded={open}>
         <XCircle className="h-4 w-4 text-destructive" />
-        <span className="text-xs font-cinzel font-bold text-primary/80 uppercase tracking-wide">Cancelled items</span>
-        <span className="text-[10px] text-muted-foreground">{rows.length} item{rows.length !== 1 ? 's' : ''}{grams > 0 ? ` · ${grams.toFixed(2)}g` : ''}</span>
-        <div className="h-px flex-1 bg-border/40" />
-        <ChevronDown className={`h-4 w-4 text-muted-foreground transition-transform ${open ? 'rotate-180' : ''}`} />
+        <span className="text-xs font-cinzel font-bold text-primary/80 uppercase tracking-wide">Cancelled / Returned</span>
+        <span className="text-xs text-muted-foreground">{rows.length} item{rows.length !== 1 ? 's' : ''}{weighs ? ` · ${weightOf(items)}` : ''}</span>
+        <ChevronDown className={`ml-auto h-4 w-4 text-muted-foreground transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
       {open && (
         <div className="border-t border-border">
           <div className="px-4 py-3 space-y-2">
             <div className="flex gap-1.5 flex-wrap">
-              {CANCEL_RANGES.map(x => (
+              {DATE_RANGES.map(x => (
                 <Button
                   key={x.key}
                   size="sm"
                   variant={range === x.key ? 'default' : 'outline'}
-                  className={`text-xs h-7 ${range === x.key ? 'bg-primary text-primary-foreground' : 'border-border'}`}
+                  className={`text-xs h-9 ${range === x.key ? 'bg-primary text-primary-foreground' : 'border-border'}`}
                   onClick={() => setRange(x.key)}
                 >
                   {x.label}
@@ -658,20 +749,20 @@ export function CancelledItems({ records }: { records: DatabaseRowType[] }) {
               ))}
             </div>
             {range === 'custom' && (
-              <div className="flex gap-2">
+              <div className="flex flex-wrap gap-2">
                 <div className="flex flex-col gap-1">
-                  <label className="text-[10px] text-muted-foreground">Start Date</label>
-                  <Input type="date" value={start} onChange={e => setStart(e.target.value)} className="h-8 text-xs w-36 bg-background border-border" />
+                  <label className="text-xs text-muted-foreground">Cancelled from</label>
+                  <Input type="date" value={start} onChange={e => setStart(e.target.value)} className="h-9 text-xs w-40 bg-background border-border" />
                 </div>
                 <div className="flex flex-col gap-1">
-                  <label className="text-[10px] text-muted-foreground">End Date</label>
-                  <Input type="date" value={end} onChange={e => setEnd(e.target.value)} className="h-8 text-xs w-36 bg-background border-border" />
+                  <label className="text-xs text-muted-foreground">Cancelled to</label>
+                  <Input type="date" value={end} onChange={e => setEnd(e.target.value)} className="h-9 text-xs w-40 bg-background border-border" />
                 </div>
               </div>
             )}
           </div>
           {rows.length === 0 ? (
-            <p className="px-4 pb-4 text-xs text-muted-foreground">No cancelled items in this period.</p>
+            <p className="px-4 pb-4 text-xs text-muted-foreground">No cancelled or returned items in this period.</p>
           ) : (
             <table className="w-full text-xs">
               <thead>
@@ -683,18 +774,41 @@ export function CancelledItems({ records }: { records: DatabaseRowType[] }) {
                 </tr>
               </thead>
               <tbody>
-                {rows.map(({ r, at }, i) => (
-                  <tr key={r.id} className={`border-b border-border/30 align-top ${i % 2 === 0 ? '' : 'bg-secondary/10'}`}>
-                    <td className="px-3 py-2 text-muted-foreground whitespace-nowrap">{formatDateObj(at)}</td>
-                    <td className="px-3 py-2 max-w-[150px]">
-                      <div className="font-medium truncate">{r.minerName || '—'}</div>
-                      <div className="text-[10px] text-muted-foreground sm:hidden truncate">{r.itemDescription}</div>
-                      <div className="text-[10px] text-destructive">{r.cancelReason ? r.cancelReason : 'No reason given'}</div>
-                    </td>
-                    <td className="px-3 py-2 text-muted-foreground max-w-[140px] truncate hidden sm:table-cell">{r.itemDescription || '—'}</td>
-                    <td className="px-3 py-2 text-right">{r.grams ? `${r.grams}g` : '—'}</td>
-                  </tr>
-                ))}
+                {rows.map(({ r, info }, i) => {
+                  const returned = /^return/i.test(String(r.status ?? '').trim());
+                  const remarks = notesOfRemarks(r);
+                  return (
+                    <tr key={r.id} className={`border-b border-border/30 align-top ${i % 2 === 0 ? '' : 'bg-secondary/10'}`}>
+                      <td className="px-3 py-2 whitespace-nowrap">
+                        {!info ? <span className="text-muted-foreground">—</span>
+                          : info.source === 'history' ? <span className="text-muted-foreground">{formatDateShort(info.date.toISOString())}</span>
+                          // No cancel date recorded: show the order date, and say so.
+                          : <span className="text-muted-foreground/70 italic">Ordered {formatDateShort(info.date.toISOString())}</span>}
+                      </td>
+                      <td className="px-3 py-2 min-w-0 break-words">
+                        {onOpenCustomer ? (
+                          <button type="button" className="font-medium text-left underline-offset-2 hover:underline" onClick={() => onOpenCustomer(customerKey(r))}>
+                            <Highlight text={r.minerName || '—'} query={query} />
+                          </button>
+                        ) : <div className="font-medium"><Highlight text={r.minerName || '—'} query={query} /></div>}
+                        <div className="text-xs text-muted-foreground sm:hidden">
+                          <Highlight text={[r.itemDescription, r.orderId].filter(Boolean).join(' · ')} query={query} />
+                        </div>
+                        <div className="mt-0.5"><StatusBadge status={String(r.status ?? '').trim()} /></div>
+                        {r.cancelReason
+                          ? <div className="text-xs text-destructive">Reason: {r.cancelReason}</div>
+                          : returned
+                            ? <div className="text-xs text-muted-foreground">Returned{remarks ? ` · ${remarks}` : ''}</div>
+                            : <div className="text-xs text-destructive">No reason given</div>}
+                      </td>
+                      <td className="px-3 py-2 text-muted-foreground min-w-0 break-words hidden sm:table-cell">
+                        <Highlight text={r.itemDescription || '—'} query={query} />
+                        {r.orderId && <div className="text-xs"><Highlight text={r.orderId} query={query} /></div>}
+                      </td>
+                      <td className="px-3 py-2 text-right whitespace-nowrap">{gramsLabel(r)}</td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           )}

@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Printer, ClipboardList, DollarSign } from 'lucide-react';
 import { DatabaseRowType } from '@/types';
 import { orderedRangeLabel } from '@/lib/formatters';
-import { calcProfitAED, calcItemPriceAED, calcItemCostAED, getQty } from '@/lib/calculations';
+import { calcProfitAED, calcItemPriceAED, calcItemCostAED, gramsLabel, sumGrams } from '@/lib/calculations';
 import { OrderBox, orderBox, boxLabel, isStillWithAdmin } from '@/lib/fulfilment';
 import { computeToCancel, hoursInStatus } from '@/lib/reminders';
 
@@ -45,21 +45,13 @@ function liversOf(items: DatabaseRowType[]): string {
   return [...new Set(items.map(r => r.liverName?.trim() || r.source?.trim()).filter(Boolean))].join(', ');
 }
 
-const isPc = (r: DatabaseRowType) => {
-  const c = (r.category || '').toLowerCase();
-  return c.includes('per pc') || c.includes('screw type') || c.includes('diamond');
-};
-const sumGrams = (items: DatabaseRowType[]) => items.reduce((s, r) => isPc(r) ? s : s + (Number(r.grams) || 0), 0);
 /** Customer amount (selling price). Items with no rate yet count as 0. */
 const sumAmount = (items: DatabaseRowType[]) => items.reduce((s, r) => s + calcItemPriceAED(r), 0);
 const unpriced = (items: DatabaseRowType[]) => items.filter(r => calcItemPriceAED(r) <= 0).length;
 const aed = (v: number) => `AED ${Math.round(v).toLocaleString()}`;
 
-function gramsDisplay(r: DatabaseRowType): string {
-  const cat = (r.category || '').toLowerCase();
-  if (cat.includes('per pc') || cat.includes('screw type') || cat.includes('diamond')) return `${getQty(r)} PC`;
-  return r.grams ? `${Number(r.grams).toFixed(2)}g` : '—';
-}
+// Same grams rule as My Sales (lib/calculations): per-piece items show "1 PC".
+const gramsDisplay = gramsLabel;
 
 export const SHARED_STYLES = `
   * { box-sizing: border-box; }
@@ -127,10 +119,7 @@ export default function PulloutReport({ records, onClose }: Props) {
 
     grouped.forEach((byMiner, source) => {
       const allItems = Array.from(byMiner.values()).flat();
-      const totalGrams = allItems.reduce((s, r) => {
-        const c = (r.category || '').toLowerCase();
-        return c.includes('per pc') || c.includes('screw type') || c.includes('diamond') ? s : s + (Number(r.grams) || 0);
-      }, 0);
+      const totalGrams = sumGrams(allItems);
 
       html += `<div class="source-block">
         <div class="source-header">
@@ -143,10 +132,7 @@ export default function PulloutReport({ records, onClose }: Props) {
         <div class="source-body">`;
 
       byMiner.forEach((items, miner) => {
-        const minerGrams = items.reduce((s, r) => {
-          const c = (r.category || '').toLowerCase();
-          return c.includes('per pc') || c.includes('screw type') || c.includes('diamond') ? s : s + (Number(r.grams) || 0);
-        }, 0);
+        const minerGrams = sumGrams(items);
         const dates = orderedRangeLabel(items);
         const livers = liversOf(items);
 
@@ -202,10 +188,7 @@ export default function PulloutReport({ records, onClose }: Props) {
       const sPrice = allItems.reduce((s, r) => s + calcItemPriceAED(r), 0);
       const sCost = allItems.reduce((s, r) => s + calcItemCostAED(r), 0);
       const sProfit = allItems.reduce((s, r) => s + calcProfitAED(r), 0);
-      const sGrams = allItems.reduce((s, r) => {
-        const c = (r.category || '').toLowerCase();
-        return c.includes('per pc') || c.includes('screw type') || c.includes('diamond') ? s : s + (Number(r.grams) || 0);
-      }, 0);
+      const sGrams = sumGrams(allItems);
       grandTotal.price += sPrice;
       grandTotal.cost += sCost;
       grandTotal.profit += sProfit;
@@ -225,10 +208,7 @@ export default function PulloutReport({ records, onClose }: Props) {
         const mPrice = items.reduce((s, r) => s + calcItemPriceAED(r), 0);
         const mCost = items.reduce((s, r) => s + calcItemCostAED(r), 0);
         const mProfit = items.reduce((s, r) => s + calcProfitAED(r), 0);
-        const mGrams = items.reduce((s, r) => {
-          const c = (r.category || '').toLowerCase();
-          return c.includes('per pc') || c.includes('screw type') || c.includes('diamond') ? s : s + (Number(r.grams) || 0);
-        }, 0);
+        const mGrams = sumGrams(items);
         const dates = orderedRangeLabel(items);
 
         html += `<div class="client-block">

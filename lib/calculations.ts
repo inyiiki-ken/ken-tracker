@@ -1,5 +1,5 @@
 import { DatabaseRowType } from '@/types';
-import { parseISO, isValid, parse } from 'date-fns';
+import { parseISO, isValid } from 'date-fns';
 import { getRatesForDate, RateSnapshot, usesGold } from '@/lib/ratesStore';
 import { parseBillingModifiers, getTotalChargesAED, getTotalDiscountsAED } from '@/lib/billingModifiers';
 import { getTimezoneOffsetMs } from '@/lib/businessConfig';
@@ -20,24 +20,64 @@ export function roundPrice(v: number): number {
   return Math.sign(x) * Math.round(Math.abs(Number(x.toFixed(6))));
 }
 
+const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+
+/** A calendar day at local noon (so no timezone pushes it to the day before/after). */
+function dayAt(y: number, m: number, d: number, h = 12, min = 0, sec = 0): Date | null {
+  if (y < 100) y += 2000;
+  const out = new Date(y, m - 1, d, h, min, sec);
+  // Reject overflow (31/02 → Mar 3).
+  if (out.getFullYear() !== y || out.getMonth() !== m - 1 || out.getDate() !== d) return null;
+  return out;
+}
+
+function monthIndex(name: string): number {
+  return MONTHS.indexOf(name.slice(0, 3).toLowerCase()) + 1;
+}
+
+/**
+ * A date typed or stored in any of the sheet's formats. Never relies on the
+ * browser's own parsing of non-ISO text (iPhone Safari rejects most of it):
+ *   2026-09-24 / 2026/09/24 / 2026-09-24T08:00:00Z → year first
+ *   9/24/2026, 9/24/2026 14:05:00        → month first (Google Sheets)
+ *   26/09/2026                           → day first when the first part is above 12
+ *   24.09.2026                           → day first
+ *   September 24, 2026 / Sep 24 2026 / 24 Sep 2026 (a leading weekday is ignored)
+ * A date without a time is placed at local noon.
+ */
 export function parseDateRobust(dateStr?: string): Date | null {
   if (!dateStr) return null;
-  let safeDateStr = dateStr;
-  if (!dateStr.includes('T') && !dateStr.includes('+') && !dateStr.includes('Z')) {
-    safeDateStr = `${dateStr} 12:00:00 +0400`;
+  const s = String(dateStr).trim().replace(/^[a-z]+day,?\s+/i, '');
+  if (!s) return null;
+
+  const ymd = s.match(/^(\d{4})([-/.])(\d{1,2})\2(\d{1,2})$/);
+  if (ymd) return dayAt(+ymd[1], +ymd[3], +ymd[4]);
+  if (/^\d{4}-\d{2}-\d{2}[T ]\d/.test(s)) {
+    // "2026-09-24 12:00:00 +0400" → "2026-09-24T12:00:00+0400"
+    const iso = parseISO(s.replace(' ', 'T').replace(/\s+([+-]\d{2}:?\d{2}|Z)$/i, '$1'));
+    if (isValid(iso)) return iso;
   }
-  const iso = parseISO(safeDateStr);
-  if (isValid(iso)) return iso;
-  const native = new Date(safeDateStr);
-  if (!isNaN(native.getTime())) return native;
-  const formats = ['MMMM dd,yyyy', 'MMMM d,yyyy', 'MM/dd/yyyy', 'M/d/yyyy', 'dd/MM/yyyy'];
-  for (const fmt of formats) {
-    try {
-      const d = parse(safeDateStr, fmt, new Date());
-      if (isValid(d)) return d;
-    } catch { /* continue */ }
+
+  const num = s.match(/^(\d{1,2})([/.-])(\d{1,2})\2(\d{4}|\d{2})(?:[ ,T]+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*([ap]m)?)?$/i);
+  if (num) {
+    const a = +num[1], b = +num[3], y = +num[4];
+    const dayFirst = num[2] === '.' || a > 12;
+    let h = num[5] !== undefined ? +num[5] : 12;
+    const ap = num[8]?.toLowerCase();
+    if (ap === 'pm' && h < 12) h += 12;
+    if (ap === 'am' && h === 12) h = 0;
+    const min = num[6] !== undefined ? +num[6] : 0;
+    const sec = num[7] !== undefined ? +num[7] : 0;
+    return dayFirst ? dayAt(y, b, a, h, min, sec) : dayAt(y, a, b, h, min, sec);
   }
-  return null;
+
+  const mdy = s.match(/^([a-z]{3,9})\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s*(\d{4})\b/i);
+  if (mdy && monthIndex(mdy[1])) return dayAt(+mdy[3], monthIndex(mdy[1]), +mdy[2]);
+  const dmy = s.match(/^(\d{1,2})(?:st|nd|rd|th)?[\s-]+([a-z]{3,9})\.?,?[\s-]+(\d{4})\b/i);
+  if (dmy && monthIndex(dmy[2])) return dayAt(+dmy[3], monthIndex(dmy[2]), +dmy[1]);
+
+  const iso = parseISO(s);
+  return isValid(iso) ? iso : null;
 }
 
 export function getQty(record: DatabaseRowType): number {
@@ -47,6 +87,34 @@ export function getQty(record: DatabaseRowType): number {
 export function isPcItem(record: DatabaseRowType): boolean {
   const grams = n(record.grams);
   return !grams || isNaN(grams) || grams <= 0;
+}
+
+/** Sold by the piece (per pc, screw type, diamond): counted in pieces, never in grams. */
+export function isPerPiece(record: DatabaseRowType): boolean {
+  const cat = (record.category || '').toLowerCase();
+  return cat.includes('per pc') || cat.includes('screw type') || cat.includes('diamond');
+}
+
+/** Grams of these items, leaving out per-piece items (see pieceCount). */
+export function sumGrams(records: DatabaseRowType[]): number {
+  return records.reduce((s, r) => (isPerPiece(r) ? s : s + n(r.grams)), 0);
+}
+
+/** How many pieces the per-piece items add up to. */
+export function pieceCount(records: DatabaseRowType[]): number {
+  return records.reduce((s, r) => (isPerPiece(r) ? s + getQty(r) : s), 0);
+}
+
+/** One item's weight: "2.10g", or "1 PC" for a per-piece item. */
+export function gramsLabel(record: DatabaseRowType): string {
+  if (isPerPiece(record)) return `${getQty(record)} PC`;
+  return n(record.grams) ? `${n(record.grams).toFixed(2)}g` : '—';
+}
+
+/** Several items: "12.40g", or "12.40g + 2 pcs" when some are per-piece. */
+export function gramsTotalLabel(records: DatabaseRowType[]): string {
+  const pcs = pieceCount(records);
+  return `${sumGrams(records).toFixed(2)}g${pcs > 0 ? ` + ${pcs} pc${pcs !== 1 ? 's' : ''}` : ''}`;
 }
 
 export function isFreeSf(record: DatabaseRowType): boolean {

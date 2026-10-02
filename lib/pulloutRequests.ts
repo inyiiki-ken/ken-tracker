@@ -13,7 +13,8 @@
  */
 
 import type { DatabaseRowType } from "@/types";
-import { parseDateRobust } from "@/lib/calculations";
+import { gramsLabel } from "@/lib/calculations";
+import { isCancelledOrReturned } from "@/lib/fulfilment";
 import { todayLocalISO } from "@/lib/businessConfig";
 
 export type PulloutRequestStatus = "Requested" | "Ready" | "Done" | "Cancelled";
@@ -97,8 +98,9 @@ export function liverKey(v: unknown): string {
   return String(v ?? "").toUpperCase().trim().replace(/\s+/g, " ");
 }
 
+/** Cancelled or returned: what the liver's "Cancelled / Returned" box lists. */
 export function isCancelledItem(r: DatabaseRowType): boolean {
-  return /^cancel/i.test(String(r.status ?? "").trim());
+  return isCancelledOrReturned(r);
 }
 
 /** Stable key for an item in a request ("#<row>" only marks a row with no Row Key yet). */
@@ -130,9 +132,10 @@ export function findItems(records: DatabaseRowType[], keys: string[]): DatabaseR
   return itemsFor(itemsByKey(records), keys);
 }
 
-/** One line per item: "MARIA · ring · 2.1g". */
+/** One line per item: "MARIA · ring · A123 · 2.10g" (order ID tells two of her rings apart). */
 export function itemLine(r: DatabaseRowType): string {
-  return [r.minerName, r.itemDescription, r.grams ? `${r.grams}g` : ""].filter(Boolean).join(" · ");
+  const w = gramsLabel(r);
+  return [r.minerName, r.itemDescription, r.orderId, w === "—" ? "" : w].filter(Boolean).join(" · ");
 }
 
 export function itemSummary(items: DatabaseRowType[]): string {
@@ -155,23 +158,4 @@ export function todayISO(d?: Date): string {
 /** The day has passed and the liver hasn't come yet. */
 export function isOverdueRequest(q: PulloutRequest, today = todayISO()): boolean {
   return isOpenRequest(q) && !!q.date && q.date < today;
-}
-
-const ISO_AT_START = /^(\d{4}-\d{2}-\d{2}T[^ |]+)\s*\|/;
-
-/**
- * When the item got its current status: the latest change-history line that
- * touched "status", else the live date.
- */
-export function statusChangedAt(r: DatabaseRowType): Date | null {
-  const lines = String(r.auditTrail ?? "").split("\n");
-  for (let i = lines.length - 1; i >= 0; i--) {
-    if (!/\bstatus\b/i.test(lines[i])) continue;
-    const m = lines[i].match(ISO_AT_START);
-    if (m) {
-      const d = new Date(m[1]);
-      if (!Number.isNaN(d.getTime())) return d;
-    }
-  }
-  return parseDateRobust(r.dateOfLive);
 }

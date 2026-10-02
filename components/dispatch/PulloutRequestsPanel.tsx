@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import type { DatabaseRowType } from '@/types';
 import { formatDate } from '@/lib/formatters';
+import { gramsLabel, gramsTotalLabel, sumGrams, pieceCount } from '@/lib/calculations';
 import { completePulloutRequest, getPulloutRequests, setPulloutRequestStatus, undoCompletePulloutRequest, updatePulloutRequest } from '@/lib/api';
 import {
   PULLOUT_METHODS, isOpenRequest, isOverdueRequest, itemsByKey, itemsFor, todayISO,
@@ -180,7 +181,8 @@ export default function PulloutRequestsPanel({ records, onRefresh }: {
             const items = itemsFor(byKey, q.itemKeys);
             const notFound = items.length === 0;
             const overdue = isOverdueRequest(q, today);
-            const grams = items.reduce((s, r) => s + (Number(r.grams) || 0), 0);
+            // Same grams rule as the liver's own request card.
+            const weighs = sumGrams(items) > 0 || pieceCount(items) > 0;
             const isBusy = busy === q.id;
             const reply = replies[q.id] ?? q.dispatchReply;
             const day = dayEdit[q.id];
@@ -195,7 +197,7 @@ export default function PulloutRequestsPanel({ records, onRefresh }: {
                   <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full border ${q.status === 'Ready' ? 'border-success/40 bg-success/10 text-success' : 'border-warning/40 bg-warning/10 text-warning'}`}>
                     {q.status}
                   </span>
-                  <span className="text-[10px] text-muted-foreground">{q.itemKeys.length} item{q.itemKeys.length !== 1 ? 's' : ''}{grams > 0 ? ` · ${grams.toFixed(2)}g` : ''}</span>
+                  <span className="text-[10px] text-muted-foreground">{q.itemKeys.length} item{q.itemKeys.length !== 1 ? 's' : ''}{weighs ? ` · ${gramsTotalLabel(items)}` : ''}</span>
                   {q.onBehalf && q.requestedBy && <span className="text-[10px] text-muted-foreground">by {q.requestedBy}</span>}
                   <div className="ml-auto flex gap-1.5">
                     {PULLOUT_METHODS.map(m => (
@@ -218,7 +220,7 @@ export default function PulloutRequestsPanel({ records, onRefresh }: {
                     <li key={r.id} className="flex gap-2">
                       <span className="font-medium truncate max-w-[140px]">{r.minerName || '—'}</span>
                       <span className="text-muted-foreground truncate flex-1">{r.itemDescription || '—'}</span>
-                      <span className="shrink-0">{r.grams ? `${r.grams}g` : ''}</span>
+                      <span className="shrink-0">{gramsLabel(r) === '—' ? '' : gramsLabel(r)}</span>
                       <span className="shrink-0 text-[10px] text-muted-foreground">{r.status}</span>
                     </li>
                   ))}

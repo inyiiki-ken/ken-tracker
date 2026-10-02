@@ -1,6 +1,7 @@
 "use client";
 
-import { isSaleStatus } from '@/lib/appConfig';
+import { isSold, soldDay } from '@/lib/fulfilment';
+import { metalOf, type MetalKind } from '@/lib/metal';
 import { useMemo, useState } from 'react';
 import { Calendar, ChevronDown, Printer, History, TrendingUp, Download } from 'lucide-react';
 import { toast } from 'sonner';
@@ -18,6 +19,7 @@ import {
   parseDateRobust,
   calcItemPriceAED,
   calcItemCostAED,
+  sumGrams,
 } from '@/lib/calculations';
 import { formatDate, applySearch } from '@/lib/formatters';
 import { recordsToCsv, downloadCsv, reportFilename } from '@/lib/reporting';
@@ -31,13 +33,10 @@ import CustomerHistoryModal from '@/components/CustomerHistoryModal';
 type DateRange = 'all' | 'week' | 'month' | '3months' | 'custom';
 type Metal = 'Gold' | 'Silver' | 'Other';
 
+const METAL_NAME: Record<MetalKind, Metal> = { gold: 'Gold', silver: 'Silver', other: 'Other' };
+/** Same metal rule as My Sales (lib/metal). */
 function getMetal(record: DatabaseRowType): Metal {
-  const cat = (record.category || '').toLowerCase();
-  const src = (record.source || '').toLowerCase();
-  const item = (record.itemDescription || '').toLowerCase();
-  if (cat.includes('silver') || src.includes('silver') || item.includes('silver')) return 'Silver';
-  if (cat.includes('gold') || src.includes('gold') || item.includes('gold')) return 'Gold';
-  return 'Other';
+  return METAL_NAME[metalOf(record)];
 }
 
 const METAL_ORDER: Metal[] = ['Gold', 'Silver', 'Other'];
@@ -78,19 +77,15 @@ const RANGES: { key: DateRange; label: string }[] = [
   { key: 'custom', label: 'Custom' },
 ];
 
-/** For Delivered/Given to Shop items, attribute the sale to the delivery date (not live date). */
+/** A sold item counts on the day it shipped (lib/fulfilment soldDay), same as My Sales; anything else on its live date. */
 function getSaleDate(r: DatabaseRowType): string | undefined {
-  if (isSaleStatus(r.status) && /dispatch/i.test(r.status || '') && r.dispatchDate) return r.dispatchDate;
-  if (isSaleStatus(r.status) && r.deliveredDate) {
-    return r.deliveredDate;
-  }
+  if (isSold(r)) return soldDay(r) || r.dateOfLive;
   return r.dateOfLive;
 }
 
+/** Grams of one item, 0 for per-piece items (same rule as My Sales). */
 function calcGrams(record: DatabaseRowType): number {
-  const cat = (record.category || '').toLowerCase();
-  if (cat.includes('per pc') || cat.includes('screw type') || cat.includes('diamond')) return 0;
-  return Number(record.grams) || 0;
+  return sumGrams([record]);
 }
 
 export default function BossingDashboard({ records, searchQuery, onSearchChange }: TabProps) {
@@ -146,8 +141,8 @@ export default function BossingDashboard({ records, searchQuery, onSearchChange 
 
   const kpis = useMemo(() => {
     const activeRecords = filtered.filter(r => !DEAD_STATUSES.has(r.status || ''));
-    // "Sold" = the customer's sale statuses (Settings → App Settings), e.g. Crown counts Dispatched.
-    const deliveredRecords = filtered.filter(r => isSaleStatus(r.status));
+    // "Sold" = shipped / delivered or a sale status from Settings (lib/fulfilment isSold), same as My Sales.
+    const deliveredRecords = filtered.filter(isSold);
 
     const totalProfit = activeRecords.reduce((sum, r) => sum + calcProfitAED(r), 0);
     const confirmedProfit = deliveredRecords.reduce((sum, r) => sum + calcProfitAED(r), 0);

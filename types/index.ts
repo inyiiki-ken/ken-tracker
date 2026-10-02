@@ -55,6 +55,8 @@ export type DatabaseRowType = {
    * reminders count from the same day Dispatch's do.
    */
   customerLastPurchaseAt?: string;
+  /** Not a sheet column. Sent to liver-only users instead of clientAddress: whether one is on file. */
+  hasClientAddress?: boolean;
   id: number;
 };
 
@@ -74,6 +76,8 @@ export type TabProps = {
   userFirstName?: string;
   onRefresh?: () => void;
   lockedLiverName?: string; // Set for liver-role users — they can only see their own name
+  /** Admin / Bossing / Accounts on My Sales: their own liver name, preselected in the picker. */
+  defaultLiver?: string;
   /** An admin is previewing someone else's view: actions that write are disabled. */
   previewing?: boolean;
   /** Pre-computed client milestones (computed once in App.tsx) */

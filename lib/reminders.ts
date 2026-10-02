@@ -4,6 +4,7 @@ import type { DatabaseRowType } from "@/types";
 import { getAppConfig, type StatusDeadline } from "@/lib/appConfig";
 import { parseDateRobust, customerKey } from "@/lib/calculations";
 import { lineDate, newestPurchaseByCustomer } from "@/lib/purchaseDates";
+import { fulfilmentStage } from "@/lib/fulfilment";
 
 /**
  * Status deadlines ("an item may stay For COD for 3 days, Reseller for 3 weeks").
@@ -50,12 +51,16 @@ function daysLabel(d: number): string {
 }
 
 export function ruleFromDeadline(d: StatusDeadline): ReminderRule {
+  // Items already with the courier (or delivered) are followed up, never cancelled.
+  const shipped = ["dispatched", "delivered"].includes(fulfilmentStage(d.status));
   return {
     status: d.status,
     days: d.days,
     title: `${d.status} — over ${daysLabel(d.days)}`,
-    hint: `Still "${d.status}" after ${daysLabel(d.days)}. Follow up now or cancel the item.`,
-    cancelWhenOverdue: true,
+    hint: shipped
+      ? `Still "${d.status}" after ${daysLabel(d.days)}. Follow up with the courier.`
+      : `Still "${d.status}" after ${daysLabel(d.days)}. Follow up now or cancel the item.`,
+    cancelWhenOverdue: !shipped,
     urgentAfterHours: d.days * 24,
   };
 }
@@ -151,6 +156,17 @@ export function dueInfo(r: DatabaseRowType, rule: ReminderRule, last?: Map<strin
   const capped = due > cap;
   if (capped) due = cap;
   return { since, due, lastBuy: extended ? lb : undefined, capped: extended && capped };
+}
+
+/**
+ * The deadline of one item under the customer's rules (the first rule its
+ * status matches), or null when no rule applies. For "Due Oct 03" on rows.
+ */
+export function dueFor(r: DatabaseRowType, rules: ReminderRule[], last?: Map<string, Date>): { due: Date; rule: ReminderRule } | null {
+  const rule = rules.find((x) => matches(x, String(r.status ?? "")));
+  if (!rule) return null;
+  const d = dueInfo(r, rule, last);
+  return d ? { due: d.due, rule } : null;
 }
 
 export interface OverdueSection {

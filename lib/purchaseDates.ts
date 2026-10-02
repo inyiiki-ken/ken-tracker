@@ -25,11 +25,13 @@ export function boughtOn(r: DatabaseRowType): Date | null {
   return null;
 }
 
-/** Each customer's latest purchase (any item that isn't cancelled). */
+/** Each customer's latest purchase (any item that isn't cancelled or returned). */
 export function newestPurchaseByCustomer(all: DatabaseRowType[]): Map<string, Date> {
   const m = new Map<string, Date>();
   for (const r of all) {
-    if (/cancel/i.test(String(r.status ?? ""))) continue;
+    // Cancelled / returned (lib/fulfilment's "excluded"; not imported here because
+    // the server uses this file and fulfilment reads the client-side settings).
+    if (/^(cancel|returned)/i.test(String(r.status ?? "").trim())) continue;
     const d = boughtOn(r);
     if (!d) continue;
     const k = customerKey(r);

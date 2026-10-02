@@ -97,14 +97,15 @@ export async function getSessionAccess(): Promise<{ all: boolean; email: string;
   const rows = await loadRolesData();
   if (!rows) throw new Error("Couldn't load your account. Tap Refresh to try again.");
   const me = email.toLowerCase().trim();
-  const mine = rows.find((r) => r.email.toLowerCase().trim() === me);
+  // Listed on more than one row: the first row that has a name.
+  const mine = rows.find((r) => r.email.toLowerCase().trim() === me && r.name.trim());
   // Same fallback as the app's lockedLiverName (the usually empty static map).
   const fromMap = Object.entries(EMAIL_TO_LIVER_NAME).find(([k]) => k.toLowerCase() === me)?.[1];
   return {
     all: false,
     email,
     roles: getUserRole(email, rows),
-    liverName: String(mine?.name || fromMap || "").toUpperCase().trim(),
+    liverName: String(mine?.name || fromMap || "").toUpperCase().trim().replace(/\s+/g, " "),
   };
 }
 
@@ -113,7 +114,7 @@ export async function liverNameForEmail(email: string): Promise<string> {
   const me = String(email ?? "").toLowerCase().trim();
   if (!me) return "";
   const rows = (await loadRolesData()) ?? [];
-  const row = rows.find((r) => r.email.toLowerCase().trim() === me);
+  const row = rows.find((r) => r.email.toLowerCase().trim() === me && r.name.trim());
   const fromMap = Object.entries(EMAIL_TO_LIVER_NAME).find(([k]) => k.toLowerCase() === me)?.[1];
-  return String(row?.name || fromMap || "").toUpperCase().trim();
+  return String(row?.name || fromMap || "").toUpperCase().trim().replace(/\s+/g, " ");
 }
