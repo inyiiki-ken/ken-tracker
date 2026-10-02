@@ -197,6 +197,7 @@ export default function UploadMasterlistFAB({ onRefresh, records = [] }: Props) 
     let created = 0;
     let duplicates = 0;
     let resumed = 0;
+    let matched = 0;
     const allErrors: string[] = [];
     try {
       // Remember the batch BEFORE writing, so even a half-finished import can be undone.
@@ -210,10 +211,11 @@ export default function UploadMasterlistFAB({ onRefresh, records = [] }: Props) 
           void _w;
           return { ...rest, rowKey: `IMP-${importId}-${i + j}` };
         });
-        const result = await importRows({ rows: batch as unknown as Record<string, string>[], importId, allowDuplicates });
+        const result = await importRows({ rows: batch as unknown as Record<string, string>[], importId, allowDuplicates, matchManual: true });
         created += result.createdCount;
         duplicates += result.duplicates || 0;
         resumed += result.alreadyImported || 0;
+        matched += result.matchedManual || 0;
         allErrors.push(...result.errors);
         if (created + resumed > 0) {
           await recordLastImport({ importId, fileName, count: created + resumed, at: new Date().toISOString(), by: '' }).catch(() => {});
@@ -227,6 +229,9 @@ export default function UploadMasterlistFAB({ onRefresh, records = [] }: Props) 
         const info: LastImportInfo = { importId, fileName, count: created + resumed, at: new Date().toISOString(), by: '' };
         setLastImport(info);
       }
+      if (matched > 0) {
+        toast.info(`${matched} item${matched === 1 ? ' was' : 's were'} already added by hand (same client, date and code or grams) — linked to that record, not added twice.`);
+      }
       if (duplicates > 0) {
         setDupFound(duplicates);
         toast.warning(`${duplicates} item${duplicates === 1 ? ' was' : 's were'} already in Admin (same liver, date, code and description) — skipped, not imported twice.`);
@@ -236,7 +241,7 @@ export default function UploadMasterlistFAB({ onRefresh, records = [] }: Props) 
         console.error('Masterlist import errors:', allErrors);
       } else if (created > 0) {
         toast.success(`Imported ${created} item(s)!${resumed ? ` (${resumed} were already saved from the earlier try)` : ''}`);
-      } else if (!duplicates) {
+      } else if (!duplicates && !matched) {
         toast.message('Nothing new to import.');
       }
       if (!duplicates || created > 0) { reset(); setDupFound(0); setAllowDuplicates(false); importIdRef.current = null; }
