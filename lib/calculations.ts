@@ -525,6 +525,27 @@ export function calcGroupBalance(records: DatabaseRowType[]): number {
   return roundPrice(itemsTotal + shipping + cc + charges - paid);
 }
 
+/**
+ * One customer's invoices, oldest first, as a running account: shipping is
+ * charged once (on the first invoice, like calcGroupBalance) and an earlier
+ * invoice's store credit is used up by the next ones. Each entry's `balance`
+ * is what is still owed on that invoice after earlier credit.
+ */
+export function calcInvoiceLedger(invoices: DatabaseRowType[][]): { balance: number }[] {
+  const out: { balance: number }[] = [];
+  let soFar: DatabaseRowType[] = [];
+  let before = 0;
+  for (const recs of invoices) {
+    soFar = soFar.concat(recs);
+    const after = calcGroupBalance(soFar);
+    const own = after - before;
+    // Earlier credit can bring this invoice down to paid, never below.
+    out.push({ balance: before < 0 && own > 0 ? Math.max(0, own + before) : own });
+    before = after;
+  }
+  return out;
+}
+
 export function customerKey(r: DatabaseRowType): string {
   return String(r.customerId || r.minerName || '').trim().toUpperCase().replace(/\s+/g, ' ') || `#${r.id}`;
 }
