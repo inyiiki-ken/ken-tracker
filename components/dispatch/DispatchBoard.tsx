@@ -19,6 +19,7 @@ import { computeOverdue } from '@/lib/reminders';
 import { parseDateRobust } from '@/lib/calculations';
 import { ORDER_BOXES, OrderBox, orderBox, isStillWithAdmin, shipmentDay, cancelDay, outsourceName, fulfilmentStage } from '@/lib/fulfilment';
 import { getEffectiveStatuses } from '@/lib/statusRegistry';
+import { liverKey } from '@/lib/pulloutRequests';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { toast } from 'sonner';
 
@@ -133,7 +134,7 @@ export default function DispatchBoard({ records, searchQuery, onSearchChange, on
       const dateOf = (r: DatabaseRowType) => latest.get(customerKey(r));
       // Outsource: the outsource (e.g. JOLAI) first, then its liver, then the date.
       if (b.key === 'outsource') {
-        const byOutsource = groupByPageDateMiner(list, r => `${r.liverName?.trim() || 'No liver name'}${LIVER_SEP}${dateOf(r) ?? ''}`, outsourceName);
+        const byOutsource = groupByPageDateMiner(list, r => `${liverKey(r.liverName) || 'No liver name'}${LIVER_SEP}${dateOf(r) ?? ''}`, outsourceName);
         for (const [out, dateMap] of byOutsource) {
           byOutsource.set(out, new Map([...dateMap.entries()].sort((x, y) => {
             const [lx, dx] = x[0].split(LIVER_SEP), [ly, dy] = y[0].split(LIVER_SEP);

@@ -71,6 +71,12 @@ export type DatabaseRowType = {
    */
   customerHasOtherLivers?: boolean;
   /**
+   * Not a sheet column. On a shared customer's open COD item that carries the
+   * shipping fee (one item across all her livers): the fields the fee is worked
+   * out from (lib/liverMoney sharedShippingCarriers).
+   */
+  sharedShippingFrom?: Partial<DatabaseRowType>;
+  /**
    * Not a sheet column. Sent only to liver-only users: this customer ever
    * bought from another liver, so her own rows can't give the loyalty count.
    */

@@ -589,10 +589,16 @@ export function netChargeAED(r: DatabaseRowType): number {
 
 /** Shipping for ONE customer's items, charged once: a promo SF wins, any free SF means none. */
 export function groupShippingFee(records: DatabaseRowType[]): number {
-  if (!records.length) return 0;
+  const from = shippingFeeRow(records);
+  return from ? calcShippingFee(from) : 0;
+}
+
+/** The row a customer's shipping fee is worked out from (the promo one, else the first); null when free. */
+export function shippingFeeRow(records: DatabaseRowType[]): DatabaseRowType | null {
+  if (!records.length) return null;
   const promo = records.find(r => isPromoSf(r));
   const anyFree = !promo && records.some(r => isFreeSf(r));
-  return anyFree ? 0 : calcShippingFee(promo || records[0]);
+  return anyFree ? null : promo || records[0];
 }
 
 /** Balance owed for ONE customer's items, computed the way the invoice does. */

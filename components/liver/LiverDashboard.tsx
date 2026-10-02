@@ -26,7 +26,7 @@ import {
 import { requestTargetsLabel } from '@/lib/pulloutTargets';
 import { dayKey, fulfilmentStage, isSold, outsourceOfLivers, soldDay } from '@/lib/fulfilment';
 import { metalOf, type MetalKind } from '@/lib/metal';
-import { aedLabel, collectForAED, customersWithOtherLivers, withOtherLivers } from '@/lib/liverMoney';
+import { aedLabel, collectForAED, customersWithOtherLivers, sharedShippingCarriers, withOtherLivers } from '@/lib/liverMoney';
 import { isOpenReport, type DeliveryKind, type DeliveryReport } from '@/lib/deliveryReports';
 import {
   DATE_RANGES, groupByDay, groupByStatus, inBounds, newestFirst, rangeBounds, statusOf, summariseLives,
@@ -438,7 +438,9 @@ export default function LiverDashboard({ records, searchQuery, onSearchChange, l
   const byLiver = useMemo(() => {
     if (!selectedLiver) return [];
     const mine = records.filter(r => liverKey(r.liverName) === selectedLiver);
-    return mine.length === records.length ? mine : withOtherLivers(mine, customersWithOtherLivers(records, selectedLiver));
+    if (mine.length === records.length) return mine;
+    const shared = customersWithOtherLivers(records, selectedLiver);
+    return withOtherLivers(mine, shared, sharedShippingCarriers(records, shared));
   }, [records, selectedLiver]);
 
   const query = searchQuery.trim();
@@ -664,7 +666,8 @@ export default function LiverDashboard({ records, searchQuery, onSearchChange, l
             {/* One line on top: each part goes to its section. */}
             <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-sm">
               <button className="font-semibold text-success underline-offset-2 hover:underline py-1" onClick={() => scrollToId('liver-kpi')}>
-                Sold {sumGrams(sold).toFixed(1)}g
+                {/* Names the period, like the Sold card: the Period chips are further down. */}
+                {range === 'all' ? 'Sold' : `Sold ${range === 'custom' ? 'in your dates' : rangeLabel}`} {sumGrams(sold).toFixed(1)}g
               </button>
               <span className="text-muted-foreground">·</span>
               <button className="underline-offset-2 hover:underline py-1" onClick={() => scrollToId('liver-groups')}>

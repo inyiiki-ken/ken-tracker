@@ -61,8 +61,14 @@ export function ShippedLine({ r }: { r: DatabaseRowType }) {
     r.dispatchDate ? `Shipped ${formatDateShort(r.dispatchDate)}` : '',
     stage === 'delivered' && r.deliveredDate ? `Delivered ${formatDateShort(r.deliveredDate)}` : '',
   ].filter(Boolean);
-  if (!parts.length) return null;
-  return <div className="text-xs text-success">{parts.join(' · ')}</div>;
+  // Set to Dispatched by hand with no Dispatch Date: say so rather than show nothing.
+  const noDate = !r.dispatchDate && !(stage === 'delivered' && r.deliveredDate);
+  return (
+    <div className="text-xs text-success">
+      {parts.join(' · ')}
+      {noDate && <span className="text-muted-foreground">{stage === 'delivered' ? 'Delivered' : 'Shipped'} · date not recorded</span>}
+    </div>
+  );
 }
 
 /** Notes Dispatch / Admin wrote on the item (read-only). */

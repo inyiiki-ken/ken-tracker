@@ -537,9 +537,10 @@ export function PulloutPanel({ liver, records, allRecords, recordsAt, onRefresh,
                             ? <CustomerNameButton name={g.name} query={query} onOpen={() => onOpenCustomer(g.key)} bold />
                             : <span className="font-semibold"><Highlight text={g.name} query={query} /></span>}
                           <span className="text-xs text-muted-foreground">{g.rows.length} item{g.rows.length !== 1 ? 's' : ''} · {weightOf(g.rows)}</span>
-                          {!g.shared && g.money.due > 0 && (
+                          {g.money.due > 0 && (
                             <span className={`text-xs font-semibold ${g.money.balance <= 0 ? 'text-success' : g.cashReported > 0 ? 'text-muted-foreground' : 'text-destructive'}`}>
-                              {g.money.balance > 0 ? `Balance due ${aedLabel(g.money.balance)}` : 'Paid'}
+                              {/* Shared customer: her items only (customerMoney). */}
+                              {g.money.balance > 0 ? `Balance due${g.shared ? ' on your items' : ''} ${aedLabel(g.money.balance)}` : g.shared ? 'Paid on your items' : 'Paid'}
                               {g.money.balance > 0 && g.cashReported > 0 && <span className="font-normal"> · cash reported {aedLabel(g.cashReported)}, waiting for Accounts</span>}
                             </span>
                           )}

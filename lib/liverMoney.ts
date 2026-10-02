@@ -8,7 +8,7 @@
  */
 
 import type { DatabaseRowType } from '@/types';
-import { calcCCFee, calcGroupBalance, calcItemPriceAED, calcTotalPaid, customerKey, groupShippingFee, netChargeAED, roundPrice } from '@/lib/calculations';
+import { calcCCFee, calcGroupBalance, calcItemPriceAED, calcShippingFee, calcTotalPaid, customerKey, groupShippingFee, netChargeAED, roundPrice, shippingFeeRow } from '@/lib/calculations';
 import { boxFromStatus, fulfilmentStage, isCancelledOrReturned } from '@/lib/fulfilment';
 import { itemKey, liverKey } from '@/lib/pulloutRequests';
 import type { DeliveryReport } from '@/lib/deliveryReports';
@@ -30,15 +30,19 @@ export function moneyRows(rows: DatabaseRowType[]): DatabaseRowType[] {
 export function customerMoney(rows: DatabaseRowType[]): { paid: number; due: number; balance: number } {
   const counted = moneyRows(rows);
   const paid = roundPrice(counted.reduce((s, r) => s + calcTotalPaid(r), 0));
-  const owed = calcGroupBalance(counted);
+  // Shared customer: the balance on her items only (see sharedCustomer).
+  const owed = sharedCustomer(rows)
+    ? roundPrice(counted.reduce((s, r) => s + itemDueAED(r) + netChargeAED(r) + sharedShippingAED(r), 0) - paid)
+    : calcGroupBalance(counted);
   return { paid, due: roundPrice(owed + paid), balance: Math.max(0, owed) };
 }
 
 /**
  * The customer also bought from another liver (the server marks a liver's rows,
- * customerHasOtherLivers). Her rows alone can't give the whole balance, a group
- * downpayment saved on another liver's item, or the shipping fee, so she sees
- * item-level figures only and Accounts / Dispatch have the rest.
+ * customerHasOtherLivers). Her rows alone can't give the whole balance or a
+ * group downpayment saved on another liver's item, so she sees the balance on
+ * her own items (plus the shipping fee when she is the one collecting it, see
+ * sharedShippingCarriers) and Accounts / Dispatch have the rest.
  */
 export function sharedCustomer(customerRows: DatabaseRowType[]): boolean {
   return customerRows.some(r => r.customerHasOtherLivers);
@@ -71,10 +75,53 @@ export function customersEverWithOtherLivers(all: DatabaseRowType[], liver: stri
   return new Set(all.filter(r => liverKey(r.liverName) !== me && !isCancelledOrReturned(r)).map(customerKey));
 }
 
-/** These rows with customerHasOtherLivers set for the customers in `shared`. */
-export function withOtherLivers(rows: DatabaseRowType[], shared: Set<string>): DatabaseRowType[] {
+/**
+ * These rows with customerHasOtherLivers set for the customers in `shared`, and
+ * sharedShippingFrom on the one that carries the shipping fee (carriers, from
+ * sharedShippingCarriers over every row): what getRecords stamps for a liver.
+ */
+export function withOtherLivers(rows: DatabaseRowType[], shared: Set<string>, carriers?: Map<number, Partial<DatabaseRowType>>): DatabaseRowType[] {
   if (shared.size === 0) return rows;
-  return rows.map(r => (!r.customerHasOtherLivers && shared.has(customerKey(r)) ? { ...r, customerHasOtherLivers: true } : r));
+  return rows.map(r => {
+    if (!shared.has(customerKey(r))) return r;
+    const fee = carriers?.get(r.id);
+    return { ...r, customerHasOtherLivers: true, ...(fee ? { sharedShippingFrom: fee } : {}) };
+  });
+}
+
+/** What calcShippingFee reads: all a liver gets of the row a shared customer's fee comes from. */
+const SHIPPING_FEE_FIELDS = ['modeOfSale', 'freeSf', 'dateOfLive', 'modeOfPayment', 'locationOfMiner', 'regions'] as const;
+
+/**
+ * Shared customers (`shared`, worked out from every row): the shipping fee goes
+ * with ONE open COD item across all their livers (the lowest row id, as
+ * shippingCarrier), so exactly one liver collects it. Row id of that item ->
+ * the fee's fields; none when the fee is free or a COD delivery already
+ * collected it (codShippingAED).
+ */
+export function sharedShippingCarriers(all: DatabaseRowType[], shared: Set<string>): Map<number, Partial<DatabaseRowType>> {
+  const out = new Map<number, Partial<DatabaseRowType>>();
+  if (shared.size === 0) return out;
+  const byCustomer = new Map<string, DatabaseRowType[]>();
+  for (const r of all) {
+    const k = customerKey(r);
+    if (!shared.has(k)) continue;
+    const list = byCustomer.get(k);
+    if (list) list.push(r); else byCustomer.set(k, [r]);
+  }
+  for (const rows of byCustomer.values()) {
+    const carrier = shippingCarrier(rows);
+    if (!carrier || rows.some(r => isCodItem(r) && fulfilmentStage(r.status) === 'delivered')) continue;
+    const from = shippingFeeRow(moneyRows(rows));
+    // '' rather than undefined, so the fields survive the trip to the browser.
+    if (from) out.set(carrier.id, Object.fromEntries(SHIPPING_FEE_FIELDS.map(k => [k, from[k] ?? ''])));
+  }
+  return out;
+}
+
+/** The shipping fee a shared customer's open COD item carries (sharedShippingFrom), AED; 0 otherwise. */
+function sharedShippingAED(r: DatabaseRowType): number {
+  return r.sharedShippingFrom && isOpenCod(r) ? calcShippingFee({ ...r, ...r.sharedShippingFrom }) : 0;
 }
 
 /** A COD item (paid in cash on delivery). */
@@ -133,8 +180,9 @@ export function customerCollectAED(rows: DatabaseRowType[]): number {
  * for that customer).
  */
 export function collectForAED(items: DatabaseRowType[], customerRows: DatabaseRowType[]): number {
-  // Shared customer: each item's own figure, no shipping fee or group cap (see sharedCustomer).
-  if (sharedCustomer(customerRows)) return roundPrice(items.reduce((s, r) => s + collectAED(r), 0));
+  // Shared customer: each item's own figure, plus the shipping fee on the item
+  // that carries it; no group cap (see sharedCustomer).
+  if (sharedCustomer(customerRows)) return roundPrice(items.reduce((s, r) => s + collectAED(r) + sharedShippingAED(r), 0));
   const carrier = shippingCarrier(customerRows);
   const sf = carrier && items.some(r => r.id === carrier.id) ? codShippingAED(customerRows) : 0;
   const own = items.reduce((s, r) => s + collectAED(r), 0) + sf;

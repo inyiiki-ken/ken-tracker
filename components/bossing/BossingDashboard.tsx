@@ -27,18 +27,16 @@ import { StatCard } from '@/components/ui/dash';
 import KpiCard from './KpiCard';
 import StatusBadge from '@/components/StatusBadge';
 import { startOfWeek, startOfMonth, subMonths } from 'date-fns';
+import { metalOf } from '@/lib/metal';
 import CustomerHistoryModal from '@/components/CustomerHistoryModal';
 
 type DateRange = 'all' | 'week' | 'month' | '3months' | 'custom';
 type Metal = 'Gold' | 'Silver' | 'Other';
 
+// Same metal rule as My Sales (lib/metal.ts), so the two tabs agree.
+const METAL_LABEL = { gold: 'Gold', silver: 'Silver', other: 'Other' } as const;
 function getMetal(record: DatabaseRowType): Metal {
-  const cat = (record.category || '').toLowerCase();
-  const src = (record.source || '').toLowerCase();
-  const item = (record.itemDescription || '').toLowerCase();
-  if (cat.includes('silver') || src.includes('silver') || item.includes('silver')) return 'Silver';
-  if (cat.includes('gold') || src.includes('gold') || item.includes('gold')) return 'Gold';
-  return 'Other';
+  return METAL_LABEL[metalOf(record)];
 }
 
 const METAL_ORDER: Metal[] = ['Gold', 'Silver', 'Other'];

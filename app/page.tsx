@@ -128,7 +128,9 @@ function AppContent() {
     if (quiet !== true) setLoading(true);
     try {
       const [recordsRes, rolesRes, ratesRes, pricingRes, tabRes, bizRes, labelRes, appRes, mlmRes, optRes, tglRes] = await Promise.all([
-        getRecords({ tailOnly: false }),
+        // Not all-or-nothing: when the records (or the Roles tab behind them)
+        // can't be read, keep what's loaded and still apply the settings below.
+        getRecords({ tailOnly: false }).catch((e) => { console.error('Failed to load records:', e); return null; }),
         getRoles({}).catch(() => null),
         getRatesConfig({}).catch(() => ({ config: '' })),
         getPricingConfig({}).catch(() => ({ config: '' })),
@@ -140,12 +142,17 @@ function AppContent() {
         getOptionsConfig({}).catch(() => null),
         getCustomToggles({}).catch(() => ({ config: '' })),
       ]);
-      const loaded = recordsRes.records as DatabaseRowType[];
-      setRecords(loaded);
-      setRecordsReadAt(Date.parse(recordsRes.readAt) || Date.now());
-      setKnownStatuses(loaded);
-      setKnownOptions(loaded);
-      setDiscoveredOptions(loaded);
+      if (recordsRes) {
+        const loaded = recordsRes.records as DatabaseRowType[];
+        setRecords(loaded);
+        setRecordsReadAt(Date.parse(recordsRes.readAt) || Date.now());
+        setKnownStatuses(loaded);
+        setKnownOptions(loaded);
+        setDiscoveredOptions(loaded);
+      } else {
+        // Server error text is hidden in production builds, so say it here.
+        toast.error("Couldn't load your account. Tap Refresh to try again.");
+      }
       if (rolesRes) setDynamicRoles(rolesRes as any[]);
       if (ratesRes?.config) applyRatesConfig(ratesRes.config);
       if (pricingRes?.config) applyPricingConfig(pricingRes.config);

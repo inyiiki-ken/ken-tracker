@@ -28,6 +28,9 @@ const ROLES_TTL_MS = 30_000;
 // minutes so one failed read doesn't blank everyone's data. Short, so a removed
 // user isn't let in for long.
 const ROLES_STALE_MS = 5 * 60_000;
+// getSessionAccess only (who sees which records): a longer grace, so a warm
+// server never blocks staff boards over a short Roles outage.
+const ROLES_ACCESS_STALE_MS = 30 * 60_000;
 
 // One read per sheet at a time: a page load asks for roles from several
 // actions at once, so they share the read in flight instead of each starting one.
@@ -64,6 +67,14 @@ async function loadRolesData(): Promise<RoleRow[] | null> {
   })().finally(() => { rolesInflight.delete(sheetId); });
   rolesInflight.set(sheetId, read);
   return read;
+}
+
+/** The last good Roles copy if it's younger than ROLES_ACCESS_STALE_MS, else null. */
+async function olderRolesCopy(): Promise<RoleRow[] | null> {
+  let sheetId = "";
+  try { sheetId = await getActiveSheetId(); } catch { return null; }
+  const cached = rolesCache.get(sheetId);
+  return cached && Date.now() - cached.at < ROLES_ACCESS_STALE_MS ? cached.rows : null;
 }
 
 async function getRolesData(): Promise<RoleRow[]> {
@@ -114,7 +125,7 @@ export async function getSessionAccess(): Promise<{ all: boolean; email: string;
   const email = await getSessionEmail();
   if (!email) throw new Error("You must be signed in to do this.");
   if (isDeveloper(email)) return { all: true, email, roles: ["super_admin", "admin"], liverName: "" };
-  const rows = await loadRolesData();
+  const rows = (await loadRolesData()) ?? (await olderRolesCopy());
   if (!rows) throw new Error("Couldn't load your account. Tap Refresh to try again.");
   const me = email.toLowerCase().trim();
   // Listed on more than one row: the first row that has a name.

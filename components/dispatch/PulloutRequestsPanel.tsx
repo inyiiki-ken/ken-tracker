@@ -10,7 +10,7 @@ import { formatDate } from '@/lib/formatters';
 import { gramsLabel, gramsTotalLabel, sumGrams, pieceCount } from '@/lib/calculations';
 import { completePulloutRequest, getPulloutRequests, setPulloutRequestStatus, undoCompletePulloutRequest, updatePulloutRequest } from '@/lib/api';
 import {
-  PULLOUT_METHODS, isOpenRequest, isOverdueRequest, itemsByKey, itemsFor, todayISO,
+  PULLOUT_METHODS, isOpenRequest, isOverdueRequest, isToPullOut, itemsByKey, itemsFor, todayISO,
   type LiverCameMove, type LiverCamePlan, type PulloutMethod, type PulloutRequest,
 } from '@/lib/pulloutRequests';
 import { liverCameStatus } from '@/lib/pulloutTargets';
@@ -170,7 +170,7 @@ export default function PulloutRequestsPanel({ records, onRefresh }: {
           title="Refresh"
           onClick={e => { e.stopPropagation(); load(); }}
           onKeyDown={e => { if (e.key === 'Enter') { e.stopPropagation(); load(); } }}
-          className="p-1 rounded hover:bg-secondary"
+          className="h-9 w-9 shrink-0 flex items-center justify-center rounded hover:bg-secondary"
         >
           <RefreshCw className="h-3.5 w-3.5 text-muted-foreground" />
         </span>
@@ -188,7 +188,7 @@ export default function PulloutRequestsPanel({ records, onRefresh }: {
             const isBusy = busy === q.id;
             const reply = replies[q.id] ?? q.dispatchReply;
             const day = dayEdit[q.id];
-            const targets = Array.from(new Set(items.map(r => liverCameStatus(r, q.method, statuses))));
+            const targets = Array.from(new Set(items.filter(isToPullOut).map(r => liverCameStatus(r, q.method, statuses))));
             return (
               <div key={q.id} className={`px-4 py-3 space-y-2 ${overdue ? 'bg-destructive/5' : ''}`}>
                 <div className="flex flex-wrap items-center gap-2">
@@ -207,7 +207,7 @@ export default function PulloutRequestsPanel({ records, onRefresh }: {
                         key={m.key}
                         disabled={isBusy}
                         onClick={() => q.method !== m.key && run(q.id, () => updatePulloutRequest({ id: q.id, method: m.key as PulloutMethod, seenUpdatedAt: q.updatedAt }), `Changed to ${m.label}`)}
-                        className={`text-xs px-3 py-1.5 rounded-full border ${q.method === m.key ? 'border-primary bg-primary/10 text-primary font-semibold' : 'border-border text-muted-foreground hover:bg-secondary'}`}
+                        className={`h-9 text-xs px-3 rounded-full border ${q.method === m.key ? 'border-primary bg-primary/10 text-primary font-semibold' : 'border-border text-muted-foreground hover:bg-secondary'}`}
                       >
                         {m.label}
                       </button>
@@ -220,8 +220,8 @@ export default function PulloutRequestsPanel({ records, onRefresh }: {
                     <li className="text-destructive font-medium">Items not found — refresh</li>
                   ) : items.map(r => (
                     <li key={r.id} className="flex gap-2">
-                      <span className="font-medium truncate max-w-[140px]">{r.minerName || '—'}</span>
-                      <span className="text-muted-foreground truncate flex-1">{r.itemDescription || '—'}</span>
+                      <span className="font-medium break-words max-w-[40%]">{r.minerName || '—'}</span>
+                      <span className="text-muted-foreground break-words flex-1 min-w-0">{[r.itemDescription, r.orderId].filter(Boolean).join(' · ') || '—'}</span>
                       <span className="shrink-0">{gramsLabel(r) === '—' ? '' : gramsLabel(r)}</span>
                       <span className="shrink-0 text-[10px] text-muted-foreground">{r.status}</span>
                     </li>
@@ -235,9 +235,9 @@ export default function PulloutRequestsPanel({ records, onRefresh }: {
                     maxLength={300}
                     onChange={e => setReplies(p => ({ ...p, [q.id]: e.target.value }))}
                     placeholder="Reply to the liver (e.g. Ring not found — call me)"
-                    className="h-8 text-xs bg-background border-border"
+                    className="h-9 text-xs bg-background border-border"
                   />
-                  <Button size="sm" variant="outline" className="h-8 text-xs border-border shrink-0" disabled={isBusy || reply.trim() === q.dispatchReply}
+                  <Button size="sm" variant="outline" className="h-9 text-xs border-border shrink-0" disabled={isBusy || reply.trim() === q.dispatchReply}
                     onClick={() => run(q.id, () => updatePulloutRequest({ id: q.id, reply: reply.trim(), seenUpdatedAt: q.updatedAt }), 'Reply sent')}>
                     Send reply
                   </Button>
@@ -245,36 +245,36 @@ export default function PulloutRequestsPanel({ records, onRefresh }: {
 
                 {day !== undefined && (
                   <div className="flex flex-wrap gap-2 items-center">
-                    <Input type="date" min={today} value={day} onChange={e => setDayEdit(p => ({ ...p, [q.id]: e.target.value }))} className="h-8 text-xs w-40 bg-background border-border" />
-                    <Button size="sm" className="h-8 text-xs" disabled={isBusy} onClick={() => saveDay(q, day)}>Save day</Button>
-                    <Button size="sm" variant="ghost" className="h-8 text-xs" onClick={() => setDayEdit(p => { const n = { ...p }; delete n[q.id]; return n; })}>Close</Button>
+                    <Input type="date" min={today} value={day} onChange={e => setDayEdit(p => ({ ...p, [q.id]: e.target.value }))} className="h-9 text-xs w-40 bg-background border-border" />
+                    <Button size="sm" className="h-9 text-xs" disabled={isBusy} onClick={() => saveDay(q, day)}>Save day</Button>
+                    <Button size="sm" variant="ghost" className="h-9 text-xs" onClick={() => setDayEdit(p => { const n = { ...p }; delete n[q.id]; return n; })}>Close</Button>
                   </div>
                 )}
 
                 <div className="flex flex-wrap gap-2 pt-1">
                   {q.status === 'Requested' && (
-                    <Button size="sm" className="h-8 text-xs" disabled={isBusy}
+                    <Button size="sm" className="h-9 text-xs" disabled={isBusy}
                       onClick={() => run(q.id, () => setPulloutRequestStatus({ id: q.id, status: 'Ready', seenUpdatedAt: q.updatedAt }), 'Marked Ready — the liver can see it')}>
                       Mark Ready
                     </Button>
                   )}
                   {q.status === 'Ready' && (
                     <>
-                      <Button size="sm" className="h-8 text-xs" disabled={isBusy || notFound} onClick={() => liverCame(q)}>
+                      <Button size="sm" className="h-9 text-xs" disabled={isBusy || notFound} onClick={() => liverCame(q)}>
                         {targets.length === 1 ? `Liver came — set to ${targets[0]}` : 'Liver came'}
                       </Button>
-                      <Button size="sm" variant="ghost" className="h-8 text-xs" disabled={isBusy} onClick={() => notReady(q)}>
+                      <Button size="sm" variant="ghost" className="h-9 text-xs" disabled={isBusy} onClick={() => notReady(q)}>
                         Not ready
                       </Button>
                     </>
                   )}
                   {day === undefined && (
-                    <Button size="sm" variant="ghost" className="h-8 text-xs" disabled={isBusy}
+                    <Button size="sm" variant="ghost" className="h-9 text-xs" disabled={isBusy}
                       onClick={() => setDayEdit(p => ({ ...p, [q.id]: q.date < today ? today : q.date }))}>
                       Change day
                     </Button>
                   )}
-                  <Button size="sm" variant="ghost" className="h-8 text-xs text-destructive" disabled={isBusy} onClick={() => cancelRequest(q, reply)}>
+                  <Button size="sm" variant="ghost" className="h-9 text-xs text-destructive ml-auto" disabled={isBusy} onClick={() => cancelRequest(q, reply)}>
                     Cancel request
                   </Button>
                 </div>

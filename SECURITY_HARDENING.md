@@ -38,7 +38,7 @@ Add a small authz layer used by every **mutating** server action:
 
 Apply:
 - **Config saves** (branding, pricing, tabs, business type, rates, logos) → `super_admin` / developer only. *Stops a low-privilege staffer changing pricing/branding.*
-- **Record writes** (create/update/bulk/split/merge/invoice/import) → `super_admin` / `admin` / `dispatch` / `accounts` / `livesellers` (developer always). Livers and Bossing only read.
+- **Record writes** (create/update/bulk/split/merge/invoice/import) → `super_admin` / `admin` / `dispatch` / `accounts` / `livesellers` (developer always). Livers only read. Bossing / Accounts (the view-all roles) can also file and edit pullout requests and delivery reports on a liver's behalf, and so can write Row Keys through `ensurePulloutRowKeys`; withdrawing a delivery report is the liver's own (or whoever filed it) — anyone else rejects it with a reason.
 - **Pullout requests** (`lib/google-sheets/pulloutRequests.ts`) → a liver only for her own name and items; "Liver came" / undo = `super_admin` / `admin` / `dispatch`. The one record write a liver can cause: a Row Key on her own rows that have none (`ensurePulloutRowKeys`, empty cells only).
 - **Record reads** (`getRecords`) → a liver-only user gets just her own rows (matched on her Roles "name"), without cost columns; no role ⇒ nothing. `getRoles` returns the whole staff list only to super_admin / developer (for "Preview as"), everyone else just their own row.
 - **Purchasing writes** → `purchasing` / `admin` / `super_admin`.

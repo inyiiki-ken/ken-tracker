@@ -15,7 +15,7 @@ import { isLiverOnly, getUserRole } from "@/config/roles";
 import { customerKey, parseDateRobust } from "@/lib/calculations";
 import { newestPurchaseRawByCustomer } from "@/lib/purchaseDates";
 import { boxStatusName, ownBox } from "@/lib/pulloutTargets";
-import { customersEverWithOtherLivers, customersWithOtherLivers } from "@/lib/liverMoney";
+import { customersEverWithOtherLivers, customersWithOtherLivers, sharedShippingCarriers } from "@/lib/liverMoney";
 
 
 /**
@@ -244,6 +244,8 @@ export async function getRecords(_params?: { tailOnly?: boolean }): Promise<{ re
   // can't give their balance, and the server can't work it out for her (prices
   // need the browser's rates). Ever bought from another liver: no loyalty count.
   const shared = customersWithOtherLivers(all, me);
+  // ...except the shipping fee: one open COD item across all their livers carries it.
+  const carriers = sharedShippingCarriers(all, shared);
   const everShared = customersEverWithOtherLivers(all, me);
   // Where "Liver came" sends her international / reseller items, named from
   // every row like Dispatch's (her own rows may spell the box differently).
@@ -263,6 +265,8 @@ export async function getRecords(_params?: { tailOnly?: boolean }): Promise<{ re
       const last = newest.get(customerKey(r));
       if (last) out.customerLastPurchaseAt = last;
       if (shared.has(customerKey(r))) out.customerHasOtherLivers = true;
+      const fee = carriers.get(r.id);
+      if (fee) out.sharedShippingFrom = fee;
       if (everShared.has(customerKey(r))) out.customerBoughtFromOtherLivers = true;
       const box = ownBox(r);
       if (box) out.ownBoxStatus = boxNames[box];

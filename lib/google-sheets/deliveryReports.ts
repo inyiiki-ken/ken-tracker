@@ -108,11 +108,12 @@ function toReport(r: { get: (h: string) => unknown }): DeliveryReport {
   };
 }
 
-type Caller = { email: string; viewAll: boolean; liverName: string };
+// all: checks switched off, or a developer (getSessionAccess's "all").
+type Caller = { email: string; viewAll: boolean; liverName: string; all?: boolean };
 
 async function caller(): Promise<Caller> {
   const a = await getSessionAccess();
-  if (a.all) return { email: a.email || (await getSessionEmail()) || "", viewAll: true, liverName: "" };
+  if (a.all) return { email: a.email || (await getSessionEmail()) || "", viewAll: true, liverName: "", all: true };
   // No role (e.g. a Roles row with a misspelt role): nothing, as in getRecords.
   if (a.roles.length === 0) throw new Error("You don't have permission for this action.");
   return {
@@ -283,7 +284,11 @@ export async function withdrawDeliveryReport(params: { id: string; seenUpdatedAt
   const c = await caller();
   await withLock(async () => {
     const { ws, row, q } = await findFresh(params.id, params.seenUpdatedAt);
-    assertOwnLiver(c, q.liver);
+    // The liver herself, or staff taking back a report they filed for her.
+    // Anyone else answers it with rejectDeliveryReport, which needs a reason.
+    const own = !!c.liverName && c.liverName === liverKey(q.liver);
+    const filedIt = !!c.email && q.reportedBy.toLowerCase().trim() === c.email.toLowerCase().trim();
+    if (!c.all && !own && !filedIt) throw new Error("Only the liver can take back her report — Dispatch can reject it with a reason.");
     if (!isOpenReport(q)) throw new Error("Dispatch already answered this report.");
     await writeReportCells(ws, row, q, { status: "Withdrawn", updatedBy: c.email, updatedAt: new Date().toISOString() });
   });

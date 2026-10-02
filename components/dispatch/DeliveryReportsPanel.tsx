@@ -8,7 +8,7 @@ import { Input } from '@/components/ui/input';
 import type { DatabaseRowType } from '@/types';
 import { formatDateShort } from '@/lib/formatters';
 import { gramsLabel, gramsTotalLabel, groupByCustomer } from '@/lib/calculations';
-import { aedLabel, collectForAED, customersWithOtherLivers, withOtherLivers } from '@/lib/liverMoney';
+import { aedLabel, collectForAED, customersWithOtherLivers, sharedShippingCarriers, withOtherLivers } from '@/lib/liverMoney';
 import { confirmDeliveryReport, getDeliveryReports, rejectDeliveryReport } from '@/lib/api';
 import { confirmStatusFor, isOpenReport, type DeliveryReport } from '@/lib/deliveryReports';
 import { itemsByKey, itemsFor, liverKey } from '@/lib/pulloutRequests';
@@ -126,7 +126,7 @@ export default function DeliveryReportsPanel({ records, onRefresh, onOpenReports
           title="Refresh"
           onClick={e => { e.stopPropagation(); load(); }}
           onKeyDown={e => { if (e.key === 'Enter') { e.stopPropagation(); load(); } }}
-          className="p-1 rounded hover:bg-secondary"
+          className="h-9 w-9 shrink-0 flex items-center justify-center rounded hover:bg-secondary"
         >
           <RefreshCw className="h-3.5 w-3.5 text-muted-foreground" />
         </span>
@@ -141,11 +141,13 @@ export default function DeliveryReportsPanel({ records, onRefresh, onOpenReports
             const to = confirmStatusFor(q.kind, dispatchStatuses);
             // Per customer, capped at what they still owe (a group downpayment sits on one item).
             // Worked out from this liver's rows only, as she was shown; a customer with open
-            // items from another liver gets the item-level figure (see sharedCustomer).
+            // items from another liver gets the item-level figure, plus the shipping fee
+            // on the one item that carries it (see sharedCustomer).
             const shared = customersWithOtherLivers(records, q.liver);
+            const carriers = sharedShippingCarriers(records, shared);
             const hers = (rows: DatabaseRowType[]) => rows.filter(r => liverKey(r.liverName) === liverKey(q.liver));
             const expected = Array.from(groupByCustomer(items))
-              .reduce((s, [k, rows]) => s + collectForAED(rows, withOtherLivers(hers(byCustomer.get(k) ?? rows), shared)), 0);
+              .reduce((s, [k, rows]) => s + collectForAED(withOtherLivers(rows, shared, carriers), withOtherLivers(hers(byCustomer.get(k) ?? rows), shared, carriers)), 0);
             const isBusy = busy === q.id;
             const reason = reasons[q.id];
             return (
@@ -170,8 +172,8 @@ export default function DeliveryReportsPanel({ records, onRefresh, onOpenReports
                     <li className="text-destructive font-medium">Items not found — refresh</li>
                   ) : items.map(r => (
                     <li key={r.id} className="flex gap-2">
-                      <span className="font-medium truncate max-w-[140px]">{r.minerName || '—'}</span>
-                      <span className="text-muted-foreground truncate flex-1">{r.itemDescription || '—'}</span>
+                      <span className="font-medium break-words max-w-[40%]">{r.minerName || '—'}</span>
+                      <span className="text-muted-foreground break-words flex-1 min-w-0">{[r.itemDescription, r.orderId].filter(Boolean).join(' · ') || '—'}</span>
                       <span className="shrink-0">{gramsLabel(r) === '—' ? '' : gramsLabel(r)}</span>
                       <span className="shrink-0 text-[10px] text-muted-foreground">{r.status}</span>
                     </li>
@@ -185,24 +187,24 @@ export default function DeliveryReportsPanel({ records, onRefresh, onOpenReports
                       value={reason}
                       onChange={e => setReasons(p => ({ ...p, [q.id]: e.target.value }))}
                       placeholder="Why? (e.g. Customer says not received)"
-                      className="h-8 text-xs bg-background border-border"
+                      className="h-9 text-xs bg-background border-border"
                     />
-                    <Button size="sm" variant="outline" className="h-8 text-xs border-border text-destructive shrink-0" disabled={isBusy} onClick={() => reject(q)}>
+                    <Button size="sm" variant="outline" className="h-9 text-xs border-border text-destructive shrink-0" disabled={isBusy} onClick={() => reject(q)}>
                       Send
                     </Button>
                   </div>
                 )}
 
                 <div className="flex flex-wrap gap-2 pt-1">
-                  <Button size="sm" className="h-8 text-xs" disabled={isBusy || notFound} onClick={() => confirm(q, to)}>
+                  <Button size="sm" className="h-9 text-xs" disabled={isBusy || notFound} onClick={() => confirm(q, to)}>
                     Confirm — set to {to}
                   </Button>
                   {reason === undefined ? (
-                    <Button size="sm" variant="ghost" className="h-8 text-xs text-destructive" disabled={isBusy} onClick={() => setReasons(p => ({ ...p, [q.id]: '' }))}>
+                    <Button size="sm" variant="ghost" className="h-9 text-xs text-destructive" disabled={isBusy} onClick={() => setReasons(p => ({ ...p, [q.id]: '' }))}>
                       Reject
                     </Button>
                   ) : (
-                    <Button size="sm" variant="ghost" className="h-8 text-xs" onClick={() => closeReason(q.id)}>Close</Button>
+                    <Button size="sm" variant="ghost" className="h-9 text-xs" onClick={() => closeReason(q.id)}>Close</Button>
                   )}
                 </div>
               </div>

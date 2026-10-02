@@ -93,23 +93,18 @@ export default function LiverCustomerSheet({ customer, rows, clientMilestones, r
               </div>
             )}
 
-            {shared ? (
-              live.length > 0 && (
-                <p className="rounded-lg border border-border bg-secondary/20 px-3 py-2 text-xs text-muted-foreground">
-                  {money.paid > 0 && <span className="font-semibold text-foreground">Paid {aedLabel(money.paid)} on your items · </span>}
-                  Also buys from another liver: Accounts has the full balance.
-                </p>
-              )
-            ) : money.due > 0 && (
+            {money.due > 0 && (
               <p className={`rounded-lg border px-3 py-2 text-sm font-semibold ${
                 money.balance <= 0 ? 'border-success/40 bg-success/10 text-success'
                 : cashReported > 0 ? 'border-border bg-secondary/20 text-foreground'
                 : 'border-destructive/40 bg-destructive/10 text-destructive'}`}>
-                {money.balance > 0 ? `Balance due ${aedLabel(money.balance)}` : 'Paid'}
+                {/* Shared customer: her items only (customerMoney). */}
+                {money.balance > 0 ? `Balance due${shared ? ' on your items' : ''} ${aedLabel(money.balance)}` : shared ? 'Paid on your items' : 'Paid'}
                 <span className="ml-2 text-xs font-normal text-muted-foreground">Paid {aedLabel(money.paid)} of {aedLabel(money.due)}</span>
                 {money.balance > 0 && cashReported > 0 && (
                   <span className="block text-xs font-normal text-muted-foreground">Cash reported {aedLabel(cashReported)} · waiting for Accounts</span>
                 )}
+                {shared && <span className="block text-xs font-normal text-muted-foreground">Also buys from another liver: Accounts has the full balance.</span>}
               </p>
             )}
 
