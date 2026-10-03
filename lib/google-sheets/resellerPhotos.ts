@@ -1,7 +1,7 @@
 "use server";
 
 import Anthropic from "@anthropic-ai/sdk";
-import { requireSession } from "./authz";
+import { requireRole } from "./authz";
 
 /**
  * Reads a reseller's item photo (WhatsApp tag photos / screenshots) into item
@@ -63,7 +63,11 @@ export async function readResellerPhoto(params: {
   data: string;
   mediaType: "image/jpeg" | "image/png" | "image/webp" | "image/gif";
 }): Promise<{ items: ReadItem[]; error?: string }> {
-  await requireSession();
+  // Each read is a paid request: only the Invoicing roles may run it.
+  await requireRole(["admin", "super_admin"]);
+  if (params.data.length > 8_000_000) {
+    return { items: [], error: "That photo is too large. Send a smaller photo or a screenshot." };
+  }
   if (!process.env.ANTHROPIC_API_KEY) {
     return { items: [], error: "Photo reading is not set up on this install (no ANTHROPIC_API_KEY). Paste the items instead." };
   }

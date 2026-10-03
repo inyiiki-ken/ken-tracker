@@ -15,11 +15,14 @@ function todayKey(): string {
 
 type Category = 'silver' | 'silver_branded' | 'gold';
 
-export default function RateCalculatorWidget() {
+export default function RateCalculatorWidget({ hideGold }: {
+  /** No Gold tab and no gold rate (livers: owner decision 2, see app/page.tsx). */
+  hideGold?: boolean;
+} = {}) {
   const [open, setOpen] = useState(false);
   const [grams, setGrams] = useState('');
   // Gold-rate customers open on the Gold tab; everyone else keeps Silver.
-  const [category, setCategory] = useState<Category>(() => (getRateMetal() === 'gold' ? 'gold' : 'silver'));
+  const [category, setCategory] = useState<Category>(() => (!hideGold && getRateMetal() === 'gold' ? 'gold' : 'silver'));
   const [goldRate, setGoldRate] = useState('');
 
   const rates = getRatesForDate(todayKey());
@@ -62,7 +65,7 @@ export default function RateCalculatorWidget() {
 
             {/* Category tabs */}
             <div className="flex gap-1">
-              {(['silver', 'silver_branded', 'gold'] as Category[]).map(c => (
+              {((hideGold ? ['silver', 'silver_branded'] : ['silver', 'silver_branded', 'gold']) as Category[]).map(c => (
                 <button
                   key={c}
                   onClick={() => setCategory(c)}

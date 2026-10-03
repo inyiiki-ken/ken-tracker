@@ -23,10 +23,10 @@ off the machine.
 | Login | ✅ OK | NextAuth + Google is a proper auth system (Clerk not needed). |
 | Cross-customer isolation | ✅ Good | Active sheet is derived **server-side from the login**, never from client input — one customer can't reach another's data. |
 | Secrets | ⚠️ Mitigated | Per-customer robot key = a leaked machine exposes only that customer's own sheet. Rotate the originally-exposed keys (see SECURITY.md). |
-| Server-side authorization | ✅ Implemented | Every write action now re-checks the session/role server-side (`lib/google-sheets/authz.ts`). Config saves = super_admin/developer; record & purchasing writes require sign-in / role. Safety valve: `DISABLE_SERVER_AUTHZ=true`. |
+| Server-side authorization | ✅ Implemented | Every write action now re-checks the session/role server-side (`lib/google-sheets/authz.ts`). Config saves = super_admin/developer; record writes = staff roles (not liver/bossing); purchasing writes = purchasing/admin. Safety valve: `DISABLE_SERVER_AUTHZ=true`. |
 | IDOR | ⚠️ Partly | Cross-customer closed (sheet derived from session). Within-customer per-record ownership still optional/pending. |
 | Rate limiting | ❌ None | Only relevant if hosted. |
-| Row-level security | n/a | Google Sheets has none; everyone in a customer sees that customer's data (by design). |
+| Row-level security | ⚠️ Partly | Google Sheets has none. The server filters reads: a liver gets only her own rows; other staff see all of that customer's data (by design). |
 
 ## Fixes (priority order)
 
@@ -38,7 +38,9 @@ Add a small authz layer used by every **mutating** server action:
 
 Apply:
 - **Config saves** (branding, pricing, tabs, business type, rates, logos) → `super_admin` / developer only. *Stops a low-privilege staffer changing pricing/branding.*
-- **Record writes** (create/update/bulk/split/merge/invoice/import) → must be signed in with any assigned staff role.
+- **Record writes** (create/update/bulk/split/merge/invoice/import) → `super_admin` / `admin` / `dispatch` / `accounts` / `livesellers` (developer always). Livers only read. Bossing / Accounts (the view-all roles) can also file and edit pullout requests and delivery reports on a liver's behalf, and so can write Row Keys through `ensurePulloutRowKeys`; withdrawing a delivery report is the liver's own (or whoever filed it) — anyone else rejects it with a reason.
+- **Pullout requests** (`lib/google-sheets/pulloutRequests.ts`) → a liver only for her own name and items; "Liver came" / undo = `super_admin` / `admin` / `dispatch`. The one record write a liver can cause: a Row Key on her own rows that have none (`ensurePulloutRowKeys`, empty cells only).
+- **Record reads** (`getRecords`) → a liver-only user gets just her own rows (matched on her Roles "name"), without cost columns; no role ⇒ nothing. `getRoles` returns the whole staff list only to super_admin / developer (for "Preview as"), everyone else just their own row.
 - **Purchasing writes** → `purchasing` / `admin` / `super_admin`.
 - **Tenant management** (add/switch customer) → developer only *(already enforced)*.
 

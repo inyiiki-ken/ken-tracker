@@ -3,7 +3,7 @@
 import type { GoogleSpreadsheetWorksheet } from "google-spreadsheet";
 import { getActiveDoc } from "./tenant-context";
 import { readConfig, writeConfig } from "./config-store";
-import { requireRole, requireSession } from "./authz";
+import { requireRole } from "./authz";
 import { getSessionEmail } from "./tenancy-core";
 import {
   parsePriceList,
@@ -93,7 +93,8 @@ function stamp(): string {
 // ── Read everything in one go ───────────────────────────────────────────────
 
 export async function getLiveData(_params?: Record<string, never>): Promise<LiveData> {
-  await requireSession();
+  // Same roles that see the Live Sellers tab (it holds stock costs).
+  await requireRole(ROLES);
   const [sws, iws, kws, priceJson] = await Promise.all([
     getTab("sessions"),
     getTab("items"),

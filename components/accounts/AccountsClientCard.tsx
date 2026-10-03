@@ -32,6 +32,9 @@ import FinancialsForm from './FinancialsForm';
 import CustomerHistoryModal from '@/components/CustomerHistoryModal';
 import { toast } from 'sonner';
 import { useCompactMode } from '@/lib/compactMode';
+import { fulfilmentStage } from '@/lib/fulfilment';
+import CancelReasonField from '@/components/CancelReasonField';
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 
 interface Props {
   minerName: string;
@@ -48,8 +51,11 @@ function AccountsClientCard({ minerName, records, allRecords, onUpdate }: Props)
   const [copiedId, setCopiedId] = useState<number | null>(null);
   const [statusResetKeys, setStatusResetKeys] = useState<Record<number, number>>({});
   const statusChangingRef = useRef<Record<number, boolean>>({});
+  // Cancelled / Returned asks for a reason first (the liver sees it).
+  const [pendingCancel, setPendingCancel] = useState<{ record: DatabaseRowType; status: string } | null>(null);
+  const [cancelReason, setCancelReason] = useState('');
 
-  const handleStatusChange = useCallback(async (record: DatabaseRowType, newStatus: string) => {
+  const applyStatus = useCallback(async (record: DatabaseRowType, newStatus: string, extra: Partial<DatabaseRowType> = {}) => {
     if (statusChangingRef.current[record.id]) return;
     statusChangingRef.current[record.id] = true;
     setStatusResetKeys(prev => ({ ...prev, [record.id]: (prev[record.id] || 0) + 1 }));
@@ -59,7 +65,7 @@ function AccountsClientCard({ minerName, records, allRecords, onUpdate }: Props)
       const existingTrail = record.auditTrail || '';
       const auditEntry = `[Accounts: ${record.status} → ${newStatus} on ${timestamp}]`;
       const newTrail = existingTrail ? `${existingTrail} ${auditEntry}` : auditEntry;
-      await onUpdate(record.id, { status: newStatus, auditTrail: newTrail });
+      await onUpdate(record.id, { status: newStatus, auditTrail: newTrail, ...extra });
       toast.success(`Status: ${newStatus}`);
     } catch {
       toast.error('Failed to update status');
@@ -67,6 +73,16 @@ function AccountsClientCard({ minerName, records, allRecords, onUpdate }: Props)
       statusChangingRef.current[record.id] = false;
     }
   }, [onUpdate]);
+
+  const handleStatusChange = useCallback(async (record: DatabaseRowType, newStatus: string) => {
+    if (fulfilmentStage(newStatus) === 'excluded') {
+      setStatusResetKeys(prev => ({ ...prev, [record.id]: (prev[record.id] || 0) + 1 }));
+      setCancelReason('');
+      setPendingCancel({ record, status: newStatus });
+      return;
+    }
+    await applyStatus(record, newStatus);
+  }, [applyStatus]);
 
   const copyRecord = useCallback((record: DatabaseRowType) => {
     const bal = calcRemainingBalance(record);
@@ -256,6 +272,29 @@ function AccountsClientCard({ minerName, records, allRecords, onUpdate }: Props)
           onClose={() => setShowHistory(false)}
         />
       )}
+
+      <AlertDialog open={!!pendingCancel} onOpenChange={open => { if (!open) setPendingCancel(null); }}>
+        <AlertDialogContent className="bg-card border-border">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Set to {pendingCancel?.status}?</AlertDialogTitle>
+            <AlertDialogDescription>{pendingCancel?.record.itemDescription || 'This item'} of {minerName}.</AlertDialogDescription>
+          </AlertDialogHeader>
+          <CancelReasonField value={cancelReason} onChange={setCancelReason} />
+          <AlertDialogFooter>
+            <AlertDialogCancel>Keep it</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground"
+              onClick={() => {
+                const p = pendingCancel;
+                setPendingCancel(null);
+                if (p) void applyStatus(p.record, p.status, { cancelReason: cancelReason.trim() });
+              }}
+            >
+              Set to {pendingCancel?.status}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

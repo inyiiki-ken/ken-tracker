@@ -1,14 +1,13 @@
 import { format, parseISO, isValid } from 'date-fns';
 import { DatabaseRowType } from '@/types';
 import { parseDateRobust } from '@/lib/calculations';
+import { getTimezoneOffsetMs } from '@/lib/businessConfig';
 
-// UAE offset in ms (UTC+4)
-// Kept as the fallback default; the live value comes from the customer's
-// Business settings via getTimezoneOffsetMs().
-const UAE_OFFSET_MS = 4 * 60 * 60 * 1000;
+// Timestamps are shown on the business's calendar: the offset comes from the
+// customer's Business settings via getTimezoneOffsetMs() (UAE = +4).
 
 /**
- * Format a date string for display, always in UAE timezone (UTC+4).
+ * Format a date string for display, on the business's calendar (Settings → Business timezone; UAE = UTC+4).
  *
  * Why: dateOfLive values from Google Sheets come in two flavours:
  *   1. Bare date "2026-04-09"  → parseISO treats as midnight UTC → correct in UAE
@@ -33,12 +32,25 @@ export function formatDate(dateStr?: string): string {
 
     // Full datetime: parse then shift to UAE time before formatting
     const d = parseISO(dateStr);
-    if (!isValid(d)) return dateStr;
-    const uaeDate = new Date(d.getTime() + UAE_OFFSET_MS);
-    return format(uaeDate, 'MMM dd, yyyy');
+    if (!isValid(d)) {
+      // Day-first, month names, a time after the date…: the shared parser.
+      const p = parseDateRobust(dateStr);
+      return p ? format(p, 'MMM dd, yyyy') : dateStr;
+    }
+    // Read the shifted instant's UTC fields (the business's wall clock), so the
+    // device's own timezone never adds to the shift (20:30 UAE stays that day).
+    const u = new Date(d.getTime() + getTimezoneOffsetMs());
+    return format(new Date(u.getUTCFullYear(), u.getUTCMonth(), u.getUTCDate(), 12), 'MMM dd, yyyy');
   } catch {
     return dateStr;
   }
+}
+
+/** Like formatDate, without the year when it is this year ("Sep 30"), to save width on phones. */
+export function formatDateShort(dateStr?: string): string {
+  const full = formatDate(dateStr);
+  const suffix = `, ${new Date().getFullYear()}`;
+  return full.endsWith(suffix) ? full.slice(0, -suffix.length) : full;
 }
 
 export function formatDateObj(date: Date | null): string {
@@ -279,6 +291,10 @@ export const STATUS_COLORS: Record<string, string> = {
   'Returned Item': 'bg-destructive/10 text-destructive border-destructive/30',
   'Given to Shop': 'bg-success/10 text-success border-success/30',
   'Payment for Verification': 'bg-info/10 text-info border-info/30',
+  'For COD': 'bg-attention/10 text-attention border-attention/30',
+  'For Pick Up': 'bg-attention/10 text-attention border-attention/30',
+  'For International Shipment': 'bg-info/10 text-info border-info/30',
+  'Picked Up': 'bg-success/10 text-success border-success/30',
 };
 /** "Ordered Sep 26, 2026 – Sep 30, 2026" (or one date) across some items; '' when none are dated. */
 export function orderedRangeLabel(records: DatabaseRowType[]): string {

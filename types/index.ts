@@ -49,6 +49,38 @@ export type DatabaseRowType = {
   zohoContactId?: string;
   /** Why the item was cancelled (free note, typed by Dispatch when cancelling). */
   cancelReason?: string;
+  /**
+   * Not a sheet column. Sent only to liver-only users (who get just their own
+   * rows): the customer's newest purchase across every liver, as the raw sheet
+   * value (live date or history timestamp), so her reminders count from the
+   * same day Dispatch's do.
+   */
+  customerLastPurchaseAt?: string;
+  /**
+   * Not a sheet column. Sent only to liver-only users, on international /
+   * reseller items: the status "Liver came" sets (lib/pulloutTargets), named
+   * from every row of the sheet like Dispatch's.
+   */
+  ownBoxStatus?: string;
+  /** Not a sheet column. Sent to liver-only users instead of clientAddress: whether one is on file. */
+  hasClientAddress?: boolean;
+  /**
+   * Not a sheet column. Sent only to liver-only users: this customer also has
+   * open items from another liver, so her own rows can't give the customer's
+   * whole balance or shipping fee (lib/liverMoney sharedCustomer).
+   */
+  customerHasOtherLivers?: boolean;
+  /**
+   * Not a sheet column. On a shared customer's open COD item that carries the
+   * shipping fee (one item across all her livers): the fields the fee is worked
+   * out from (lib/liverMoney sharedShippingCarriers).
+   */
+  sharedShippingFrom?: Partial<DatabaseRowType>;
+  /**
+   * Not a sheet column. Sent only to liver-only users: this customer ever
+   * bought from another liver, so her own rows can't give the loyalty count.
+   */
+  customerBoughtFromOtherLivers?: boolean;
   id: number;
 };
 
@@ -68,6 +100,12 @@ export type TabProps = {
   userFirstName?: string;
   onRefresh?: () => void;
   lockedLiverName?: string; // Set for liver-role users — they can only see their own name
+  /** Admin / Bossing / Accounts on My Sales: their own liver name, preselected in the picker. */
+  defaultLiver?: string;
+  /** An admin is previewing someone else's view: actions that write are disabled. */
+  previewing?: boolean;
   /** Pre-computed client milestones (computed once in App.tsx) */
   clientMilestones?: Map<string, import('@/lib/milestones').ClientMilestone>;
+  /** When the server read `records` (ms, server clock); 0 before the first load. */
+  recordsReadAt?: number;
 };

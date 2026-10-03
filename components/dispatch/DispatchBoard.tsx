@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ClipboardList, Package, Truck, Handshake, CheckSquare, ShoppingBag, Layout, Crown, BookOpen, XCircle, CheckCircle2, AlertTriangle, Gem, Plane, Store, Printer } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
@@ -12,17 +12,21 @@ import DispatchClientCard from './DispatchClientCard';
 import PulloutReport from './PulloutReport';
 import CancelReport from './CancelReport';
 import PulloutRequestsPanel from './PulloutRequestsPanel';
+import DeliveryReportsPanel from './DeliveryReportsPanel';
 import CancelReasonField from '@/components/CancelReasonField';
 import RemindersDialog from '@/components/RemindersDialog';
 import { computeOverdue } from '@/lib/reminders';
 import { parseDateRobust } from '@/lib/calculations';
-import { ORDER_BOXES, OrderBox, orderBox, isStillWithAdmin, shipmentDay, cancelDay, outsourceName } from '@/lib/fulfilment';
+import { ORDER_BOXES, OrderBox, orderBox, isStillWithAdmin, shipmentDay, cancelDay, outsourceName, fulfilmentStage } from '@/lib/fulfilment';
 import { getEffectiveStatuses } from '@/lib/statusRegistry';
+import { liverKey } from '@/lib/pulloutRequests';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { toast } from 'sonner';
 
 /** Boxes of items still waiting to go out. */
 const GOING_OUT = new Set<OrderBox>(['intl', 'cod', 'pickup', 'reseller']);
+// Outsource queue: joins the liver and the date in one group key.
+const LIVER_SEP = '\u0001';
 
 function agingHours(dateStr?: string): number {
   if (!dateStr) return 0;
@@ -84,10 +88,25 @@ function QueueButton({
   );
 }
 
-export default function DispatchBoard({ records, searchQuery, onSearchChange, onUpdate, onBulkUpdate, userEmail, clientMilestones }: TabProps) {
+export default function DispatchBoard({ records, searchQuery, onSearchChange, onUpdate, onBulkUpdate, userEmail, clientMilestones, onRefresh }: TabProps) {
   const [showReport, setShowReport] = useState(false);
   const [showCancelReport, setShowCancelReport] = useState(false);
-  const [showReminders, setShowReminders] = useState(() => computeOverdue(records).length > 0);
+  const [showReminders, setShowReminders] = useState(false);
+  // Items a liver reported delivered / picked up: not overdue while Dispatch checks.
+  const [reportedIds, setReportedIds] = useState<Set<number>>(new Set());
+  const [reportsLoaded, setReportsLoaded] = useState(false);
+  const onOpenReportsChange = useCallback((ids: Set<number>) => {
+    setReportedIds(ids);
+    setReportsLoaded(true);
+  }, []);
+  const anyOverdue = computeOverdue(records).some(sec => sec.items.some(r => !reportedIds.has(r.id)));
+  // The reminders pop up once, after the delivery reports loaded (so reported items don't count).
+  const remindersAutoShown = useRef(false);
+  useEffect(() => {
+    if (!reportsLoaded || remindersAutoShown.current) return;
+    remindersAutoShown.current = true;
+    if (anyOverdue) setShowReminders(true);
+  }, [reportsLoaded, anyOverdue]);
 
   // One queue per box (lib/fulfilment ORDER_BOXES), named like Crown's physical
   // boxes. Items still with Admin / Accounts (Pending, Waiting for…, on hold,
@@ -113,10 +132,20 @@ export default function DispatchBoard({ records, searchQuery, onSearchChange, on
       // together, on one invoice), filed under the customer's latest live date.
       const latest = latestLiveDateByCustomer(list);
       const dateOf = (r: DatabaseRowType) => latest.get(customerKey(r));
-      // Outsource: the outsource name comes first, then the date.
-      return [b.key, b.key === 'outsource'
-        ? groupByPageDateMiner(list, dateOf, outsourceName)
-        : groupByPageDateMiner(list, dateOf)];
+      // Outsource: the outsource (e.g. JOLAI) first, then its liver, then the date.
+      if (b.key === 'outsource') {
+        const byOutsource = groupByPageDateMiner(list, r => `${liverKey(r.liverName) || 'No liver name'}${LIVER_SEP}${dateOf(r) ?? ''}`, outsourceName);
+        for (const [out, dateMap] of byOutsource) {
+          byOutsource.set(out, new Map([...dateMap.entries()].sort((x, y) => {
+            const [lx, dx] = x[0].split(LIVER_SEP), [ly, dy] = y[0].split(LIVER_SEP);
+            // Newest first; the sheet mixes date formats, so compare real dates (unknown last).
+            const t = (d: string) => (d ? parseDateRobust(d)?.getTime() : undefined) ?? -Infinity;
+            return lx.localeCompare(ly) || (t(dy) - t(dx) || 0);
+          })));
+        }
+        return [b.key, byOutsource];
+      }
+      return [b.key, groupByPageDateMiner(list, dateOf)];
     }));
   }, [records, searchQuery]);
 
@@ -145,7 +174,8 @@ export default function DispatchBoard({ records, searchQuery, onSearchChange, on
   }, []);
   const applyBulkStatus = async (cancelReason?: string) => {
     if (!bulkStatus || selected.size === 0) return;
-    const cancelling = /cancel/i.test(bulkStatus);
+    // Cancelled or returned: the reason is asked for first (the liver sees it).
+    const cancelling = fulfilmentStage(bulkStatus) === 'excluded';
     if (cancelling && cancelReason === undefined) {
       setBulkCancelReason('');
       setBulkCancelOpen(true);
@@ -217,13 +247,23 @@ export default function DispatchBoard({ records, searchQuery, onSearchChange, on
             <span className="text-[10px] font-bold px-2 py-0.5 bg-primary/10 text-primary rounded">{totalItems}</span>
           </div>
           <div className="pl-2 sm:pl-3 space-y-1.5">
-            {Array.from(dateMap.entries()).map(([date, minerMap]) => {
+            {Array.from(dateMap.entries()).map(([dateKey, minerMap], i, all) => {
+              // Outsource queue: the date key also carries the liver; her name
+              // heads her dates.
+              const [liver, date] = dateKey.includes(LIVER_SEP) ? dateKey.split(LIVER_SEP) : ['', dateKey];
+              const newLiver = !!liver && (i === 0 || !all[i - 1][0].startsWith(liver + LIVER_SEP));
               const allItems = Array.from(minerMap.values()).flat();
               const maxAge = allItems.reduce((m, r) => Math.max(m, agingHours(r.dateOfLive)), 0);
               const isUrgent = agingWarnHours > 0 && maxAge >= agingWarnHours;
               const agingEl = agingWarnHours > 0 ? <AgingLabel dateStr={allItems[0]?.dateOfLive} warnAfterHours={agingWarnHours} /> : null;
               return (
-                <CollapsibleGroup key={`${date}-${searchQuery ? 'search' : ''}`} label={date === 'Unknown Date' ? date : `${datePrefix} ${formatDate(date)}`} colorClass={isUrgent ? 'text-destructive' : 'text-muted-foreground'} lineClass={isUrgent ? 'bg-destructive/30' : 'bg-border/40'} indent defaultOpen={!!searchQuery.trim()} labelSuffix={agingEl}>
+                <Fragment key={`${dateKey}-${searchQuery ? 'search' : ''}`}>
+                {newLiver && (
+                  <p className="pt-1.5 text-[11px] font-semibold uppercase tracking-wide text-foreground">
+                    <span className="font-normal normal-case text-muted-foreground">Liver </span>{liver}
+                  </p>
+                )}
+                <CollapsibleGroup label={!date || date === 'Unknown Date' ? 'Unknown Date' : `${datePrefix} ${formatDate(date)}`} colorClass={isUrgent ? 'text-destructive' : 'text-muted-foreground'} lineClass={isUrgent ? 'bg-destructive/30' : 'bg-border/40'} indent defaultOpen={!!searchQuery.trim()} labelSuffix={agingEl}>
                   {Array.from(minerMap.entries()).map(([miner, items]) => (
                     <DispatchClientCard
                       key={miner}
@@ -239,6 +279,7 @@ export default function DispatchBoard({ records, searchQuery, onSearchChange, on
                     />
                   ))}
                 </CollapsibleGroup>
+                </Fragment>
               );
             })}
           </div>
@@ -255,7 +296,7 @@ export default function DispatchBoard({ records, searchQuery, onSearchChange, on
         onSearchChange={onSearchChange}
         rightContent={
           <div className="flex items-center gap-2">
-            {computeOverdue(records).length > 0 && (
+            {anyOverdue && (
               <Button
                 variant="outline"
                 size="sm"
@@ -276,7 +317,8 @@ export default function DispatchBoard({ records, searchQuery, onSearchChange, on
         }
       />
 
-      <PulloutRequestsPanel records={records} onBulkUpdate={onBulkUpdate} onUpdate={onUpdate} />
+      <PulloutRequestsPanel records={records} onRefresh={onRefresh} />
+      <DeliveryReportsPanel records={records} onRefresh={onRefresh} onOpenReportsChange={onOpenReportsChange} />
 
       {/* Work queue: pick a queue on the left, work it on the right. Replaces the
           six stacked accordions — one click instead of expand/collapse, and the
@@ -365,24 +407,24 @@ export default function DispatchBoard({ records, searchQuery, onSearchChange, on
       <Dialog open={bulkCancelOpen} onOpenChange={setBulkCancelOpen}>
         <DialogContent className="bg-card border-border max-w-sm">
           <DialogHeader>
-            <DialogTitle>Cancel {selected.size} item{selected.size !== 1 ? 's' : ''}?</DialogTitle>
+            <DialogTitle>{/^cancel/i.test(bulkStatus) ? 'Cancel' : `Set to ${bulkStatus}:`} {selected.size} item{selected.size !== 1 ? 's' : ''}?</DialogTitle>
           </DialogHeader>
           <CancelReasonField value={bulkCancelReason} onChange={setBulkCancelReason} />
           <div className="flex justify-end gap-2 pt-2">
             <Button variant="ghost" size="sm" onClick={() => setBulkCancelOpen(false)}>Keep them</Button>
             <Button size="sm" className="bg-destructive text-destructive-foreground" onClick={() => applyBulkStatus(bulkCancelReason)}>
-              Cancel items
+              {/^cancel/i.test(bulkStatus) ? 'Cancel items' : `Set to ${bulkStatus}`}
             </Button>
           </div>
         </DialogContent>
       </Dialog>
 
-      {showReport && <PulloutReport records={records} onClose={() => setShowReport(false)} />}
+      {showReport && <PulloutReport records={records} exclude={reportedIds} onClose={() => setShowReport(false)} />}
       {showCancelReport && <CancelReport records={records} onClose={() => setShowCancelReport(false)} />}
 
       {/* Courier & Pullout Reminders Dialog */}
       {showReminders && (
-        <RemindersDialog records={records} title="Courier & Pullout Reminders" onClose={() => setShowReminders(false)} />
+        <RemindersDialog records={records} exclude={reportedIds} title="Courier & Pullout Reminders" onClose={() => setShowReminders(false)} />
       )}
     </div>
   );

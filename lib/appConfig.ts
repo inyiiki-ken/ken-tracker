@@ -1,5 +1,3 @@
-"use client";
-
 /**
  * Per-tenant APP CONFIG — developer-editable behavior knobs, so customizing a
  * customer doesn't need code changes:

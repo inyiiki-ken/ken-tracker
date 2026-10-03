@@ -6,13 +6,15 @@ import { Button } from '@/components/ui/button';
 import { Printer, ClipboardList, DollarSign } from 'lucide-react';
 import { DatabaseRowType } from '@/types';
 import { orderedRangeLabel } from '@/lib/formatters';
-import { calcProfitAED, calcItemPriceAED, calcItemCostAED, getQty } from '@/lib/calculations';
+import { calcProfitAED, calcItemPriceAED, calcItemCostAED, gramsLabel, gramsTotalLabel } from '@/lib/calculations';
 import { OrderBox, orderBox, boxLabel, isStillWithAdmin } from '@/lib/fulfilment';
 import { computeToCancel, hoursInStatus } from '@/lib/reminders';
 
 interface Props {
   records: DatabaseRowType[];
   onClose: () => void;
+  /** Item ids to leave out of "Needs to be cancelled" (e.g. reported delivered, waiting for Dispatch). */
+  exclude?: Set<number>;
 }
 
 /** Boxes whose items go out, in the order they're printed. */
@@ -45,21 +47,13 @@ function liversOf(items: DatabaseRowType[]): string {
   return [...new Set(items.map(r => r.liverName?.trim() || r.source?.trim()).filter(Boolean))].join(', ');
 }
 
-const isPc = (r: DatabaseRowType) => {
-  const c = (r.category || '').toLowerCase();
-  return c.includes('per pc') || c.includes('screw type') || c.includes('diamond');
-};
-const sumGrams = (items: DatabaseRowType[]) => items.reduce((s, r) => isPc(r) ? s : s + (Number(r.grams) || 0), 0);
 /** Customer amount (selling price). Items with no rate yet count as 0. */
 const sumAmount = (items: DatabaseRowType[]) => items.reduce((s, r) => s + calcItemPriceAED(r), 0);
 const unpriced = (items: DatabaseRowType[]) => items.filter(r => calcItemPriceAED(r) <= 0).length;
 const aed = (v: number) => `AED ${Math.round(v).toLocaleString()}`;
 
-function gramsDisplay(r: DatabaseRowType): string {
-  const cat = (r.category || '').toLowerCase();
-  if (cat.includes('per pc') || cat.includes('screw type') || cat.includes('diamond')) return `${getQty(r)} PC`;
-  return r.grams ? `${Number(r.grams).toFixed(2)}g` : '—';
-}
+// Same grams rule as My Sales (lib/calculations): per-piece items show "1 PC".
+const gramsDisplay = gramsLabel;
 
 export const SHARED_STYLES = `
   * { box-sizing: border-box; }
@@ -91,13 +85,15 @@ export const SHARED_STYLES = `
   @media print { button { display: none !important; } }
 `;
 
-export default function PulloutReport({ records, onClose }: Props) {
+export default function PulloutReport({ records, onClose, exclude }: Props) {
   const [activePreview, setActivePreview] = useState<'dispatch' | 'financial' | null>(null);
   // Everything in a box that's going out (International Shipment, COD, Pick Up, Reseller).
   const forPullout = records.filter(r =>
     String(r.status || '').trim() && !isStillWithAdmin(r.status) && REPORT_BOXES.includes(orderBox(r)));
   // Items past their status deadline (Settings → App Settings → Status deadlines).
-  const toCancel = computeToCancel(records);
+  const toCancel = computeToCancel(records)
+    .map(s => (exclude?.size ? { ...s, items: s.items.filter(r => !exclude.has(r.id)) } : s))
+    .filter(s => s.items.length > 0);
   const toCancelCount = toCancel.reduce((n, s) => n + s.items.length, 0);
   const cancelHtml = () => {
     if (!toCancelCount) return '';
@@ -127,33 +123,27 @@ export default function PulloutReport({ records, onClose }: Props) {
 
     grouped.forEach((byMiner, source) => {
       const allItems = Array.from(byMiner.values()).flat();
-      const totalGrams = allItems.reduce((s, r) => {
-        const c = (r.category || '').toLowerCase();
-        return c.includes('per pc') || c.includes('screw type') || c.includes('diamond') ? s : s + (Number(r.grams) || 0);
-      }, 0);
+      const totalGrams = gramsTotalLabel(allItems);
 
       html += `<div class="source-block">
         <div class="source-header">
           <span class="source-title">📦 ${source}</span>
           <div class="source-math">
             <span>Items: ${allItems.length}</span>
-            <span>Total Grams: ${totalGrams.toFixed(2)}g</span>
+            <span>Total Grams: ${totalGrams}</span>
           </div>
         </div>
         <div class="source-body">`;
 
       byMiner.forEach((items, miner) => {
-        const minerGrams = items.reduce((s, r) => {
-          const c = (r.category || '').toLowerCase();
-          return c.includes('per pc') || c.includes('screw type') || c.includes('diamond') ? s : s + (Number(r.grams) || 0);
-        }, 0);
+        const minerGrams = gramsTotalLabel(items);
         const dates = orderedRangeLabel(items);
         const livers = liversOf(items);
 
         html += `<div class="client-block">
           <div class="client-header">
             <span>${miner}</span>
-            <span class="client-meta">${livers ? `${livers} &nbsp;·&nbsp; ` : ''}${dates} &nbsp;·&nbsp; ${items.length} item${items.length !== 1 ? 's' : ''} &nbsp;·&nbsp; ${minerGrams.toFixed(2)}g</span>
+            <span class="client-meta">${livers ? `${livers} &nbsp;·&nbsp; ` : ''}${dates} &nbsp;·&nbsp; ${items.length} item${items.length !== 1 ? 's' : ''} &nbsp;·&nbsp; ${minerGrams}</span>
           </div>
           <table><thead><tr>
             <th style="width:28px">Pull</th>
@@ -202,10 +192,7 @@ export default function PulloutReport({ records, onClose }: Props) {
       const sPrice = allItems.reduce((s, r) => s + calcItemPriceAED(r), 0);
       const sCost = allItems.reduce((s, r) => s + calcItemCostAED(r), 0);
       const sProfit = allItems.reduce((s, r) => s + calcProfitAED(r), 0);
-      const sGrams = allItems.reduce((s, r) => {
-        const c = (r.category || '').toLowerCase();
-        return c.includes('per pc') || c.includes('screw type') || c.includes('diamond') ? s : s + (Number(r.grams) || 0);
-      }, 0);
+      const sGrams = gramsTotalLabel(allItems);
       grandTotal.price += sPrice;
       grandTotal.cost += sCost;
       grandTotal.profit += sProfit;
@@ -214,7 +201,7 @@ export default function PulloutReport({ records, onClose }: Props) {
         <div class="source-header">
           <span class="source-title">📦 ${source}</span>
           <div class="source-math">
-            <span>Grams: ${sGrams.toFixed(2)}g</span>
+            <span>Grams: ${sGrams}</span>
             <span class="highlight-pay">To Pay: AED ${sCost.toFixed(2)}</span>
             <span class="highlight-profit">Profit: AED ${sProfit.toFixed(2)}</span>
           </div>
@@ -225,16 +212,13 @@ export default function PulloutReport({ records, onClose }: Props) {
         const mPrice = items.reduce((s, r) => s + calcItemPriceAED(r), 0);
         const mCost = items.reduce((s, r) => s + calcItemCostAED(r), 0);
         const mProfit = items.reduce((s, r) => s + calcProfitAED(r), 0);
-        const mGrams = items.reduce((s, r) => {
-          const c = (r.category || '').toLowerCase();
-          return c.includes('per pc') || c.includes('screw type') || c.includes('diamond') ? s : s + (Number(r.grams) || 0);
-        }, 0);
+        const mGrams = gramsTotalLabel(items);
         const dates = orderedRangeLabel(items);
 
         html += `<div class="client-block">
           <div class="client-header">
             <span>${miner}</span>
-            <span class="client-meta">${dates} &nbsp;·&nbsp; ${items.length} item${items.length !== 1 ? 's' : ''} &nbsp;·&nbsp; ${mGrams.toFixed(2)}g</span>
+            <span class="client-meta">${dates} &nbsp;·&nbsp; ${items.length} item${items.length !== 1 ? 's' : ''} &nbsp;·&nbsp; ${mGrams}</span>
           </div>
           <table><thead><tr>
             <th style="width:28px">Pull</th>
@@ -318,7 +302,7 @@ export default function PulloutReport({ records, onClose }: Props) {
                     <div className="flex gap-3 text-[10px] text-muted-foreground">
                       <span>{byCustomer.size} customer{byCustomer.size !== 1 ? 's' : ''}</span>
                       <span>{allItems.length} item{allItems.length !== 1 ? 's' : ''}</span>
-                      <span>{sumGrams(allItems).toFixed(2)}g</span>
+                      <span>{gramsTotalLabel(allItems)}</span>
                       <span className="font-semibold text-foreground">{aed(sumAmount(allItems))}</span>
                     </div>
                   </div>
@@ -337,7 +321,7 @@ export default function PulloutReport({ records, onClose }: Props) {
                             <p className="text-[10px] text-muted-foreground">{orderedRangeLabel(items)}</p>
                           </div>
                           <div className="text-right shrink-0 text-muted-foreground">
-                            <p>{items.length} item{items.length !== 1 ? 's' : ''} · {sumGrams(items).toFixed(2)}g</p>
+                            <p>{items.length} item{items.length !== 1 ? 's' : ''} · {gramsTotalLabel(items)}</p>
                             <p className="text-foreground font-medium">{amt > 0 ? aed(amt) : 'No rate yet'}</p>
                           </div>
                         </div>

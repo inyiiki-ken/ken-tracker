@@ -3,6 +3,8 @@
 import type { DatabaseRowType } from "@/types";
 import { getAppConfig, type StatusDeadline } from "@/lib/appConfig";
 import { parseDateRobust, customerKey } from "@/lib/calculations";
+import { lineDate, newestPurchaseByCustomer } from "@/lib/purchaseDates";
+import { fulfilmentStage } from "@/lib/fulfilment";
 
 /**
  * Status deadlines ("an item may stay For COD for 3 days, Reseller for 3 weeks").
@@ -49,12 +51,16 @@ function daysLabel(d: number): string {
 }
 
 export function ruleFromDeadline(d: StatusDeadline): ReminderRule {
+  // Items already with the courier (or delivered) are followed up, never cancelled.
+  const shipped = ["dispatched", "delivered"].includes(fulfilmentStage(d.status));
   return {
     status: d.status,
     days: d.days,
     title: `${d.status} — over ${daysLabel(d.days)}`,
-    hint: `Still "${d.status}" after ${daysLabel(d.days)}. Follow up now or cancel the item.`,
-    cancelWhenOverdue: true,
+    hint: shipped
+      ? `Still "${d.status}" after ${daysLabel(d.days)}. Follow up with the courier.`
+      : `Still "${d.status}" after ${daysLabel(d.days)}. Follow up now or cancel the item.`,
+    cancelWhenOverdue: !shipped,
     urgentAfterHours: d.days * 24,
   };
 }
@@ -63,15 +69,6 @@ export function ruleFromDeadline(d: StatusDeadline): ReminderRule {
 export function getReminderRules(): ReminderRule[] {
   const cfg = getAppConfig();
   return cfg.statusDeadlines.length ? cfg.statusDeadlines.map(ruleFromDeadline) : LEGACY_RULES;
-}
-
-const ISO_AT_START = /^(\d{4}-\d{2}-\d{2}T[^ |]+)\s*\|/;
-
-function lineDate(line: string): Date | null {
-  const m = line.match(ISO_AT_START);
-  if (!m) return null;
-  const d = new Date(m[1]);
-  return Number.isNaN(d.getTime()) ? null : d;
 }
 
 /**
@@ -118,20 +115,17 @@ function matches(rule: ReminderRule, status: string): boolean {
 export const MAX_HOLD_DAYS = 7;
 const DAY = 86_400_000;
 
-/** When the item was bought: live date, else the first dated history line. */
-function boughtOn(r: DatabaseRowType): Date | null {
-  const d = parseDateRobust(r.dateOfLive);
-  if (d) return d;
-  for (const l of String(r.auditTrail ?? "").split("\n")) { const x = lineDate(l); if (x) return x; }
-  return null;
-}
-
-/** Each customer's latest purchase (any item that isn't cancelled). */
+/**
+ * Each customer's latest purchase (any item that isn't cancelled). A liver only
+ * gets her own rows, so the server stamps each with the customer's newest
+ * purchase across ALL livers (customerLastPurchaseAt); that wins when newer.
+ */
 export function lastPurchases(all: DatabaseRowType[]): Map<string, Date> {
-  const m = new Map<string, Date>();
+  const m = newestPurchaseByCustomer(all);
   for (const r of all) {
-    if (/cancel/i.test(String(r.status ?? ""))) continue;
-    const d = boughtOn(r);
+    if (!r.customerLastPurchaseAt) continue;
+    // The raw sheet value, read like her own rows (see newestPurchaseRawByCustomer).
+    const d = parseDateRobust(r.customerLastPurchaseAt);
     if (!d) continue;
     const k = customerKey(r);
     const cur = m.get(k);
@@ -163,6 +157,17 @@ export function dueInfo(r: DatabaseRowType, rule: ReminderRule, last?: Map<strin
   const capped = due > cap;
   if (capped) due = cap;
   return { since, due, lastBuy: extended ? lb : undefined, capped: extended && capped };
+}
+
+/**
+ * The deadline of one item under the customer's rules (the first rule its
+ * status matches), or null when no rule applies. For "Due Oct 03" on rows.
+ */
+export function dueFor(r: DatabaseRowType, rules: ReminderRule[], last?: Map<string, Date>): { due: Date; rule: ReminderRule } | null {
+  const rule = rules.find((x) => matches(x, String(r.status ?? "")));
+  if (!rule) return null;
+  const d = dueInfo(r, rule, last);
+  return d ? { due: d.due, rule } : null;
 }
 
 export interface OverdueSection {

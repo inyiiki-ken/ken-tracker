@@ -21,6 +21,9 @@ import PhpRateDialog from './PhpRateDialog';
 import InvoiceModal from '@/components/InvoiceModal';
 import GroupDownpaymentSection from './GroupDownpaymentSection';
 import CustomerHistoryModal from '@/components/CustomerHistoryModal';
+import CancelReasonField from '@/components/CancelReasonField';
+import { fulfilmentStage } from '@/lib/fulfilment';
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 
 interface Props {
   minerName: string;
@@ -44,6 +47,9 @@ function AdminClientCard({ minerName, records, allRecords, onUpdate, onBulkUpdat
   const [phpRates, setPhpRates] = useState<Record<string, number>>({});
   const [copiedName, setCopiedName] = useState(false);
   const [bulkApplying, setBulkApplying] = useState<string | null>(null);
+  // "Apply to all" with Cancelled / Returned asks for the reason first.
+  const [bulkCancel, setBulkCancel] = useState<string | null>(null);
+  const [bulkCancelReason, setBulkCancelReason] = useState('');
   const first = records[0];
   const overdueRecords = records.filter(isOverdue);
   const hasOverdue = overdueRecords.length > 0;
@@ -124,8 +130,13 @@ function AdminClientCard({ minerName, records, allRecords, onUpdate, onBulkUpdat
   };
 
   /** Bulk status with the same checks as changing one item. */
-  const bulkApplyStatus = async (status: string) => {
-    if (/cancel/i.test(status) && !window.confirm(`Cancel ALL ${records.length} items of ${minerName}?`)) return;
+  const bulkApplyStatus = async (status: string, cancelReason?: string) => {
+    if (fulfilmentStage(status) === 'excluded' && cancelReason === undefined) {
+      setBulkCancelReason('');
+      setBulkCancel(status);
+      return;
+    }
+    const fields: Partial<DatabaseRowType> = cancelReason !== undefined ? { status, cancelReason } : { status };
     const skipped: string[] = [];
     const ok = records.filter((r) => {
       if (r.status === status) return false;
@@ -145,8 +156,8 @@ function AdminClientCard({ minerName, records, allRecords, onUpdate, onBulkUpdat
     if (bulkApplying) return;
     setBulkApplying('status');
     try {
-      if (onBulkUpdate) await onBulkUpdate(ok.map((r) => ({ rowId: r.id, fields: { status } })));
-      else for (const r of ok) await onUpdate(r.id, { status });
+      if (onBulkUpdate) await onBulkUpdate(ok.map((r) => ({ rowId: r.id, fields })));
+      else for (const r of ok) await onUpdate(r.id, fields);
       toast.success(`Set status "${status}" on ${ok.length} item${ok.length === 1 ? '' : 's'}.`);
     } catch {
       toast.error('Could not set the status on all items — please try again.');
@@ -464,6 +475,29 @@ function AdminClientCard({ minerName, records, allRecords, onUpdate, onBulkUpdat
           onClose={() => setShowHistory(false)}
         />
       )}
+
+      <AlertDialog open={!!bulkCancel} onOpenChange={open => { if (!open) setBulkCancel(null); }}>
+        <AlertDialogContent className="bg-card border-border">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Set ALL {records.length} items of {minerName} to {bulkCancel}?</AlertDialogTitle>
+            <AlertDialogDescription>This cannot be undone from the app.</AlertDialogDescription>
+          </AlertDialogHeader>
+          <CancelReasonField value={bulkCancelReason} onChange={setBulkCancelReason} />
+          <AlertDialogFooter>
+            <AlertDialogCancel>Keep them</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground"
+              onClick={() => {
+                const status = bulkCancel;
+                setBulkCancel(null);
+                if (status) void bulkApplyStatus(status, bulkCancelReason.trim());
+              }}
+            >
+              Set to {bulkCancel}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

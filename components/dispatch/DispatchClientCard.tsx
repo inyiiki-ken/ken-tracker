@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, memo, useCallback, useMemo, useEffect } from 'react';
-import { autoStageDates, orderBox } from '@/lib/fulfilment';
+import { autoStageDates, fulfilmentStage, orderBox } from '@/lib/fulfilment';
 import { Checkbox } from '@/components/ui/checkbox';
 import { formatDate, orderedRangeLabel } from '@/lib/formatters';
 import { parseDateRobust } from '@/lib/calculations';
@@ -14,6 +14,7 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { Badge } from '@/components/ui/badge';
 import { Textarea } from '@/components/ui/textarea';
 import CancelReasonField from '@/components/CancelReasonField';
+import { parseNotes, buildNoteAppend, type ParsedNote } from '@/lib/notes';
 import { toast } from 'sonner';
 import { DatabaseRowType } from '@/types';
 import { useCompactMode } from '@/lib/compactMode';
@@ -47,34 +48,6 @@ const MOP_OPTIONS = [
   'Western Union (US)', 'Western Union (PH)',
   'Pick Up Shop', 'Meet Up', 'Tabby', 'Tamara', 'International',
 ];
-
-// ─── Dispatch Notes helpers ──────────────────────────────────────────────────
-const NOTE_SEP = '\u27E6NOTE:';
-const NOTE_END = '\u27E7';
-
-interface ParsedNote { author: string; time: string; text: string; }
-
-function parseNotes(val?: string): { remarks: string; notes: ParsedNote[] } {
-  if (!val) return { remarks: '', notes: [] };
-  const notes: ParsedNote[] = [];
-  const parts = val.split(NOTE_SEP);
-  const remarks = parts[0].trim();
-  for (let i = 1; i < parts.length; i++) {
-    const endIdx = parts[i].indexOf(NOTE_END);
-    if (endIdx === -1) continue;
-    const inner = parts[i].substring(0, endIdx);
-    const p1 = inner.indexOf('|');
-    const p2 = inner.indexOf('|', p1 + 1);
-    if (p1 === -1 || p2 === -1) continue;
-    notes.push({ author: inner.substring(0, p1), time: inner.substring(p1 + 1, p2), text: inner.substring(p2 + 1) });
-  }
-  return { remarks, notes };
-}
-
-function buildNoteAppend(existing: string | undefined, author: string, text: string): string {
-  const now = new Date().toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' });
-  return `${existing || ''}${NOTE_SEP}${author}|${now}|${text}${NOTE_END}`;
-}
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 function isGivenToShopMode(record: DatabaseRowType): boolean {
@@ -325,6 +298,8 @@ function DispatchClientCard({ minerName, records, allRecords, onUpdate, userEmai
   const [showInvoice, setShowInvoice] = useState(false);
   const [cancelRecord, setCancelRecord] = useState<DatabaseRowType | null>(null);
   const [cancelReason, setCancelReason] = useState('');
+  // The cancelled / returned status picked (Cancelled, Returned Item…), saved as picked.
+  const [cancelStatus, setCancelStatus] = useState('Cancelled');
   const [resetKeys, setResetKeys] = useState<Record<number, number>>({});
   const [showHistory, setShowHistory] = useState(false);
   const [splitRecord, setSplitRecord] = useState<DatabaseRowType | null>(null);
@@ -409,7 +384,8 @@ function DispatchClientCard({ minerName, records, allRecords, onUpdate, userEmai
 
   const handleStatusChange = async (record: DatabaseRowType, newStatus: string) => {
     setResetKeys(prev => ({ ...prev, [record.id]: (prev[record.id] || 0) + 1 }));
-    if (newStatus === 'Cancelled') { setCancelReason(''); setCancelRecord(record); return; }
+    // Cancelled or returned: ask for the reason first (the liver sees it).
+    if (fulfilmentStage(newStatus) === 'excluded') { setCancelReason(''); setCancelStatus(newStatus); setCancelRecord(record); return; }
     // Dispatch / Delivered dates fill in on their own for any shipping status
     // (Shipment International, couriers…), never overwriting one already set.
     const fields: Partial<DatabaseRowType> = { status: newStatus, ...autoStageDates(getEffective(record), newStatus) };
@@ -731,7 +707,7 @@ function DispatchClientCard({ minerName, records, allRecords, onUpdate, userEmai
       <AlertDialog open={!!cancelRecord} onOpenChange={() => setCancelRecord(null)}>
         <AlertDialogContent className="bg-card border-border">
           <AlertDialogHeader>
-            <AlertDialogTitle>Cancel this item?</AlertDialogTitle>
+            <AlertDialogTitle>{/^cancel/i.test(cancelStatus) ? 'Cancel this item?' : `Set this item to ${cancelStatus}?`}</AlertDialogTitle>
             <AlertDialogDescription>This cannot be undone from the app.</AlertDialogDescription>
           </AlertDialogHeader>
           <CancelReasonField value={cancelReason} onChange={setCancelReason} />
@@ -739,11 +715,11 @@ function DispatchClientCard({ minerName, records, allRecords, onUpdate, userEmai
             <AlertDialogCancel>Keep it</AlertDialogCancel>
             <AlertDialogAction className="bg-destructive text-destructive-foreground" onClick={async () => {
               if (cancelRecord) {
-                await queueUpdate(cancelRecord, { status: 'Cancelled', cancelReason: cancelReason.trim() });
-                toast.success('Cancelled');
+                await queueUpdate(cancelRecord, { status: cancelStatus, cancelReason: cancelReason.trim() });
+                toast.success(cancelStatus);
                 setCancelRecord(null);
               }
-            }}>Cancel Item</AlertDialogAction>
+            }}>{/^cancel/i.test(cancelStatus) ? 'Cancel Item' : `Set to ${cancelStatus}`}</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
