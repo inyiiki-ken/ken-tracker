@@ -39,7 +39,7 @@ export default function TabHeader({ title, subtitle, searchQuery, onSearchChange
           )}
         </div>
         
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap md:flex-nowrap items-center gap-2">
           <div className="relative w-full md:w-72">
             <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
             <Input
