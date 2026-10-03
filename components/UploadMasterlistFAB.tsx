@@ -14,6 +14,7 @@ import { parseMasterlistImage, isImageFile } from '@/lib/masterlistOcr';
 import { getMasterlistMapping, categoryForMc } from '@/lib/masterlistMapping';
 import { Input } from '@/components/ui/input';
 import { useDataOptions } from '@/lib/dataOptions';
+import { orderBox, outsourceName } from '@/lib/fulfilment';
 import type { DatabaseRowType } from '@/types';
 
 interface Props {
@@ -29,6 +30,28 @@ interface Group extends ParsedSheetSummary {
   warnings: string[];
   /** Excel files: the per-worksheet breakdown (for the summary chips). */
   subSheets?: ParsedSheetSummary[];
+}
+
+/** Outsource list: every row gets the outsource as Source and (optionally) goes straight to the Outsource box. */
+interface OutsourceChoice {
+  on: boolean;
+  name: string;
+  toBox: boolean;
+}
+
+const upper = (v: unknown) => String(v ?? '').toUpperCase().replace(/\s+/g, ' ').trim();
+
+/**
+ * The known outsource this list belongs to: one whose name shares a word with
+ * the list's title ("TEAM BESHY" -> BESHY) or starts like its codes (BESH01).
+ */
+function matchOutsource(known: string[], title: string, codes: string[]): string {
+  const words = upper(title).split(' ').filter((w) => w.length >= 4 && w !== 'TEAM');
+  const prefix = upper(codes.find((c) => /^[A-Z]{3,}\d/i.test(c)) ?? '').replace(/\d.*$/, '');
+  return known.find((k) => {
+    const kw = upper(k).split(' ');
+    return words.some((w) => kw.includes(w)) || (prefix.length >= 3 && kw.some((w) => w.length >= prefix.length && w.startsWith(prefix)));
+  }) ?? '';
 }
 
 interface Parsed {
@@ -84,6 +107,25 @@ export default function UploadMasterlistFAB({ onRefresh, records = [] }: Props) 
   };
   const fileRef = useRef<HTMLInputElement>(null);
   const dataOpts = useDataOptions();
+  const [outsource, setOutsource] = useState<OutsourceChoice>({ on: false, name: '', toBox: true });
+
+  // Outsources already in the app (items in the Outsource box) plus DATA'S sources.
+  const knownOutsources = useMemo(() => {
+    const count = new Map<string, number>();
+    for (const r of records) {
+      if (orderBox(r) !== 'outsource') continue;
+      const n = upper(outsourceName(r));
+      if (n && n !== 'NO OUTSOURCE NAME') count.set(n, (count.get(n) || 0) + 1);
+    }
+    for (const s of dataOpts.sources) { const n = upper(s); if (n && !count.has(n)) count.set(n, 0); }
+    return [...count.entries()].sort((a, b) => b[1] - a[1]).map(([n]) => n);
+  }, [records, dataOpts.sources]);
+  // The status this customer uses for the Outsource box (spelt as in their records).
+  const outsourceStatus = useMemo(() => {
+    const seen = new Map<string, number>();
+    records.forEach((r) => { const st = String(r.status ?? '').trim(); if (/outsourc/i.test(st)) seen.set(st, (seen.get(st) || 0) + 1); });
+    return [...seen.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? 'Outsource';
+  }, [records]);
 
   // Load the most recent (undoable) import whenever the panel opens.
   useEffect(() => {
@@ -122,6 +164,12 @@ export default function UploadMasterlistFAB({ onRefresh, records = [] }: Props) 
         toast.error('No valid rows found. Check the file matches this customer\'s masterlist setup.');
         return;
       }
+      // Gold bars (24K): this customer's own gold bar category, if DATA'S has one.
+      const barCat = dataOpts.categories.find((c) => /gold\s*-?\s*bar|24\s*k/i.test(c));
+      if (barCat) rows.forEach((r) => { if (/24K/i.test(r.tog)) r.category = barCat; });
+      const title = sheets[0]?.page || sheets[0]?.liverName || '';
+      const match = matchOutsource(knownOutsources, title, rows.map((r) => r.orderId));
+      setOutsource({ on: !!match, name: match || upper(title), toBox: true });
       setParsed({ rows, liverName: sheets[0]?.liverName ?? '', pageName: sheets[0]?.page ?? '', sheets, flagged, notes });
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Could not read file');
@@ -206,10 +254,15 @@ export default function UploadMasterlistFAB({ onRefresh, records = [] }: Props) 
       for (let i = 0; i < rows.length; i += BATCH_SIZE) {
         setProgress(`Importing ${i + 1}-${Math.min(i + BATCH_SIZE, rows.length)} of ${rows.length}…`);
         setPct(Math.round((i / rows.length) * 100));
+        const out = outsource.on && outsource.name.trim() ? upper(outsource.name) : '';
         const batch = rows.slice(i, i + BATCH_SIZE).map((r, j) => {
           const { warning: _w, ...rest } = r;
           void _w;
-          return { ...rest, rowKey: `IMP-${importId}-${i + j}` };
+          return {
+            ...rest,
+            ...(out ? { source: out, ...(outsource.toBox ? { status: outsourceStatus } : {}) } : {}),
+            rowKey: `IMP-${importId}-${i + j}`,
+          };
         });
         const result = await importRows({ rows: batch as unknown as Record<string, string>[], importId, allowDuplicates, matchManual: true });
         created += result.createdCount;
@@ -243,6 +296,9 @@ export default function UploadMasterlistFAB({ onRefresh, records = [] }: Props) 
         toast.success(`Imported ${created} item(s)!${resumed ? ` (${resumed} were already saved from the earlier try)` : ''}`);
       } else if (!duplicates && !matched) {
         toast.message('Nothing new to import.');
+      }
+      if (outsource.on && outsource.name.trim() && created > 0) {
+        toast.info(`${created} item(s) saved under outsource ${upper(outsource.name)}${outsource.toBox ? ' in the Outsource box' : ''}.`);
       }
       if (!duplicates || created > 0) { reset(); setDupFound(0); setAllowDuplicates(false); importIdRef.current = null; }
       onRefresh();
@@ -313,7 +369,7 @@ export default function UploadMasterlistFAB({ onRefresh, records = [] }: Props) 
               </div>
             )}
             <div>
-              <Label className="text-sm text-muted-foreground mb-2 block">Select Excel / CSV File</Label>
+              <Label className="text-sm text-muted-foreground mb-2 block">Liver or outsource masterlist (Excel / CSV or photo)</Label>
               <div
                 className="border-2 border-dashed border-border rounded-lg p-6 text-center cursor-pointer hover:border-primary/50 transition-colors"
                 onClick={() => fileRef.current?.click()}
@@ -359,6 +415,30 @@ export default function UploadMasterlistFAB({ onRefresh, records = [] }: Props) 
                   </span>
                 ))}
               </div>
+            </div>
+
+            {/* Outsource list: one choice for every row instead of editing each client */}
+            <div className={`rounded-lg border p-3 space-y-2 ${outsource.on ? 'border-primary/50 bg-primary/5' : 'border-border'}`}>
+              <label className="flex items-center gap-2 text-xs font-medium">
+                <input type="checkbox" checked={outsource.on} onChange={(e) => setOutsource((o) => ({ ...o, on: e.target.checked }))} />
+                This list is from an outsource
+              </label>
+              {outsource.on && (
+                <>
+                  <label className="text-[11px] text-muted-foreground space-y-1 block">
+                    <span>Outsource</span>
+                    <Input list="known-outsources" value={outsource.name} onChange={(e) => setOutsource((o) => ({ ...o, name: e.target.value.toUpperCase() }))} className="h-7 text-xs" placeholder="e.g. BESHY" />
+                    <datalist id="known-outsources">{knownOutsources.map((n) => <option key={n} value={n} />)}</datalist>
+                  </label>
+                  <label className="flex items-start gap-2 text-[11px] text-muted-foreground">
+                    <input type="checkbox" checked={outsource.toBox} onChange={(e) => setOutsource((o) => ({ ...o, toBox: e.target.checked }))} className="mt-0.5" />
+                    <span>Put all {parsed.rows.length} items straight in the Outsource box (status &quot;{outsourceStatus}&quot;), so no client has to be opened one by one.</span>
+                  </label>
+                  <p className="text-[11px] text-muted-foreground">
+                    {new Set(parsed.rows.map((r) => upper(r.minerName))).size} clients. Each item keeps its own liver.
+                  </p>
+                </>
+              )}
             </div>
 
             {/* Warnings */}
