@@ -18,6 +18,25 @@ interface Props {
   priorRecords?: DatabaseRowType[];
 }
 
+/**
+ * T.O.G cell: karat/type plus price type, e.g. "18K · GOLD NORMAL".
+ * Karat comes from the T.O.G field, else the description ("18K GOLD …"),
+ * else 18K for gold price types (most gold items are 18K).
+ */
+export function togLabel(r: DatabaseRowType): string {
+  const tog = (r.tog || '').trim().toUpperCase();
+  const cat = (r.category || '').trim().toUpperCase();
+  let karat = tog;
+  if (!karat) {
+    const m = (r.itemDescription || '').toUpperCase().match(/\b(\d{2})\s*K(?:T)?\b/);
+    if (m) karat = `${m[1]}K`;
+    else if (/^(GOLD NORMAL|SPECIAL PRICE)/.test(cat)) karat = '18K';
+  }
+  if (!cat || cat === karat) return karat || cat || '—';
+  if (!karat) return cat;
+  return `${karat} · ${cat}`;
+}
+
 export const DEFAULT_INVOICE_NOTES = [
   'We can hold unpaid items for a maximum of 3 days from the invoice date if details are provided. If no details are provided, the order will be cancelled within 24 hours.',
   'Failure to settle within 3 days may result in additional charges.',
@@ -138,7 +157,7 @@ export default function InvoicePrintContent({ records, currency, ccIncludeShippi
     return {
       code: r.orderId || '—',
       desc: r.itemDescription || '—',
-      tog: r.tog || r.category || '—',
+      tog: togLabel(r),
       gramsDisplay,
       isPc: (isPc || isScrewType || isPerPc),
       rate: displayRate,
@@ -448,20 +467,20 @@ export default function InvoicePrintContent({ records, currency, ccIncludeShippi
         <table style={{ width: '100%', borderCollapse: 'collapse', background: 'transparent' }}>
           <tbody>
             <tr>
-              <td style={{ width: '50%', padding: '16px', verticalAlign: 'middle', border: '1px solid #999' }}>
-                <div style={{ fontWeight: 900, fontSize: 26, lineHeight: 1.2, textAlign: 'center' }}>
+              <td style={{ width: '40%', padding: '10px', verticalAlign: 'middle', border: '1px solid #999' }}>
+                <div style={{ fontWeight: 900, fontSize: 14, lineHeight: 1.2, textAlign: 'center' }}>
                   CUSTOMER'S INVOICE<br />COPY
                 </div>
                 {mopLabel && (
                   <div style={{ marginTop: '8px', textAlign: 'center' }}>
-                    <div style={{ display: 'inline-block', border: '2px solid red', color: 'red', padding: '4px 12px', fontWeight: 900, fontSize: '18px', letterSpacing: '2px', textTransform: 'uppercase' }}>
+                    <div style={{ display: 'inline-block', border: '1.5px solid red', color: 'red', padding: '2px 8px', fontWeight: 900, fontSize: '10px', letterSpacing: '1px', textTransform: 'uppercase' }}>
                       {mopLabel}
                     </div>
                   </div>
                 )}
                 {isLayaway && (
                   <div style={{ marginTop: '8px', textAlign: 'center' }}>
-                    <div style={{ display: 'inline-block', border: '3px solid #7c3aed', color: '#7c3aed', padding: '4px 14px', fontWeight: 900, fontSize: '18px', letterSpacing: '3px', transform: 'rotate(-5deg)', transformOrigin: 'center' }}>
+                    <div style={{ display: 'inline-block', border: '2px solid #7c3aed', color: '#7c3aed', padding: '2px 8px', fontWeight: 900, fontSize: '10px', letterSpacing: '2px', transform: 'rotate(-5deg)', transformOrigin: 'center' }}>
                       LAYAWAY
                     </div>
                   </div>
@@ -469,9 +488,9 @@ export default function InvoicePrintContent({ records, currency, ccIncludeShippi
               </td>
               <td style={{ padding: 0, verticalAlign: 'top', border: '1px solid #999' }}>
                 {summaryRows.map((row, i) => (
-                  <div key={i} style={{ display: 'flex', justifyContent: 'space-between', background: row.green ? 'rgba(220, 252, 231, 0.9)' : row.red ? 'rgba(255, 240, 240, 0.9)' : (i % 2 === 0 ? 'rgba(224, 224, 224, 0.9)' : 'rgba(245, 245, 245, 0.9)'), padding: '5px 10px', borderBottom: '1px solid #ccc' }}>
-                    <span style={{ fontWeight: 700, fontSize: 11, color: row.green ? '#166534' : row.red ? '#cc0000' : '#111' }}>{row.label}</span>
-                    <span style={{ fontSize: 11, fontWeight: (row.red || row.green) ? 700 : 400, color: row.green ? '#166534' : row.red ? '#cc0000' : '#111' }}>{row.value}</span>
+                  <div key={i} style={{ display: 'flex', justifyContent: 'space-between', background: row.green ? 'rgba(220, 252, 231, 0.9)' : row.red ? 'rgba(255, 240, 240, 0.9)' : (i % 2 === 0 ? 'rgba(224, 224, 224, 0.9)' : 'rgba(245, 245, 245, 0.9)'), padding: '8px 12px', borderBottom: '1px solid #ccc' }}>
+                    <span style={{ fontWeight: 700, fontSize: 16, color: row.green ? '#166534' : row.red ? '#cc0000' : '#111' }}>{row.label}</span>
+                    <span style={{ fontSize: 16, fontWeight: (row.red || row.green) ? 700 : 400, color: row.green ? '#166534' : row.red ? '#cc0000' : '#111' }}>{row.value}</span>
                   </div>
                 ))}
               </td>
