@@ -387,16 +387,13 @@ export default function LiverDashboard({ records, searchQuery, onSearchChange, l
 
   // Outsources (e.g. JOLAI) are chosen first, then one of their livers; the
   // shop's own livers are chosen by name. An outsource whose only liver is
-  // itself (e.g. BELLA uploading her own list) is just a name.
+  // itself (e.g. BELLA uploading her own list) is listed under Outsource too.
   const outsourceOf = useMemo(() => outsourceOfLivers(records, liverKey), [records]);
   const { ownLivers, outsources } = useMemo(() => {
     const outs = new Map<string, string[]>();
     for (const n of liverNames) {
       const o = outsourceOf.get(n);
       if (o) outs.set(o, [...(outs.get(o) ?? []), n]);
-    }
-    for (const [o, livers] of outs) {
-      if (livers.length === 1 && livers[0] === liverKey(o)) outs.delete(o);
     }
     const grouped = new Set([...outs.values()].flat());
     return { ownLivers: liverNames.filter(n => !grouped.has(n)), outsources: outs };
@@ -420,7 +417,7 @@ export default function LiverDashboard({ records, searchQuery, onSearchChange, l
     setPickedOutsource(name);
     setSelectedLiver(livers.length === 1 ? livers[0] : '');
   };
-  const who = selectedOutsource && selectedLiver ? `${selectedOutsource} · ${selectedLiver}` : selectedLiver;
+  const who = selectedOutsource && selectedLiver && liverKey(selectedOutsource) !== selectedLiver ? `${selectedOutsource} · ${selectedLiver}` : selectedLiver;
 
   useEffect(() => {
     if (lockedLiverName || liverNames.length === 0) return;
@@ -625,7 +622,7 @@ export default function LiverDashboard({ records, searchQuery, onSearchChange, l
                       <SelectLabel className="text-[10px] uppercase tracking-wide text-muted-foreground">Outsource</SelectLabel>
                       {[...outsources.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([out, livers]) => (
                         <SelectItem key={`o:${out}`} value={`o:${out}`} className="text-sm text-foreground font-medium">
-                          {out} <span className="text-xs font-normal text-muted-foreground">· {livers.length} {livers.length === 1 ? 'liver' : 'livers'}</span>
+                          {out}{!(livers.length === 1 && livers[0] === liverKey(out)) && <span className="text-xs font-normal text-muted-foreground"> · {livers.length} {livers.length === 1 ? 'liver' : 'livers'}</span>}
                         </SelectItem>
                       ))}
                     </SelectGroup>

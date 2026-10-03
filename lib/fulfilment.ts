@@ -209,7 +209,12 @@ export function outsourceName(r: DatabaseRowType): string {
  * count: shop stock has one too, e.g. "Shop Stock".)
  */
 export function outsourceOfLivers(records: DatabaseRowType[], keyOf: (v: unknown) => string): Map<string, string> {
-  const signal = (r: DatabaseRowType) => orderBox(r) === 'outsource';
+  // Outsource items: in the Outsource box, or (after they leave it) carrying a
+  // Source that names an outsource seen in the box, e.g. an outsource list
+  // uploaded with "This list is from an outsource".
+  const boxNames = new Set<string>();
+  for (const r of records) if (orderBox(r) === 'outsource') boxNames.add(outsourceName(r).toUpperCase());
+  const signal = (r: DatabaseRowType) => orderBox(r) === 'outsource' || boxNames.has(String(r.source ?? '').trim().toUpperCase());
   const counts = new Map<string, Map<string, number>>();
   const known = new Set<string>();
   // Page an outsource's items were sold on -> that outsource (e.g. JOLAI page -> JOLAI SUPPLY).
