@@ -163,10 +163,18 @@ async function readTitle(orig: ImageData, box: { x0: number; y0: number; x1: num
   }
   ctx.putImageData(out, 0, 0);
   const { lines } = await ocrLines(canvas);
-  let best = "", bestH = 0;
+  let best = "", bestH = 0, bestLine: OcrLine | null = null;
   for (const l of lines) for (const wd of l.words) {
     const t = clean(wd.text).replace(/[^A-Z]/g, "");
-    if (t.length >= 3 && !LABELS.test(t) && wd.y1 - wd.y0 > bestH) { bestH = wd.y1 - wd.y0; best = t; }
+    if (t.length >= 3 && !LABELS.test(t) && wd.y1 - wd.y0 > bestH) { bestH = wd.y1 - wd.y0; best = t; bestLine = l; }
+  }
+  // Keep the other big words on the same line too ("TEAM BESHY", not just "TEAM").
+  if (bestLine) {
+    const words = bestLine.words
+      .filter((wd) => wd.y1 - wd.y0 >= bestH * 0.7)
+      .map((wd) => clean(wd.text).replace(/[^A-Z]/g, ""))
+      .filter((t) => t.length >= 2 && !LABELS.test(t));
+    if (words.includes(best)) return words.join(" ");
   }
   return best;
 }
@@ -291,7 +299,11 @@ function greyOf(orig: ImageData): HTMLCanvasElement {
   return c;
 }
 
-interface HeaderFigures { rate: number; totalGrams: number; balance: number; }
+interface HeaderFigures {
+  rate: number; totalGrams: number; balance: number;
+  /** Every figure after RATE / TOTAL GRAMS: 18K first, then e.g. the 21KT / GOLD BAR column. */
+  rates?: number[]; totals?: number[];
+}
 
 /** TOTAL GRAMS / BALANCE / RATE from the header block (first number after each label). */
 function readHeaderFigures(lines: OcrLine[]): HeaderFigures {
@@ -300,10 +312,11 @@ function readHeaderFigures(lines: OcrLine[]): HeaderFigures {
     const w = l.words.slice(i + 1).find((x) => isNumeric(x.text));
     return w ? readNumber(w.text) : 0;
   };
+  const allAfter = (l: OcrLine, i: number) => l.words.slice(i + 1).filter((x) => isNumeric(x.text)).map((x) => readNumber(x.text)).filter((v) => v > 0);
   for (const l of lines) {
     const t = l.words.map((w) => clean(w.text));
     const gi = t.findIndex((x) => /^(TOTAL)?GRAMS?$/.test(x));
-    if (gi >= 0 && !out.totalGrams) out.totalGrams = after(l, gi);
+    if (gi >= 0 && !out.totalGrams) { out.totalGrams = after(l, gi); out.totals = allAfter(l, gi); }
     const bi = t.findIndex((x) => /ALANCE$|^BALAN/.test(x));
     if (bi >= 0 && !out.balance) out.balance = after(l, bi);
     const ri = t.findIndex((x) => /^RATE:?$/.test(x));
@@ -311,6 +324,7 @@ function readHeaderFigures(lines: OcrLine[]): HeaderFigures {
       let v = after(l, ri);
       if (v > 0 && v < 10 && v * 100 >= 15) v = Math.round(v * 100);
       out.rate = v;
+      out.rates = allAfter(l, ri).map((x) => (x < 10 && x * 100 >= 15 ? Math.round(x * 100) : x));
     }
   }
   return out;
@@ -449,7 +463,21 @@ export async function parseMasterlistImage(file: File, mapping?: MasterlistMappi
     numBorder = left.length ? left[left.length - 1] : gramsHead.x0 - (gramsHead.x1 - gramsHead.x0) * 0.5;
   }
 
-  type Row = { code: string; name: string; desc: string; nums: number[]; y0: number; y1: number; nx: number };
+  // Columns right of GRAMS, for rows with no weight in the grams column (a
+  // 24K gold bar weighed in its own GOLD BAR column, with "-" as the amount).
+  const cx = (w: OcrWord) => (w.x0 + w.x1) / 2;
+  const gc = gramsHead ? cx(gramsHead) : NaN;
+  const rateHead = header.words.find((w) => /^RATE/.test(clean(w.text)) && (!Number.isFinite(gc) || cx(w) > gc));
+  const amountHead = header.words.find((w) => /AMOUNT|TOTAL/.test(clean(w.text)));
+  const amountRight = amountHead ? (colLines.find((x) => x > cx(amountHead)) ?? amountHead.x1 + (amountHead.x1 - amountHead.x0) * 0.3) : NaN;
+  // Header words past AMOUNT (21KT, GOLD BAR, PULLOUT…) say which karat a side column holds.
+  const sideHeads = Number.isFinite(amountRight) ? header.words.filter((w) => cx(w) > amountRight) : [];
+  // Not plain "BAR": a BAR PENDANT / BAR NECKLACE is ordinary 18K jewellery.
+  const GOLD_BAR = /GOLD\s*-?\s*BARS?\b/;
+
+  /** A row with no weight under GRAMS: rate and MC as usual, weight from a side column. */
+  type Side = { rate: number; mc: number; weight: number; tog: string; guessed: boolean };
+  type Row = { code: string; name: string; desc: string; nums: number[]; y0: number; y1: number; nx: number; side?: Side };
   const raw: Row[] = [];
   for (const l of lines.slice(headerIdx + 1)) {
     const words = l.words.filter((w) => !/^[|~_\-—'"()]+$/.test(w.text));
@@ -479,7 +507,33 @@ export async function parseMasterlistImage(file: File, mapping?: MasterlistMappi
       name = textWords.slice(0, gi); desc = textWords.slice(gi);
     }
     const join = (ws: OcrWord[]) => ws.map((w) => w.text.replace(/[^A-Za-z0-9&'.\-/ ]/g, "")).join(" ").replace(/\s+/g, " ").trim().toUpperCase();
-    raw.push({ code: words[0].text, name: join(name), desc: join(desc), nums, y0: l.y0, y1: l.y1, nx: words[firstNum]?.x0 ?? numBorder });
+    // A code split in two ("BE" + "SH21") leaves its second half in front of the name.
+    while (name.length > 1 && /^[A-Z]{0,5}\d{1,4}[A-Z]?$/.test(clean(name[0].text))) name = name.slice(1);
+    const nameTxt = join(name), descTxt = join(desc);
+    // Code with no customer and no item (BESH41 at the end) = blank row.
+    if (!nameTxt && !descTxt) continue;
+    const numWords = words.slice(firstNum).filter((w) => isNumeric(w.text) && Number.isFinite(readNumber(w.text)));
+    const first = numWords[0];
+    const noGrams = !!first && !!gramsHead && !!rateHead && Math.abs(cx(first) - cx(rateHead)) < Math.abs(cx(first) - gc);
+    // No weight and no item: an empty template row with only the rate filled in.
+    if (noGrams && !descTxt) continue;
+    let side: Side | undefined;
+    if (noGrams || GOLD_BAR.test(descTxt)) {
+      const left = Number.isFinite(amountRight) ? numWords.filter((w) => cx(w) < amountRight) : numWords.slice(0, 2);
+      const right = Number.isFinite(amountRight) ? numWords.filter((w) => cx(w) >= amountRight) : numWords.slice(2);
+      // With grams present (a bar sheet laid out normally) the rate is the 2nd number.
+      const lv = left.map((w) => readNumber(w.text));
+      const [rate, mc] = noGrams ? [lv[0], lv[1]] : [lv[1], lv[2]];
+      const wWord = right[0];
+      // A bar weight is often a whole number ("1", "100"): no decimal point inserted.
+      const weight = wWord ? (/[.,]/.test(wWord.text) ? readNumber(wWord.text) : parseFloat(wWord.text.replace(/[^0-9]/g, ""))) : (!noGrams ? lv[0] : 0);
+      let head = "";
+      if (wWord && sideHeads.length) head = clean(sideHeads.reduce((a, b) => (Math.abs(cx(b) - cx(wWord)) < Math.abs(cx(a) - cx(wWord)) ? b : a)).text);
+      const tog = GOLD_BAR.test(descTxt) || /GOLD|BAR/.test(head) ? "24K" : (head.match(/^(\d{2})K/)?.[0] ?? "");
+      const guessed = !(weight > 0);
+      side = { rate: rate > 0 && rate < 10 && rate * 100 >= 15 ? Math.round(rate * 100) : rate || 0, mc: mc || 0, weight: guessed ? 1 : weight, tog, guessed };
+    }
+    raw.push({ code: words[0].text, name: nameTxt, desc: descTxt, nums, y0: l.y0, y1: l.y1, nx: words[firstNum]?.x0 ?? numBorder, side });
   }
   if (!raw.length) throw new Error("Found the header but no item rows. Try a clearer screenshot.");
 
@@ -491,7 +545,7 @@ export async function parseMasterlistImage(file: File, mapping?: MasterlistMappi
   // MC takes only a few values per sheet (e.g. 25 and 30). A value seen on one
   // row only, within 2 of a common one, is a misread ("26" for 25).
   const mcCount = new Map<number, number>();
-  raw.forEach((r) => r.nums.length >= 4 && r.nums[2] > 0 && mcCount.set(r.nums[2], (mcCount.get(r.nums[2]) || 0) + 1));
+  raw.forEach((r) => !r.side && r.nums.length >= 4 && r.nums[2] > 0 && mcCount.set(r.nums[2], (mcCount.get(r.nums[2]) || 0) + 1));
   const commonMcs = [...mcCount.entries()].filter(([, c]) => c >= 2).map(([v]) => v);
   const snapMc = (mc: number) => {
     if (!mc || (mcCount.get(mc) || 0) >= 2 || !commonMcs.length) return mc;
@@ -505,28 +559,43 @@ export async function parseMasterlistImage(file: File, mapping?: MasterlistMappi
   };
   const round2 = (n: number) => Math.round(n * 100) / 100;
   const near = (a: number, b: number) => Math.abs(a - b) <= Math.max(0.6, b * 0.002);
-  type Nums = { grams: number; rate: number; mc: number; amount: number };
+  /** mcRaw = the MC as read, before snapping it to a common one. */
+  type Nums = { grams: number; rate: number; mc: number; amount: number; mcRaw?: number };
   // Numbers in sheet order: grams, rate, MC, amount (MC may be absent).
   const toNums = (nums: number[]): Nums => {
     const n = [...nums];
     if (n[1] > 0 && n[1] < 10 && n[1] * 100 >= 15) n[1] = Math.round(n[1] * 100);
-    return n.length === 3 ? { grams: n[0], rate: n[1], mc: 0, amount: n[2] } : { grams: n[0], rate: n[1], mc: snapMc(n[2] || 0), amount: n[3] ?? 0 };
+    return n.length === 3 ? { grams: n[0], rate: n[1], mc: 0, amount: n[2] } : { grams: n[0], rate: n[1], mc: snapMc(n[2] || 0), mcRaw: n[2] || 0, amount: n[3] ?? 0 };
   };
-  const rows0 = raw.map((r) => toNums(r.nums));
+  // Side-column rows (gold bars) have their own rate: kept out of the 18K checks.
+  const rows0 = raw.map((r) => (r.side ? { grams: r.side.weight, rate: r.side.rate, mc: r.side.mc, amount: 0 } : toNums(r.nums)));
+  const mainOf = (rows: Nums[]) => rows.filter((_, i) => !raw[i].side);
   /**
    * How one row reads at a given gold rate: as is, with one misread digit in
    * the grams (3.34 for 3.31), or with one misread digit in the amount
    * (672.36 for 572.36). Anything else doesn't add up.
    */
-  const check = (r: Nums, rate: number): { grams: number; amount: number; exact: boolean } | null => {
-    const per = rate + r.mc;
+  const checkMc = (r: Nums, rate: number, mc: number): { grams: number; amount: number; mc: number; exact: boolean } | null => {
+    const per = rate + mc;
     if (!(per > 0 && r.amount > 0 && r.grams > 0)) return null;
-    if (near(r.grams * per, r.amount)) return { grams: r.grams, amount: r.amount, exact: true };
-    const g2 = round2(r.amount / per);
-    if (near(g2 * per, r.amount) && oneDigitApart(r.grams, g2)) return { grams: g2, amount: r.amount, exact: false };
+    if (near(r.grams * per, r.amount)) return { grams: r.grams, amount: r.amount, mc, exact: true };
+    // Amount first: grams × rate matching the amount to the cent except one
+    // digit is firmer than grams worked back from the amount, which only lands
+    // within rounding (BESH33 2.82 g / 1163.38 read for 1153.38 was "fixed" to 2.84 g).
     const a2 = round2(r.grams * per);
-    if (oneDigitApart(r.amount, a2)) return { grams: r.grams, amount: a2, exact: false };
+    if (oneDigitApart(r.amount, a2)) return { grams: r.grams, amount: a2, mc, exact: false };
+    const g2 = round2(r.amount / per);
+    if (near(g2 * per, r.amount) && oneDigitApart(r.grams, g2)) return { grams: g2, amount: r.amount, mc, exact: false };
     return null;
+  };
+  // The snapped MC first; the MC as read when only that adds up (a real one-off
+  // MC 25 among many 28s is not a misread: 2026-10-03 BESH14).
+  const check = (r: Nums, rate: number) => {
+    const a = checkMc(r, rate, r.mc);
+    if (a?.exact || r.mcRaw === undefined || r.mcRaw === r.mc) return a;
+    const b = checkMc(r, rate, r.mcRaw);
+    // Neither adds up as read: trust the MC as read over the snapped guess.
+    return b?.exact ? b : b ?? a;
   };
 
   // ── What the rate should be, from everything the app knows ──
@@ -568,13 +637,13 @@ export async function parseMasterlistImage(file: File, mapping?: MasterlistMappi
     }
     return best;
   };
-  let rateMode = chooseRate(rows0);
+  let rateMode = chooseRate(mainOf(rows0));
 
   // ── Second, closer read of any row that doesn't add up as read ──
   const rows1 = [...rows0];
   const reread: string[] = [];
   for (let i = 0; i < raw.length; i++) {
-    if (check(rows1[i], rateMode)?.exact) continue;
+    if (raw[i].side || check(rows1[i], rateMode)?.exact) continue;
     const r = raw[i];
     const pad = (r.y1 - r.y0) * 0.35;
     const box = { x0: r.nx - 6, y0: r.y0 - pad, x1: canvas.width, y1: r.y1 + pad };
@@ -598,19 +667,23 @@ export async function parseMasterlistImage(file: File, mapping?: MasterlistMappi
     if (good) {
       const before = rows1[i];
       if (round2(good.grams) !== round2(before.grams)) reread.push(`${codes[i]} weight ${before.grams} → ${good.grams} g`);
-      if (round2(good.amount) !== round2(before.amount)) reread.push(`${codes[i]} amount ${before.amount} → ${good.amount}`);
-      rows1[i] = { ...before, grams: good.grams, amount: good.amount };
+      if (round2(good.amount) !== round2(before.amount)) reread.push(`${codes[i]} amount ${before.amount} → ${round2(good.amount)}`);
+      rows1[i] = { ...before, grams: good.grams, amount: round2(good.amount) };
     }
   }
-  if (reread.length) rateMode = chooseRate(rows1);
+  if (reread.length) rateMode = chooseRate(mainOf(rows1));
 
-  const misreadRates = rows1.map((r, i) => (r.rate > 0 && Math.abs(r.rate - rateMode) > 0.01 ? `${codes[i]} ${r.rate}` : "")).filter(Boolean);
+  const misreadRates = rows1.map((r, i) => (!raw[i].side && r.rate > 0 && Math.abs(r.rate - rateMode) > 0.01 ? `${codes[i]} ${r.rate}` : "")).filter(Boolean);
   if (head.rate && Math.abs(head.rate - rateMode) > 0.01) misreadRates.unshift(`header ${head.rate}`);
 
   const fixed = rows1.map((r, i) => {
+    const sd = raw[i].side;
+    if (sd) {
+      return { code: codes[i], name: raw[i].name, desc: raw[i].desc, grams: sd.weight, rate: sd.rate, mc: sd.mc, amount: round2(sd.weight * (sd.rate + sd.mc)), side: sd };
+    }
     let { grams, amount } = r;
     const rate = rateMode || r.rate;
-    const mc = r.mc;
+    let mc = r.mc;
     // Still off: correct a single misread digit (and list it); anything else
     // stays as read and is flagged. Replacing grams with amount ÷ rate
     // wholesale once priced 3.69 g as 3.93 g when the amount was misread.
@@ -618,21 +691,30 @@ export async function parseMasterlistImage(file: File, mapping?: MasterlistMappi
     if (c) {
       if (c.grams !== grams) corrected.push(`${codes[i]} weight ${grams} → ${c.grams} g`);
       if (c.amount !== amount) corrected.push(`${codes[i]} amount ${amount} → ${c.amount}`);
-      grams = c.grams; amount = c.amount;
+      grams = c.grams; amount = c.amount; mc = c.mc;
     } else if (rate + mc > 0 && amount > 0) flagged.push(i);
-    return { code: codes[i], name: raw[i].name, desc: raw[i].desc, grams, rate, mc, amount };
+    return { code: codes[i], name: raw[i].name, desc: raw[i].desc, grams, rate, mc, amount, side: undefined as Side | undefined };
   });
 
   // ── Header TOTAL GRAMS: the rows must add up to it ──
   const headTotal = head.totalGrams || head.balance;
-  const sumGrams = () => round2(fixed.reduce((s, r) => s + (r.grams || 0), 0));
+  // TOTAL GRAMS is the 18K column; gold bars are totalled in their own column.
+  const sumGrams = () => round2(fixed.reduce((s, r) => s + (r.side ? 0 : r.grams || 0), 0));
   if (headTotal > 0 && Math.abs(sumGrams() - headTotal) > 0.011 && flagged.length === 1) {
     // One row is still off: the header total says what its weight must be.
     const i = flagged[0], r = fixed[i];
     const g = round2(headTotal - (sumGrams() - r.grams));
+    // The MC may be misread too (25 read as 28): the weight and amount then say what it is.
+    const mcBack = g > 0 ? r.amount / g - r.rate : 0;
+    const mcFix = Math.abs(mcBack - Math.round(mcBack)) <= 0.02 && Math.round(mcBack) > 0 && Math.round(mcBack) < 100 ? Math.round(mcBack) : 0;
     if (g > 0 && near(g * (r.rate + r.mc), r.amount)) {
       corrected.push(`${r.code} weight ${r.grams} → ${g} g (from TOTAL GRAMS ${headTotal})`);
       r.grams = g;
+      flagged.splice(0, 1);
+    } else if (mcFix && mcFix !== r.mc && near(g * (r.rate + mcFix), r.amount)) {
+      corrected.push(`${r.code} weight ${r.grams} → ${g} g and MC ${r.mc} → ${mcFix} (from TOTAL GRAMS ${headTotal})`);
+      r.grams = g;
+      r.mc = mcFix;
       flagged.splice(0, 1);
     }
   }
@@ -650,7 +732,7 @@ export async function parseMasterlistImage(file: File, mapping?: MasterlistMappi
 
   // ── MC this outsource doesn't normally use ──
   const oddMc = past.mcs.size >= 1
-    ? [...new Set(fixed.filter((r) => r.mc > 0 && !past.mcs.has(r.mc)).map((r) => r.mc))]
+    ? [...new Set(fixed.filter((r) => !r.side && r.mc > 0 && !past.mcs.has(r.mc)).map((r) => r.mc))]
     : [];
 
   // ── Customer names close to (but not the same as) earlier orders ──
@@ -659,6 +741,21 @@ export async function parseMasterlistImage(file: File, mapping?: MasterlistMappi
     if (!r.name || past.names.has(r.name)) continue;
     const match = [...past.names].find((n) => Math.abs(n.length - r.name.length) <= 2 && editDistance(n, r.name) <= 2);
     if (match) nameHints.push(`${r.code} "${r.name}" looks like "${match}" from earlier orders`);
+  }
+
+  // ── Gold bar / side-column rows ──
+  const sideRows = fixed.filter((r) => r.side);
+  const sideNotes: string[] = [];
+  if (sideRows.length) {
+    sideNotes.push(`${sideRows.map((r) => r.code).join(", ")}: ${sideRows.some((r) => r.side!.tog === "24K") ? "gold bar" : "side column"} item${sideRows.length === 1 ? "" : "s"}, priced at ${[...new Set(sideRows.map((r) => r.rate))].join(" / ")} + MC × weight (not the ${rateMode} rate).`);
+    const guessed = sideRows.filter((r) => r.side!.guessed).map((r) => r.code);
+    if (guessed.length) sideNotes.push(`Couldn't read the weight of ${guessed.join(", ")}, so 1 g was used. Check against the photo.`);
+    const otherRates = (head.rates ?? []).slice(1);
+    const offRate = sideRows.filter((r) => otherRates.length && !otherRates.some((v) => Math.abs(v - r.rate) <= 0.01)).map((r) => `${r.code} ${r.rate}`);
+    if (offRate.length) sideNotes.push(`Gold bar rate doesn't match the header (${otherRates.join(" / ")}): ${offRate.join("; ")}. Check against the photo.`);
+    const barTotal = (head.totals ?? []).length > 1 ? head.totals![head.totals!.length - 1] : 0;
+    const barSum = round2(sideRows.reduce((sum, r) => sum + r.grams, 0));
+    if (barTotal > 0 && Math.abs(barTotal - barSum) > 0.011) sideNotes.push(`The gold bar weights add up to ${barSum} g but the header says ${barTotal} g. Check against the photo.`);
   }
 
   const rateNotes: string[] = [];
@@ -721,6 +818,7 @@ export async function parseMasterlistImage(file: File, mapping?: MasterlistMappi
   const gaps = missingCodes(codes);
   if (gaps.length) warnings.push(`${gaps.join(", ")} ${gaps.length === 1 ? "is" : "are"} missing from the photo reading. Add ${gaps.length === 1 ? "it" : "them"} by hand.`);
   warnings.push(...rateNotes);
+  warnings.push(...sideNotes);
   if (reread.length) warnings.push(`Read again more closely: ${reread.join("; ")}. Check against the photo.`);
   if (corrected.length) warnings.push(`Fixed one misread digit so the row adds up: ${corrected.join("; ")}. Check against the photo.`);
   if (totalNote) warnings.push(totalNote);
@@ -743,7 +841,12 @@ export async function parseMasterlistImage(file: File, mapping?: MasterlistMappi
     rowNotes[code] = rowNotes[code] ? `${rowNotes[code]}; ${rest.join(" ")}` : `Corrected: ${rest.join(" ")}`;
   }
   const liver = parsed.liverName !== "Unknown" ? parsed.liverName : title;
-  const rows = parsed.rows.map((r) => ({ ...r, liverName: r.liverName === "Unknown" ? liver : r.liverName }));
+  const togOf = new Map(sideRows.filter((r) => r.side!.tog).map((r) => [r.code, r.side!.tog]));
+  const rows = parsed.rows.map((r) => ({
+    ...r,
+    liverName: r.liverName === "Unknown" ? liver : r.liverName,
+    ...(togOf.has(r.orderId) ? { tog: togOf.get(r.orderId)! } : {}),
+  }));
   return {
     rows,
     liverName: liver || "Unknown",
