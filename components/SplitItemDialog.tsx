@@ -162,7 +162,7 @@ export default function SplitItemDialog({ record, onClose, onComplete, statusCon
 
         {/* Note about fees */}
         <p className="text-[10px] text-muted-foreground bg-muted/40 rounded px-2 py-1.5 border border-border/50">
-          ⚠️ Flat fees (shipping, additional charges, downpayment) stay on the original row only. The new row is created clean.
+          Payments are shared by weight between the two rows. Extra charges stay on the original row.
         </p>
 
         <div className="flex gap-2 pt-1">

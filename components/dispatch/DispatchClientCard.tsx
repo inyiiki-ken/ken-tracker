@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, memo, useCallback, useMemo, useEffect } from 'react';
-import { autoStageDates, fulfilmentStage, orderBox, isStillWithAdmin } from '@/lib/fulfilment';
+import { autoStageDates, fulfilmentStage, orderBox } from '@/lib/fulfilment';
 import { Checkbox } from '@/components/ui/checkbox';
 import { formatDate, orderedRangeLabel } from '@/lib/formatters';
 import { parseDateRobust } from '@/lib/calculations';
@@ -18,7 +18,7 @@ import { parseNotes, buildNoteAppend, type ParsedNote } from '@/lib/notes';
 import { toast } from 'sonner';
 import { DatabaseRowType } from '@/types';
 import { useCompactMode } from '@/lib/compactMode';
-import { calcShippingFee, isFreeSf, isPromoSf, getPromoSf, getQty, calcTotalPaid, calcItemPriceAED, calcCCFee, roundPrice, customerKey, canSplitItem } from '@/lib/calculations';
+import { calcShippingFee, isFreeSf, isPromoSf, getPromoSf, getQty, calcTotalPaid, calcItemPriceAED, calcCCFee, roundPrice, canSplitItem } from '@/lib/calculations';
 import { getEffectiveStatuses } from '@/lib/statusRegistry';
 import { getOptions } from '@/lib/optionsConfig';
 import StatusBadge from '@/components/StatusBadge';
@@ -368,31 +368,6 @@ function DispatchClientCard({ minerName, records, allRecords, onUpdate, userEmai
 
   const first = records[0];
   const deliverySummary = getDeliverySummary(records);
-  // Accounts on this card whose billed items are paid up as a whole: a split-off
-  // row carries no payment (it stays on the original row), so its own check
-  // fails. Same rule as canDispatch, summed per account: COD items, and unpaid
-  // orders still with Admin (Pending, Waiting for…), aren't owed yet. One pass,
-  // only while the card is open; each row is checked against its own account.
-  const paidUpAccounts = useMemo(() => {
-    const ok = new Set<string>();
-    if (!isExpanded) return ok;
-    const keys = new Set(records.map(customerKey));
-    const sums = new Map<string, { owed: number; paid: number; n: number }>();
-    for (const r of allRecords) {
-      const k = customerKey(r);
-      if (!keys.has(k) || fulfilmentStage(r.status) === 'excluded') continue;
-      if ((r.modeOfPayment || '').toUpperCase().includes('COD')) continue;
-      const paid = calcTotalPaid(r);
-      if (isStillWithAdmin(r.status) && paid <= 0) continue;
-      const s = sums.get(k) ?? { owed: 0, paid: 0, n: 0 };
-      s.owed += calcItemPriceAED(r) + calcCCFee(r);
-      s.paid += paid;
-      s.n++;
-      sums.set(k, s);
-    }
-    for (const [k, s] of sums) if (s.n > 0 && s.paid + 0.5 * s.n >= s.owed) ok.add(k);
-    return ok;
-  }, [isExpanded, records, allRecords]);
   // Order dates on this card, e.g. "Ordered Sep 26 – Sep 30", so a card filed
   // under its latest (or shipped) date still shows when each item was ordered.
   const orderedRange = useMemo(() => orderedRangeLabel(records), [records]);
@@ -563,9 +538,7 @@ function DispatchClientCard({ minerName, records, allRecords, onUpdate, userEmai
             const effective = getEffective(record);
             const givenToShopMode = isGivenToShopMode(effective);
             const latestAudit = effective.auditTrail ? effective.auditTrail.split(/(?=\[)/).pop() : null;
-            // A split-off row carries no payment (it stays on the original row),
-            // so an item also passes when the customer's whole account is paid up.
-            const dispatchAllowed = canDispatch(effective) || paidUpAccounts.has(customerKey(record));
+            const dispatchAllowed = canDispatch(effective);
             const isScrewType = (effective.category || '').toLowerCase().includes('screw type');
             const isEditingThis = editingItemId === record.id;
             const isAddingNote = addingNoteId === record.id;

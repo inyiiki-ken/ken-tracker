@@ -214,7 +214,12 @@ export async function writeRowsByCells(
         const col = colOf.get(header);
         if (col === undefined) continue;
         const cell = sheet.getCell(u.rowNumber - 1, col);
-        if (String(cell.formattedValue ?? cell.value ?? "").trim() !== String(want ?? "").trim()) {
+        const have = String(cell.formattedValue ?? cell.value ?? "").trim();
+        const w = String(want ?? "").trim();
+        // Numbers compare as numbers, so a cell showing "10.00" still matches 10.
+        const wn = w === "" ? NaN : Number(w.replace(/,/g, ""));
+        const hn = typeof cell.value === "number" ? cell.value : have === "" ? NaN : Number(have.replace(/,/g, ""));
+        if (have !== w && !(Number.isFinite(wn) && Number.isFinite(hn) && Math.abs(wn - hn) < 1e-9)) {
           throw new Error("Some items changed a moment ago. Refresh and try again.");
         }
       }

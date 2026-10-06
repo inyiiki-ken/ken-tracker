@@ -17,6 +17,7 @@ import { customerKey as rowCustomerKey, parseDateRobust } from "@/lib/calculatio
 import { newestPurchaseRawByCustomer } from "@/lib/purchaseDates";
 import { boxStatusName, ownBox } from "@/lib/pulloutTargets";
 import { fulfilmentStage, type FulfilmentStage } from "@/lib/fulfilment";
+import { splitPayments } from "@/lib/splitPayments";
 import { customersEverWithOtherLivers, customersWithOtherLivers, sharedShippingCarriers } from "@/lib/liverMoney";
 
 
@@ -402,10 +403,8 @@ export async function mergeClients(params: {
 }
 
 /**
- * Matches src/api/splitItem.ts exactly: throws if remaining <= 0, copies
- * EVERY field from existingRecord (except id) onto the new row -- flat fees
- * are NOT stripped, contrary to what SplitItemDialog's UI note implies;
- * the real backend just duplicates everything and overrides grams/status.
+ * Splits grams off an item into a new row: the original keeps the rest, the
+ * payments are shared by weight, and extra charges stay on the original.
  */
 export async function splitItem(params: {
   rowId: number;
@@ -417,50 +416,59 @@ export async function splitItem(params: {
   userEmail?: string;
 }): Promise<{ success: boolean; remainingGrams: number; splitGrams: number }> {
   const sessionEmail = await requireRole(RECORD_WRITE_ROLES);
-  const origGrams = Number(params.existingRecord.grams) || 0;
-  const remaining = origGrams - params.splitGrams;
-  if (remaining <= 0) {
+  const rec = params.existingRecord;
+  const origGrams = Number(rec.grams) || 0;
+  // Rounded like the Split window, so the sheet never gets 3.1999999999999997g.
+  const remaining = Math.round((origGrams - params.splitGrams) * 10000) / 10000;
+  if (!(params.splitGrams > 0) || remaining <= 0) {
     throw new Error("Split grams must be less than total grams");
   }
 
   const sheet = await getActiveWorksheet("database");
+  const headers = await activeHeaderSet(sheet);
+  const aliases = await getTenantColumnAliases();
+  const now = new Date().toISOString();
+  const who = sessionEmail || params.userEmail || "unknown";
+
+  // Payments are shared by weight, so each row pays for its own grams. Keeping
+  // it all on the original made one row look overpaid and the other unpaid, so
+  // separate invoices asked for money already paid and showed false credit.
+  const { parent: parentMoney, child: childMoney } = splitPayments(rec, params.splitGrams / origGrams);
 
   // Resolve by Row Key, not position. Splitting wrote the remaining grams to
   // whatever row happened to sit at `rowId` — if anyone had inserted, deleted
   // or sorted rows in the sheet since this screen loaded, that silently
   // rewrote a DIFFERENT customer's item. Goes through the locked batch writer
-  // so it can't interleave with a concurrent bulk update either.
+  // so it can't interleave with a concurrent bulk update either. The grams and
+  // payments must still be the ones this screen read: a second split before
+  // the screen reloaded would otherwise invent grams and money.
+  const parentPatch = { grams: remaining, ...parentMoney } as Partial<DatabaseRowType>;
+  const expected = Object.fromEntries(Object.keys(parentPatch).map((k) => [k, rec[k] ?? ""])) as Partial<DatabaseRowType>;
   await writeRowsByCells(sheet, [
     {
       rowNumber: params.rowId,
-      rowKey: String(params.existingRecord.rowKey ?? "") || undefined,
-      patch: { [DATABASE_HEADERS.grams]: String(remaining) },
+      rowKey: String(rec.rowKey ?? "") || undefined,
+      patch: databaseRecordToRow(parentPatch, headers, aliases),
+      expect: databaseRecordToRow(expected, headers, aliases),
+      audit: { header: auditHeader(headers, aliases), lines: [`${now} | ${who} | Split ${params.splitGrams}g off to a new row${Object.keys(parentMoney).length ? " (payments shared by weight)" : ""}`] },
     },
   ]);
 
   const newRow: Record<string, unknown> = {};
-  for (const [key, val] of Object.entries(params.existingRecord)) {
+  for (const [key, val] of Object.entries(rec)) {
     if (val !== undefined && val !== null && key !== "id") newRow[key] = val;
   }
   newRow.grams = params.splitGrams;
   newRow.status = params.newStatus;
-  // Money stays on the original row only (the Split window says so). Copying
-  // it counted the same downpayment / payment / charge twice in the balance.
-  // A downpayment amount becomes "acknowledged" (covered by the original's),
-  // so the new row isn't locked as having no downpayment; the EID marker stays.
-  // "0", "-" or other junk isn't a downpayment: it must not unlock the new row.
-  const dp = String(newRow.downpayment ?? "").trim();
-  if (dp !== "acknowledged" && dp.toUpperCase() !== "EID") {
-    const amt = parseFloat(dp.toUpperCase().startsWith("CHARGE:") ? dp.split(":")[2] || "0" : dp);
-    if (amt > 0) newRow.downpayment = "acknowledged";
-    else delete newRow.downpayment;
+  for (const [key, val] of Object.entries(childMoney)) {
+    if (val === undefined) delete newRow[key];
+    else newRow[key] = val;
   }
-  for (const key of ["la1MonthPayment", "la2MonthPayment", "la3MonthPayment", "la4MonthPayment", "amountReceived", "additionalCharges", "cancelReason"]) {
-    delete newRow[key];
-  }
+  // Extra charges and a cancel reason belong to the original order only.
+  delete newRow.additionalCharges;
+  delete newRow.cancelReason;
   // Ship dates follow the new row's own status, not the original's. The stage
   // comes from the screen: here only default status settings are known.
-  const now = new Date().toISOString();
   const stage = params.newStage ?? fulfilmentStage(params.newStatus);
   if (stage !== "delivered") delete newRow.deliveredDate;
   if (stage !== "delivered" && stage !== "dispatched") delete newRow.dispatchDate;
@@ -471,9 +479,17 @@ export async function splitItem(params: {
   // items to whichever appeared last, so every later edit to either one hit the
   // wrong record. The split-off item is a new record and needs its own key.
   newRow.rowKey = newRowKey();
-  newRow.auditTrail = `${now} | ${sessionEmail || params.userEmail || "unknown"} | Split from row ${params.rowId}`;
+  // Status deadlines and the cancel day count from the latest history line
+  // that mentions "status". Same status: keep the original's line, so the clock
+  // doesn't restart. New status: it starts now.
+  const sameStatus = params.newStatus.trim().toLowerCase() === String(rec.status ?? "").trim().toLowerCase();
+  const parentStatusLine = sameStatus
+    ? String(rec.auditTrail ?? "").split("\n").filter((l) => /^\d{4}-\d{2}-\d{2}T/.test(l) && /\bstatus\b/i.test(l)).pop()
+    : undefined;
+  const splitLine = `${now} | ${who} | Split from row ${params.rowId}${sameStatus ? "" : `, status: ${params.newStatus}`}`;
+  newRow.auditTrail = parentStatusLine ? `${parentStatusLine}\n${splitLine}` : splitLine;
 
-  await sheet.addRow(databaseRecordToRow(newRow as Partial<DatabaseRowType>, await activeHeaderSet(sheet), await getTenantColumnAliases()));
+  await sheet.addRow(databaseRecordToRow(newRow as Partial<DatabaseRowType>, headers, aliases));
 
   return { success: true, remainingGrams: remaining, splitGrams: params.splitGrams };
 }
