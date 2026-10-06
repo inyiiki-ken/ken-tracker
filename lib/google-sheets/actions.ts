@@ -17,7 +17,7 @@ import { customerKey as rowCustomerKey, parseDateRobust } from "@/lib/calculatio
 import { newestPurchaseRawByCustomer } from "@/lib/purchaseDates";
 import { boxStatusName, ownBox } from "@/lib/pulloutTargets";
 import { fulfilmentStage, type FulfilmentStage } from "@/lib/fulfilment";
-import { splitPayments } from "@/lib/splitPayments";
+import { keepPaymentsOnOriginal, MONEY_KEYS, type MoneyKey, type SplitPayments } from "@/lib/splitPayments";
 import { customersEverWithOtherLivers, customersWithOtherLivers, sharedShippingCarriers } from "@/lib/liverMoney";
 
 
@@ -403,8 +403,9 @@ export async function mergeClients(params: {
 }
 
 /**
- * Splits grams off an item into a new row: the original keeps the rest, the
- * payments are shared by weight, and extra charges stay on the original.
+ * Splits grams off an item into a new row. The original keeps the rest, the
+ * payments move as the screen worked them out (lib/splitPayments; without
+ * that they all stay on the original), and extra charges stay on the original.
  */
 export async function splitItem(params: {
   rowId: number;
@@ -412,6 +413,8 @@ export async function splitItem(params: {
   newStatus: string;
   /** The new status's stage, worked out on the screen with the customer's own settings. */
   newStage?: FulfilmentStage;
+  /** Payment fields for both rows, from planSplitPayments on the screen. */
+  payments?: SplitPayments;
   existingRecord: Record<string, unknown>;
   userEmail?: string;
 }): Promise<{ success: boolean; remainingGrams: number; splitGrams: number }> {
@@ -429,30 +432,20 @@ export async function splitItem(params: {
   const aliases = await getTenantColumnAliases();
   const now = new Date().toISOString();
   const who = sessionEmail || params.userEmail || "unknown";
+  const stage = params.newStage ?? fulfilmentStage(params.newStatus);
 
-  // Payments are shared by weight, so each row pays for its own grams. Keeping
-  // it all on the original made one row look overpaid and the other unpaid, so
-  // separate invoices asked for money already paid and showed false credit.
-  const { parent: parentMoney, child: childMoney } = splitPayments(rec, params.splitGrams / origGrams);
-
-  // Resolve by Row Key, not position. Splitting wrote the remaining grams to
-  // whatever row happened to sit at `rowId` — if anyone had inserted, deleted
-  // or sorted rows in the sheet since this screen loaded, that silently
-  // rewrote a DIFFERENT customer's item. Goes through the locked batch writer
-  // so it can't interleave with a concurrent bulk update either. The grams and
-  // payments must still be the ones this screen read: a second split before
-  // the screen reloaded would otherwise invent grams and money.
-  const parentPatch = { grams: remaining, ...parentMoney } as Partial<DatabaseRowType>;
-  const expected = Object.fromEntries(Object.keys(parentPatch).map((k) => [k, rec[k] ?? ""])) as Partial<DatabaseRowType>;
-  await writeRowsByCells(sheet, [
-    {
-      rowNumber: params.rowId,
-      rowKey: String(rec.rowKey ?? "") || undefined,
-      patch: databaseRecordToRow(parentPatch, headers, aliases),
-      expect: databaseRecordToRow(expected, headers, aliases),
-      audit: { header: auditHeader(headers, aliases), lines: [`${now} | ${who} | Split ${params.splitGrams}g off to a new row${Object.keys(parentMoney).length ? " (payments shared by weight)" : ""}`] },
-    },
-  ]);
+  // Only payment fields, and only as text.
+  const fallback = keepPaymentsOnOriginal(rec, stage !== "excluded");
+  const parentMoney: Partial<Record<MoneyKey, string>> = {};
+  const childMoney: Record<MoneyKey, string | null> = { ...fallback.child };
+  if (params.payments) {
+    for (const k of MONEY_KEYS) {
+      const p = params.payments.parent?.[k];
+      if (typeof p === "string") parentMoney[k] = p;
+      const c = params.payments.child?.[k];
+      childMoney[k] = typeof c === "string" ? c : null;
+    }
+  }
 
   const newRow: Record<string, unknown> = {};
   for (const [key, val] of Object.entries(rec)) {
@@ -460,16 +453,15 @@ export async function splitItem(params: {
   }
   newRow.grams = params.splitGrams;
   newRow.status = params.newStatus;
-  for (const [key, val] of Object.entries(childMoney)) {
-    if (val === undefined) delete newRow[key];
-    else newRow[key] = val;
+  for (const k of MONEY_KEYS) {
+    if (childMoney[k] === null) delete newRow[k];
+    else newRow[k] = childMoney[k];
   }
   // Extra charges and a cancel reason belong to the original order only.
   delete newRow.additionalCharges;
   delete newRow.cancelReason;
   // Ship dates follow the new row's own status, not the original's. The stage
   // comes from the screen: here only default status settings are known.
-  const stage = params.newStage ?? fulfilmentStage(params.newStatus);
   if (stage !== "delivered") delete newRow.deliveredDate;
   if (stage !== "delivered" && stage !== "dispatched") delete newRow.dispatchDate;
   if (stage === "dispatched" && !String(newRow.dispatchDate ?? "").trim()) newRow.dispatchDate = now;
@@ -489,7 +481,35 @@ export async function splitItem(params: {
   const splitLine = `${now} | ${who} | Split from row ${params.rowId}${sameStatus ? "" : `, status: ${params.newStatus}`}`;
   newRow.auditTrail = parentStatusLine ? `${parentStatusLine}\n${splitLine}` : splitLine;
 
-  await sheet.addRow(databaseRecordToRow(newRow as Partial<DatabaseRowType>, headers, aliases));
+  // The original's history keeps the old values, so a split can be undone by hand.
+  const changes = [`grams ${rec.grams ?? ""} → ${remaining}`, ...Object.entries(parentMoney).map(([k, v]) => `${k} ${rec[k] ?? ""} → ${v}`)];
+  const parentPatch = { grams: remaining, ...parentMoney } as Partial<DatabaseRowType>;
+  const expected = Object.fromEntries(Object.keys(parentPatch).map((k) => [k, rec[k] ?? ""])) as Partial<DatabaseRowType>;
+
+  // The new row goes in first, then the original is cut down. Resolved by Row
+  // Key, not position, through the locked batch writer, and only while the
+  // grams and payments are still the ones this screen read (a second split
+  // from a stale screen would otherwise invent grams and money). If that write
+  // fails, the new row is taken out again, so nothing is counted twice or lost.
+  const added = await sheet.addRow(databaseRecordToRow(newRow as Partial<DatabaseRowType>, headers, aliases));
+  try {
+    await writeRowsByCells(sheet, [
+      {
+        rowNumber: params.rowId,
+        rowKey: String(rec.rowKey ?? "") || undefined,
+        patch: databaseRecordToRow(parentPatch, headers, aliases),
+        expect: databaseRecordToRow(expected, headers, aliases),
+        audit: { header: auditHeader(headers, aliases), lines: [`${now} | ${who} | Split ${params.splitGrams}g off to a new row (${changes.join(", ")})`] },
+      },
+    ]);
+  } catch (err) {
+    try {
+      await added.delete();
+    } catch {
+      throw new Error(`Split failed after the new row was added. Delete the new ${params.splitGrams}g row by hand. (${err instanceof Error ? err.message : String(err)})`);
+    }
+    throw err;
+  }
 
   return { success: true, remainingGrams: remaining, splitGrams: params.splitGrams };
 }

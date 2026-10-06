@@ -75,11 +75,17 @@ function getDeliverySummary(records: DatabaseRowType[]): string {
 }
 
 /** COD collects on delivery; everything else must be fully paid (downpayment,
- * layaway and amount received all count — compared with the item's full price). */
+ * layaway and amount received all count — compared with the item's full price).
+ * Both parts of a split item round their prices on their own, so they can be
+ * up to a dirham (two with a card fee) short of a payment that covered the
+ * whole item; they get that much leeway. */
 function canDispatch(record: DatabaseRowType): boolean {
   const isCOD = (record.modeOfPayment || '').toUpperCase().includes('COD');
   if (isCOD) return true;
-  return calcTotalPaid(record) + 0.5 >= calcItemPriceAED(record) + calcCCFee(record);
+  const ccFee = calcCCFee(record);
+  const split = /\| Split (from row|[\d.]+g off)/.test(String(record.auditTrail ?? ''));
+  const leeway = split ? (ccFee > 0 ? 2.5 : 1.5) : 0.5;
+  return calcTotalPaid(record) + leeway >= calcItemPriceAED(record) + ccFee;
 }
 
 // ─── Item Edit Row ────────────────────────────────────────────────────────────

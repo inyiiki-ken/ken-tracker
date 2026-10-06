@@ -216,10 +216,13 @@ export async function writeRowsByCells(
         const cell = sheet.getCell(u.rowNumber - 1, col);
         const have = String(cell.formattedValue ?? cell.value ?? "").trim();
         const w = String(want ?? "").trim();
-        // Numbers compare as numbers, so a cell showing "10.00" still matches 10.
+        // Numbers compare as numbers, so a cell showing "10.00" still matches
+        // 10: against the cell's value, or its text read the way the app
+        // reads it ("3.00" shown for 2.996, "5.5g").
         const wn = w === "" ? NaN : Number(w.replace(/,/g, ""));
-        const hn = typeof cell.value === "number" ? cell.value : have === "" ? NaN : Number(have.replace(/,/g, ""));
-        if (have !== w && !(Number.isFinite(wn) && Number.isFinite(hn) && Math.abs(wn - hn) < 1e-9)) {
+        const near = (x: number) => Number.isFinite(x) && Math.abs(wn - x) < 1e-9;
+        const sameNumber = Number.isFinite(wn) && (near(typeof cell.value === "number" ? cell.value : NaN) || near(parseFloat(have.replace(/,/g, ""))));
+        if (have !== w && !sameNumber) {
           throw new Error("Some items changed a moment ago. Refresh and try again.");
         }
       }

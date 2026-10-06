@@ -1,7 +1,7 @@
 "use client";
 
 import { getEffectiveStatuses, type StatusContext } from '@/lib/statusRegistry';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -13,6 +13,8 @@ import { DatabaseRowType } from '@/types';
 import { splitItem } from '@/lib/api';
 import { isPulloutStatus } from '@/lib/appConfig';
 import { fulfilmentStage } from '@/lib/fulfilment';
+import { planSplitPayments, childPaidAED } from '@/lib/splitPayments';
+import { calcTotalPaid } from '@/lib/calculations';
 
 interface Props {
   record: DatabaseRowType;
@@ -42,6 +44,13 @@ export default function SplitItemDialog({ record, onClose, onComplete, statusCon
   const splitVal = parseFloat(splitGrams) || 0;
   const remainingGrams = Math.round((originalGrams - splitVal) * 10000) / 10000;
   const isValid = splitVal > 0 && splitVal < originalGrams;
+  // How the payments move, worked out here where the customer's rates are loaded.
+  const payments = useMemo(
+    () => (isValid ? planSplitPayments(record, splitVal, fulfilmentStage(newStatus)) : null),
+    [isValid, record, splitVal, newStatus],
+  );
+  const paidTotal = calcTotalPaid(record);
+  const movedAED = payments ? childPaidAED(record, splitVal, payments) : 0;
 
   const handleConfirm = async () => {
     if (!isValid) return;
@@ -69,6 +78,7 @@ export default function SplitItemDialog({ record, onClose, onComplete, statusCon
         newStatus,
         // Worked out here, where this customer's own status settings are loaded.
         newStage: fulfilmentStage(newStatus),
+        payments: payments ?? undefined,
         existingRecord,
       });
 
@@ -162,7 +172,11 @@ export default function SplitItemDialog({ record, onClose, onComplete, statusCon
 
         {/* Note about fees */}
         <p className="text-[10px] text-muted-foreground bg-muted/40 rounded px-2 py-1.5 border border-border/50">
-          Payments are shared by weight between the two rows. Extra charges stay on the original row.
+          {paidTotal > 0 && isValid
+            ? movedAED > 0
+              ? `AED ${movedAED.toFixed(2)} of the AED ${paidTotal.toFixed(2)} paid moves to the new row, so each row pays for its own grams. Shipping and extra charges stay on the original row.`
+              : 'All payments stay on the original row. Shipping and extra charges stay there too.'
+            : 'Payments are shared between the two rows by price. Shipping and extra charges stay on the original row.'}
         </p>
 
         <div className="flex gap-2 pt-1">
