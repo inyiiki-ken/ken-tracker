@@ -90,6 +90,18 @@ export default function InvoiceModal({ records, onClose, initialBox, priorRecord
     return tabRecords.filter(r => shipmentDay(r) === shipDay);
   }, [byShipDate, tabRecords, shipDay]);
 
+  // When the caller passes the customer's earlier invoices, this modal's other
+  // tabs (and earlier shipment days) are earlier invoices too: otherwise every
+  // tab charged shipping again and used the same store credit again.
+  const visiblePrior = useMemo(() => {
+    if (!priorRecords) return undefined;
+    const idx = INVOICE_TABS.findIndex(t => t.key === tab);
+    const earlierTabs = INVOICE_TABS.slice(0, idx).flatMap(t => byTab.get(t.key)!);
+    const earlierDays = byShipDate && shipDay && shipDay !== 'all'
+      ? tabRecords.filter(r => shipmentDay(r) < shipDay) : [];
+    return [...priorRecords, ...earlierTabs, ...earlierDays];
+  }, [priorRecords, tab, byTab, byShipDate, shipDay, tabRecords]);
+
   const baseRecord = visibleRecords[0] || records[0];
   // Default = the item's own currency; a blank currency means AED (local),
   // matching how the rest of the app prices it. Change it in the dropdown if needed.
@@ -324,7 +336,7 @@ export default function InvoiceModal({ records, onClose, initialBox, priorRecord
         {visibleRecords.length > 0 && (
           <div className="overflow-x-auto">
             <div ref={printRef} className="min-w-[640px] p-4 bg-white">
-              <InvoicePrintContent records={visibleRecords} currency={currency} ccIncludeShipping={ccIncludeShipping} priorRecords={priorRecords} />
+              <InvoicePrintContent records={visibleRecords} currency={currency} ccIncludeShipping={ccIncludeShipping} priorRecords={visiblePrior} />
             </div>
           </div>
         )}

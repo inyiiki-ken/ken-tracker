@@ -1,7 +1,7 @@
 "use client";
 
 import { DatabaseRowType } from '@/types';
-import { roundPrice, calcShippingFee, isPcItem, getQty, clientRateAED, isFreeSf, isPromoSf, calcTotalPaid, getEffectiveCurrency, getPaymentCurrency, calcGroupBalance } from '@/lib/calculations';
+import { roundPrice, calcShippingFee, isPcItem, getQty, clientRateAED, isFreeSf, isPromoSf, calcTotalPaid, getEffectiveCurrency, getPaymentCurrency, calcGroupBalance, groupShippingFee } from '@/lib/calculations';
 import { getUsdToAed, getCcSurchargeRate } from '@/lib/pricingConfig';
 import { getRatesForDate } from '@/lib/ratesStore';
 import { numberToWords } from '@/lib/numberToWords';
@@ -172,13 +172,12 @@ export default function InvoicePrintContent({ records, currency, ccIncludeShippi
   // Promo SF takes priority: find the record that has it set (may not be `first`)
   const promoRecord = records.find(r => isPromoSf(r));
   const anyFreeSf = !promoRecord && records.some(r => isFreeSf(r));
-  // Shipping is charged once per customer account (calcGroupBalance), so a later
-  // invoice doesn't charge it again when an earlier one already did.
-  const priorPromo = priorRecords.find(r => isPromoSf(r));
-  const priorShippingAED = priorRecords.length && (priorPromo || !priorRecords.some(r => isFreeSf(r)))
-    ? calcShippingFee(priorPromo || priorRecords[0]) : 0;
-  const shippingAlreadyCharged = priorShippingAED > 0;
-  const shippingAED = anyFreeSf || shippingAlreadyCharged ? 0 : calcShippingFee(promoRecord || first);
+  // Shipping is charged once per customer account (calcGroupBalance): this
+  // invoice charges what it adds to the account's shipping on top of the
+  // earlier invoices, worked out the same way as the account balance.
+  const priorShippingAED = groupShippingFee(priorRecords);
+  const shippingAED = Math.max(0, groupShippingFee([...priorRecords, ...records]) - priorShippingAED);
+  const shippingAlreadyCharged = !anyFreeSf && shippingAED === 0 && priorShippingAED > 0;
   // Store credit left over from the earlier invoices, used against this one.
   const priorCreditAED = priorRecords.length ? Math.max(0, -calcGroupBalance(priorRecords)) : 0;
   // ── Billing Modifiers: parse charges, discounts, and shipping overrides ──
@@ -254,7 +253,7 @@ export default function InvoicePrintContent({ records, currency, ccIncludeShippi
   if (allPhpPayments && currency !== 'PHP') {
     const phpItemAmounts = records.map(r => calcPhpItemAmount(r));
     const phpSubtotal = phpItemAmounts.reduce((s, a) => s + a, 0);
-    const phpShipping = anyFreeSf || shippingAlreadyCharged ? 0 : rnd(calcShippingFee(promoRecord || first) * phpRate);
+    const phpShipping = rnd(shippingAED * phpRate);
     const phpAdditional = rnd((additionalAED - discountAED) * phpRate); // net charges in PHP
     const phpCcItemsTotal = phpItemAmounts.reduce((s, amt, idx) => {
       const r = records[idx];

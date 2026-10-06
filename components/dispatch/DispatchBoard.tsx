@@ -272,6 +272,7 @@ export default function DispatchBoard({ records, searchQuery, onSearchChange, on
                       allRecords={records}
                       onUpdate={onUpdate}
                       userEmail={userEmail}
+                      onRefresh={onRefresh}
                       clientMilestones={clientMilestones}
                       selectedIds={selected}
                       onSelect={toggleSelect}

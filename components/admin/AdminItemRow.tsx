@@ -4,7 +4,7 @@ import { isPulloutStatus } from '@/lib/appConfig';
 import { fulfilmentStage } from '@/lib/fulfilment';
 import { useState, useEffect, useRef, memo, useCallback } from 'react';
 import { useDebouncedCallback } from 'use-debounce';
-import { AlertCircle, Loader2, Pencil, Copy, Check } from 'lucide-react';
+import { AlertCircle, Loader2, Pencil, Copy, Check, Scissors } from 'lucide-react';
 import EditItemDialog from '@/components/admin/EditItemDialog';
 import SplitItemDialog from '@/components/SplitItemDialog';
 import { Button } from '@/components/ui/button';
@@ -17,7 +17,7 @@ import { Label } from '@/components/ui/label';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { toast } from 'sonner';
 import { DatabaseRowType } from '@/types';
-import { isOverdue, isFreeSf, isPromoSf, getPromoSf, getQty, calcItemPriceAED, calcRemainingBalance, getEffectiveCurrency, calcItemPrice } from '@/lib/calculations';
+import { isOverdue, isFreeSf, isPromoSf, getPromoSf, getQty, calcItemPriceAED, calcRemainingBalance, getEffectiveCurrency, calcItemPrice, canSplitItem } from '@/lib/calculations';
 import { getLocationFromRegion, formatDate } from '@/lib/formatters';
 import { getEffectiveStatuses } from '@/lib/statusRegistry';
 import { isFieldHidden, getRequirePaymentForPullout } from '@/lib/appConfig';
@@ -40,6 +40,8 @@ interface Props {
   onDpGroupUpdate?: (dp: string) => Promise<void>;
   groupHasDP?: boolean; // true when group-level DP is satisfied — unlocks status changes
   userEmail?: string;
+  /** Called after the item was split, to load the new row from the sheet. */
+  onSplitDone?: () => void;
 }
 
 function isInStore(record: DatabaseRowType): boolean {
@@ -283,7 +285,7 @@ function PromoSfToggle({ record, onGroupUpdate }: {
   );
 }
 
-function AdminItemRow({ record, onUpdate, onGroupUpdate, onDateGroupUpdate, onFillMissingMop, groupHasDP, userEmail }: Props) {
+function AdminItemRow({ record, onUpdate, onGroupUpdate, onDateGroupUpdate, onFillMissingMop, groupHasDP, userEmail, onSplitDone }: Props) {
   const [showCancel, setShowCancel] = useState(false);
   const [cancelReason, setCancelReason] = useState('');
   // The cancel status picked ("Cancelled", "Canceled"…), written as chosen.
@@ -321,6 +323,9 @@ function AdminItemRow({ record, onUpdate, onGroupUpdate, onDateGroupUpdate, onFi
   const generatingRef = useRef(false);
   const overdue = isOverdue(record);
   const inStore = isInStore(record);
+  const canSplit = canSplitItem(record);
+  // A blank status (typed in the sheet) is Waiting for Details.
+  const currentStatus = String(record.status || '').trim() || 'Waiting for Details';
   const { isCompact } = useCompactMode();
 
   // Sync if record.pureWeight changes externally
@@ -480,6 +485,11 @@ function AdminItemRow({ record, onUpdate, onGroupUpdate, onDateGroupUpdate, onFi
             <button type="button" onClick={() => setShowEdit(true)} className="shrink-0 p-1 -m-1 text-muted-foreground hover:text-primary transition-colors" title="Edit item details" aria-label="Edit item details">
               <Pencil className="h-3 w-3" />
             </button>
+            {canSplit && (
+              <button type="button" onClick={() => setShowSplit(true)} className="shrink-0 p-1 -m-1 ml-1 text-muted-foreground hover:text-success transition-colors" title="Split item (move some grams to a new row)" aria-label="Split item">
+                <Scissors className="h-3 w-3" />
+              </button>
+            )}
             <SavedTick show={justSaved} />
 
           </div>
@@ -728,8 +738,13 @@ function AdminItemRow({ record, onUpdate, onGroupUpdate, onDateGroupUpdate, onFi
       {showSplit && (
         <SplitItemDialog
           record={record}
+          statusContext="admin"
+          defaultStatus={currentStatus}
+          // Same rules as the item's own status dropdown.
+          statuses={inStore ? [currentStatus, ...['Delivered', 'Cancelled'].filter(s => s.toLowerCase() !== currentStatus.toLowerCase())] : undefined}
+          isStatusLocked={s => dpLocked && !/cancel/i.test(s) && s.toLowerCase() !== String(record.status || '').trim().toLowerCase()}
           onClose={() => setShowSplit(false)}
-          onComplete={() => onUpdate(record.id, {})}
+          onComplete={() => onSplitDone?.()}
         />
       )}
 

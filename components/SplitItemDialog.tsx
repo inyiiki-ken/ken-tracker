@@ -1,7 +1,7 @@
 "use client";
 
-import { getEffectiveStatuses } from '@/lib/statusRegistry';
-import { useState } from 'react';
+import { getEffectiveStatuses, type StatusContext } from '@/lib/statusRegistry';
+import { useMemo, useState } from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -11,25 +11,56 @@ import { Scissors, ArrowRight, AlertTriangle } from 'lucide-react';
 import { toast } from 'sonner';
 import { DatabaseRowType } from '@/types';
 import { splitItem } from '@/lib/api';
+import { isPulloutStatus } from '@/lib/appConfig';
+import { fulfilmentStage } from '@/lib/fulfilment';
+import { planSplitPayments, childPaidAED } from '@/lib/splitPayments';
+import { calcTotalPaid } from '@/lib/calculations';
 
 interface Props {
   record: DatabaseRowType;
   onClose: () => void;
   onComplete: () => void;
+  /** Whose status list to offer for the split-off part (default Dispatch's). */
+  statusContext?: StatusContext;
+  /** Status picked at first (default Dispatched). */
+  defaultStatus?: string;
+  /** Replaces the status list (e.g. an in-store item: Delivered / Cancelled only). */
+  statuses?: string[];
+  /** Statuses that can't be picked yet (e.g. no downpayment), as on the item's own dropdown. */
+  isStatusLocked?: (status: string) => boolean;
 }
 
-export default function SplitItemDialog({ record, onClose, onComplete }: Props) {
+export default function SplitItemDialog({ record, onClose, onComplete, statusContext = 'dispatch', defaultStatus = 'Dispatched', statuses, isStatusLocked }: Props) {
   const originalGrams = parseFloat(String(record.grams ?? '0')) || 0;
   const [splitGrams, setSplitGrams] = useState('');
-  const [newStatus, setNewStatus] = useState('Dispatched');
+  const statusOptions = statuses ?? getEffectiveStatuses(statusContext, defaultStatus);
+  // Pick the list's own spelling ("waiting for downpayment" typed in the sheet
+  // → "Waiting for Downpayment"), else the dropdown would show blank.
+  const [newStatus, setNewStatus] = useState(
+    () => statusOptions.find(s => s.toLowerCase() === defaultStatus.trim().toLowerCase()) ?? defaultStatus,
+  );
   const [loading, setLoading] = useState(false);
 
   const splitVal = parseFloat(splitGrams) || 0;
   const remainingGrams = Math.round((originalGrams - splitVal) * 10000) / 10000;
   const isValid = splitVal > 0 && splitVal < originalGrams;
+  // How the payments move, worked out here where the customer's rates are loaded.
+  const payments = useMemo(
+    () => (isValid ? planSplitPayments(record, splitVal, fulfilmentStage(newStatus)) : null),
+    [isValid, record, splitVal, newStatus],
+  );
+  const paidTotal = calcTotalPaid(record);
+  const movedAED = payments ? childPaidAED(record, splitVal, payments) : 0;
 
   const handleConfirm = async () => {
     if (!isValid) return;
+    if (isStatusLocked?.(newStatus)) { toast.error('Enter a downpayment amount to enable other status options'); return; }
+    // From Admin, a "going out" status needs the delivery details first, as
+    // when the status is changed on the item itself.
+    if (statusContext === 'admin' && isPulloutStatus(newStatus)) {
+      if (!record.modeOfPayment) { toast.error('Mode of Payment is required'); return; }
+      if (record.locationOfMiner === 'Local' && !record.regions) { toast.error('Region required for Local miners'); return; }
+    }
     setLoading(true);
     try {
       // Build a clean record object for the backend (strip undefined values)
@@ -45,6 +76,9 @@ export default function SplitItemDialog({ record, onClose, onComplete }: Props) 
         rowId: record.id,
         splitGrams: splitVal,
         newStatus,
+        // Worked out here, where this customer's own status settings are loaded.
+        newStage: fulfilmentStage(newStatus),
+        payments: payments ?? undefined,
         existingRecord,
       });
 
@@ -126,16 +160,23 @@ export default function SplitItemDialog({ record, onClose, onComplete }: Props) 
               <SelectValue />
             </SelectTrigger>
             <SelectContent className="bg-popover border-border">
-              {getEffectiveStatuses('dispatch').map(s => (
-                <SelectItem key={s} value={s} className="text-xs">{s}</SelectItem>
-              ))}
+              {statusOptions.map(s => {
+                const locked = !!isStatusLocked?.(s);
+                return (
+                  <SelectItem key={s} value={s} disabled={locked} className={`text-xs ${locked ? 'opacity-60 text-muted-foreground' : ''}`}>{s}</SelectItem>
+                );
+              })}
             </SelectContent>
           </Select>
         </div>
 
         {/* Note about fees */}
         <p className="text-[10px] text-muted-foreground bg-muted/40 rounded px-2 py-1.5 border border-border/50">
-          ⚠️ Flat fees (shipping, additional charges, downpayment) stay on the original row only. The new row is created clean.
+          {paidTotal > 0 && isValid
+            ? movedAED > 0
+              ? `AED ${movedAED.toFixed(2)} of the AED ${paidTotal.toFixed(2)} paid moves to the new row, so each row pays for its own grams. Shipping and extra charges stay on the original row.`
+              : 'All payments stay on the original row. Shipping and extra charges stay there too.'
+            : 'Payments are shared between the two rows by price. Shipping and extra charges stay on the original row.'}
         </p>
 
         <div className="flex gap-2 pt-1">

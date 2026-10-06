@@ -18,7 +18,7 @@ import { parseNotes, buildNoteAppend, type ParsedNote } from '@/lib/notes';
 import { toast } from 'sonner';
 import { DatabaseRowType } from '@/types';
 import { useCompactMode } from '@/lib/compactMode';
-import { calcShippingFee, isFreeSf, isPromoSf, getPromoSf, getQty, calcTotalPaid, calcItemPriceAED, calcCCFee, roundPrice } from '@/lib/calculations';
+import { calcShippingFee, isFreeSf, isPromoSf, getPromoSf, getQty, calcTotalPaid, calcItemPriceAED, calcCCFee, roundPrice, canSplitItem } from '@/lib/calculations';
 import { getEffectiveStatuses } from '@/lib/statusRegistry';
 import { getOptions } from '@/lib/optionsConfig';
 import StatusBadge from '@/components/StatusBadge';
@@ -39,6 +39,8 @@ interface Props {
   /** Search text: matching items are highlighted and the card opens. */
   highlight?: string;
   onSelect?: (ids: number[], on: boolean) => void;
+  /** Reloads the sheet quietly, e.g. after an item is split. */
+  onRefresh?: () => void;
 }
 
 const MOP_OPTIONS = [
@@ -73,11 +75,17 @@ function getDeliverySummary(records: DatabaseRowType[]): string {
 }
 
 /** COD collects on delivery; everything else must be fully paid (downpayment,
- * layaway and amount received all count — compared with the item's full price). */
+ * layaway and amount received all count — compared with the item's full price).
+ * Both parts of a split item round their prices on their own, so they can be
+ * up to a dirham (two with a card fee) short of a payment that covered the
+ * whole item; they get that much leeway. */
 function canDispatch(record: DatabaseRowType): boolean {
   const isCOD = (record.modeOfPayment || '').toUpperCase().includes('COD');
   if (isCOD) return true;
-  return calcTotalPaid(record) + 0.5 >= calcItemPriceAED(record) + calcCCFee(record);
+  const ccFee = calcCCFee(record);
+  const split = /\| Split (from row|[\d.]+g off)/.test(String(record.auditTrail ?? ''));
+  const leeway = split ? (ccFee > 0 ? 2.5 : 1.5) : 0.5;
+  return calcTotalPaid(record) + leeway >= calcItemPriceAED(record) + ccFee;
 }
 
 // ─── Item Edit Row ────────────────────────────────────────────────────────────
@@ -266,7 +274,7 @@ function StickyNotes({ notes }: { notes: ParsedNote[] }) {
 }
 
 // ─── Main Card ────────────────────────────────────────────────────────────────
-function DispatchClientCard({ minerName, records, allRecords, onUpdate, userEmail, clientMilestones, selectedIds, onSelect, highlight }: Props) {
+function DispatchClientCard({ minerName, records, allRecords, onUpdate, userEmail, clientMilestones, selectedIds, onSelect, highlight, onRefresh }: Props) {
   const [isExpanded, setIsExpanded] = useState(false);
   // Items whose details (fees, history, notes) are shown.
   const [openItems, setOpenItems] = useState<Set<number>>(new Set());
@@ -619,7 +627,7 @@ function DispatchClientCard({ minerName, records, allRecords, onUpdate, userEmai
                     {effective.source && <span className="border-l border-border/40 pl-2">📦 {effective.source}</span>}
                     {effective.orderId && <span className="border-l border-border/40 pl-2 font-mono">{effective.orderId}</span>}
                     <span className="ml-auto flex items-center gap-2">
-                      {record.status === 'Outsource' && (record.grams ?? 0) > 0 && !isEditingThis && (
+                      {record.status === 'Outsource' && canSplitItem(record) && !isEditingThis && (
                         <button className="flex items-center gap-1 text-success hover:underline" onClick={() => setSplitRecord(record)}>
                           <Scissors className="h-3.5 w-3.5" /> Split
                         </button>
@@ -698,7 +706,7 @@ function DispatchClientCard({ minerName, records, allRecords, onUpdate, userEmai
         />
       )}
       {splitRecord && (
-        <SplitItemDialog record={splitRecord} onClose={() => setSplitRecord(null)} onComplete={() => onUpdate(splitRecord.id, {})} />
+        <SplitItemDialog record={splitRecord} onClose={() => setSplitRecord(null)} onComplete={() => onRefresh?.()} />
       )}
       {showHistory && first?.customerId && (
         <CustomerHistoryModal customerId={first.customerId} minerName={minerName} allRecords={allRecords} onClose={() => setShowHistory(false)} />

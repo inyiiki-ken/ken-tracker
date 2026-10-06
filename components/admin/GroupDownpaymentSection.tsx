@@ -31,17 +31,30 @@ function extractDpAmount(v: string): string {
   return v;
 }
 
+function dpCurrencyOf(v: string): string {
+  return v.toUpperCase().startsWith('CHARGE:') ? (v.split(':')[1] || '').toUpperCase() : '';
+}
+
+/** The group's downpayment: every amount in the first one's currency, added up
+ * (a split item shares its downpayment with the split-off row), so saving it
+ * back onto the first item never drops part of it. */
 function getPrimaryDP(items: DatabaseRowType[]): { item: DatabaseRowType | null; amount: string } {
+  let first: DatabaseRowType | null = null;
+  let currency = '';
+  let sum = 0;
+  let parts = 0;
   for (const r of items) {
     const v = String(r.downpayment || '').trim();
-    if (v && v !== 'acknowledged') {
-      const num = extractDpAmount(v);
-      if (num && !isNaN(parseFloat(num))) {
-        return { item: r, amount: num };
-      }
-    }
+    if (!v || v === 'acknowledged') continue;
+    const num = extractDpAmount(v);
+    if (!num || isNaN(parseFloat(num))) continue;
+    if (!first) { first = r; currency = dpCurrencyOf(v); }
+    else if (dpCurrencyOf(v) !== currency) continue;
+    sum += parseFloat(num);
+    parts++;
   }
-  return { item: null, amount: '' };
+  if (!first) return { item: null, amount: '' };
+  return { item: first, amount: parts === 1 ? extractDpAmount(String(first.downpayment).trim()) : String(Math.round(sum * 100) / 100) };
 }
 
 function hasSavedDP(items: DatabaseRowType[]): boolean {

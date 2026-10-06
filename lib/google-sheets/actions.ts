@@ -16,6 +16,8 @@ import { isLiverOnly, getUserRole } from "@/config/roles";
 import { customerKey as rowCustomerKey, parseDateRobust } from "@/lib/calculations";
 import { newestPurchaseRawByCustomer } from "@/lib/purchaseDates";
 import { boxStatusName, ownBox } from "@/lib/pulloutTargets";
+import { fulfilmentStage, type FulfilmentStage } from "@/lib/fulfilment";
+import { keepPaymentsOnOriginal, MONEY_KEYS, type MoneyKey, type SplitPayments } from "@/lib/splitPayments";
 import { customersEverWithOtherLivers, customersWithOtherLivers, sharedShippingCarriers } from "@/lib/liverMoney";
 
 
@@ -401,54 +403,123 @@ export async function mergeClients(params: {
 }
 
 /**
- * Matches src/api/splitItem.ts exactly: throws if remaining <= 0, copies
- * EVERY field from existingRecord (except id) onto the new row -- flat fees
- * are NOT stripped, contrary to what SplitItemDialog's UI note implies;
- * the real backend just duplicates everything and overrides grams/status.
+ * Splits grams off an item into a new row. The original keeps the rest, the
+ * payments move as the screen worked them out (lib/splitPayments; without
+ * that they all stay on the original), and extra charges stay on the original.
  */
 export async function splitItem(params: {
   rowId: number;
   splitGrams: number;
   newStatus: string;
+  /** The new status's stage, worked out on the screen with the customer's own settings. */
+  newStage?: FulfilmentStage;
+  /** Payment fields for both rows, from planSplitPayments on the screen. */
+  payments?: SplitPayments;
   existingRecord: Record<string, unknown>;
   userEmail?: string;
 }): Promise<{ success: boolean; remainingGrams: number; splitGrams: number }> {
-  await requireRole(RECORD_WRITE_ROLES);
-  const origGrams = Number(params.existingRecord.grams) || 0;
-  const remaining = origGrams - params.splitGrams;
-  if (remaining <= 0) {
+  const sessionEmail = await requireRole(RECORD_WRITE_ROLES);
+  const rec = params.existingRecord;
+  const origGrams = Number(rec.grams) || 0;
+  // Rounded like the Split window, so the sheet never gets 3.1999999999999997g.
+  const remaining = Math.round((origGrams - params.splitGrams) * 10000) / 10000;
+  if (!(params.splitGrams > 0) || remaining <= 0) {
     throw new Error("Split grams must be less than total grams");
   }
 
   const sheet = await getActiveWorksheet("database");
+  const headers = await activeHeaderSet(sheet);
+  const aliases = await getTenantColumnAliases();
+  const now = new Date().toISOString();
+  const who = sessionEmail || params.userEmail || "unknown";
+  const stage = params.newStage ?? fulfilmentStage(params.newStatus);
 
-  // Resolve by Row Key, not position. Splitting wrote the remaining grams to
-  // whatever row happened to sit at `rowId` — if anyone had inserted, deleted
-  // or sorted rows in the sheet since this screen loaded, that silently
-  // rewrote a DIFFERENT customer's item. Goes through the locked batch writer
-  // so it can't interleave with a concurrent bulk update either.
-  await writeRowsByCells(sheet, [
-    {
-      rowNumber: params.rowId,
-      rowKey: String(params.existingRecord.rowKey ?? "") || undefined,
-      patch: { [DATABASE_HEADERS.grams]: String(remaining) },
-    },
-  ]);
+  // Only payment fields, and only as text.
+  const fallback = keepPaymentsOnOriginal(rec, stage !== "excluded");
+  const parentMoney: Partial<Record<MoneyKey, string>> = {};
+  const childMoney: Record<MoneyKey, string | null> = { ...fallback.child };
+  if (params.payments) {
+    for (const k of MONEY_KEYS) {
+      const p = params.payments.parent?.[k];
+      if (typeof p === "string") parentMoney[k] = p;
+      const c = params.payments.child?.[k];
+      childMoney[k] = typeof c === "string" ? c : null;
+    }
+  }
 
   const newRow: Record<string, unknown> = {};
-  for (const [key, val] of Object.entries(params.existingRecord)) {
+  for (const [key, val] of Object.entries(rec)) {
     if (val !== undefined && val !== null && key !== "id") newRow[key] = val;
   }
   newRow.grams = params.splitGrams;
   newRow.status = params.newStatus;
+  for (const k of MONEY_KEYS) {
+    if (childMoney[k] === null) delete newRow[k];
+    else newRow[k] = childMoney[k];
+  }
+  // Extra charges and a cancel reason belong to the original order only.
+  delete newRow.additionalCharges;
+  delete newRow.cancelReason;
+  // Ship dates follow the new row's own status, not the original's. The stage
+  // comes from the screen: here only default status settings are known.
+  if (stage !== "delivered") delete newRow.deliveredDate;
+  if (stage !== "delivered" && stage !== "dispatched") delete newRow.dispatchDate;
+  if (stage === "dispatched" && !String(newRow.dispatchDate ?? "").trim()) newRow.dispatchDate = now;
+  if (stage === "delivered" && !String(newRow.deliveredDate ?? "").trim()) newRow.deliveredDate = now;
   // The copy loop above clones every field, which included the parent's Row Key
   // — leaving two rows sharing one key. Row-key lookup would then resolve BOTH
   // items to whichever appeared last, so every later edit to either one hit the
   // wrong record. The split-off item is a new record and needs its own key.
   newRow.rowKey = newRowKey();
-  newRow.auditTrail = `${new Date().toISOString()} | ${params.userEmail ?? "unknown"} | Split from row ${params.rowId}`;
+  // Status deadlines and the cancel day count from the latest history line
+  // that mentions "status". Same status: keep the original's line, so the clock
+  // doesn't restart. New status: it starts now.
+  const sameStatus = params.newStatus.trim().toLowerCase() === String(rec.status ?? "").trim().toLowerCase();
+  const parentStatusLine = sameStatus
+    ? String(rec.auditTrail ?? "").split("\n").filter((l) => /^\d{4}-\d{2}-\d{2}T/.test(l) && /\bstatus\b/i.test(l)).pop()
+    : undefined;
+  const splitLine = `${now} | ${who} | Split from row ${params.rowId}${sameStatus ? "" : `, status: ${params.newStatus}`}`;
+  newRow.auditTrail = parentStatusLine ? `${parentStatusLine}\n${splitLine}` : splitLine;
 
-  await sheet.addRow(databaseRecordToRow(newRow as Partial<DatabaseRowType>, await activeHeaderSet(sheet), await getTenantColumnAliases()));
+  // The original's history keeps the old values, so a split can be undone by hand.
+  const changes = [`grams ${rec.grams ?? ""} → ${remaining}`, ...Object.entries(parentMoney).map(([k, v]) => `${k} ${rec[k] ?? ""} → ${v}`)];
+  const parentPatch = { grams: remaining, ...parentMoney } as Partial<DatabaseRowType>;
+  const expected = Object.fromEntries(Object.keys(parentPatch).map((k) => [k, rec[k] ?? ""])) as Partial<DatabaseRowType>;
+
+  // The original is cut down first: resolved by Row Key, not position, through
+  // the locked batch writer, and only while its grams and payments are still
+  // the ones this screen read (a second split from a stale screen would
+  // otherwise invent grams and money). Then the new row is added. If adding
+  // it fails, the original is put back (again by Row Key, and only if nobody
+  // changed it meanwhile), so nothing is lost or counted twice.
+  const original = { rowNumber: params.rowId, rowKey: String(rec.rowKey ?? "") || undefined };
+  const historyCol = auditHeader(headers, aliases);
+  await writeRowsByCells(sheet, [
+    {
+      ...original,
+      patch: databaseRecordToRow(parentPatch, headers, aliases),
+      expect: databaseRecordToRow(expected, headers, aliases),
+      audit: { header: historyCol, lines: [`${now} | ${who} | Split ${params.splitGrams}g off to a new row (${changes.join(", ")})`] },
+    },
+  ]);
+  try {
+    await sheet.addRow(databaseRecordToRow(newRow as Partial<DatabaseRowType>, headers, aliases));
+  } catch (err) {
+    const why = err instanceof Error ? err.message : String(err);
+    try {
+      await writeRowsByCells(sheet, [
+        {
+          ...original,
+          patch: databaseRecordToRow(expected, headers, aliases),
+          expect: databaseRecordToRow(parentPatch, headers, aliases),
+          audit: { header: historyCol, lines: [`${new Date().toISOString()} | ${who} | Split undone: the new row couldn't be added`] },
+        },
+      ]);
+    } catch {
+      throw new Error(`The split-off row couldn't be added and the original couldn't be put back. Its change history shows the old grams and payments. (${why})`);
+    }
+    throw new Error(`Split failed, nothing was changed. (${why})`);
+  }
 
   return { success: true, remainingGrams: remaining, splitGrams: params.splitGrams };
 }

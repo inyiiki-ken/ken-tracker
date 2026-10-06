@@ -102,6 +102,14 @@ export function isPerPiece(record: DatabaseRowType): boolean {
   return cat.includes('per pc') || cat.includes('screw type') || cat.includes('diamond');
 }
 
+/**
+ * Splitting moves some grams to a new row, so only items priced by the gram can
+ * be split: a piece / unit price ignores grams, and both rows would carry it.
+ */
+export function canSplitItem(record: DatabaseRowType): boolean {
+  return !isUnitMode() && !isPcItem(record) && !isPerPiece(record);
+}
+
 /** Grams of these items, leaving out per-piece items (see pieceCount). */
 export function sumGrams(records: DatabaseRowType[]): number {
   return records.reduce((s, r) => (isPerPiece(r) ? s : s + n(r.grams)), 0);
