@@ -4,7 +4,7 @@ import { isPulloutStatus } from '@/lib/appConfig';
 import { fulfilmentStage } from '@/lib/fulfilment';
 import { useState, useEffect, useRef, memo, useCallback } from 'react';
 import { useDebouncedCallback } from 'use-debounce';
-import { AlertCircle, Loader2, Pencil, Copy, Check, Scissors } from 'lucide-react';
+import { AlertCircle, Loader2, Pencil, Copy, Check } from 'lucide-react';
 import EditItemDialog from '@/components/admin/EditItemDialog';
 import SplitItemDialog from '@/components/SplitItemDialog';
 import { Button } from '@/components/ui/button';
@@ -14,12 +14,11 @@ import CancelReasonField from '@/components/CancelReasonField';
 import { Input } from '@/components/ui/input';
 import { Switch } from '@/components/ui/switch';
 import { Label } from '@/components/ui/label';
-import { Checkbox } from '@/components/ui/checkbox';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { toast } from 'sonner';
 import { DatabaseRowType } from '@/types';
 import { isOverdue, isFreeSf, isPromoSf, getPromoSf, getQty, calcItemPriceAED, calcRemainingBalance, getEffectiveCurrency, calcItemPrice } from '@/lib/calculations';
-import { MOP_OPTIONS, REGION_OPTIONS, getLocationFromRegion, formatDate } from '@/lib/formatters';
+import { getLocationFromRegion, formatDate } from '@/lib/formatters';
 import { getEffectiveStatuses } from '@/lib/statusRegistry';
 import { isFieldHidden, getRequirePaymentForPullout } from '@/lib/appConfig';
 import { getOptions } from '@/lib/optionsConfig';
@@ -36,12 +35,12 @@ interface Props {
   onGroupUpdate: (fields: Partial<DatabaseRowType>) => Promise<void>;
   /** Updates all records in the same client+date group — used for invoice # assignment */
   onDateGroupUpdate?: (fields: Partial<DatabaseRowType>) => Promise<void>;
+  /** Sets fields only on this card's items that have no Mode of Payment yet. */
+  onFillMissingMop?: (fields: Partial<DatabaseRowType>) => Promise<void>;
   onDpGroupUpdate?: (dp: string) => Promise<void>;
   groupHasDP?: boolean; // true when group-level DP is satisfied — unlocks status changes
   userEmail?: string;
 }
-
-const TOG_OPTIONS = ['18K', 'VCA', '21K', '24K', 'S-925'];
 
 function isInStore(record: DatabaseRowType): boolean {
   const mos = (record.modeOfSale || '').toLowerCase().trim();
@@ -284,7 +283,7 @@ function PromoSfToggle({ record, onGroupUpdate }: {
   );
 }
 
-function AdminItemRow({ record, onUpdate, onGroupUpdate, onDateGroupUpdate, onDpGroupUpdate, groupHasDP, userEmail }: Props) {
+function AdminItemRow({ record, onUpdate, onGroupUpdate, onDateGroupUpdate, onFillMissingMop, groupHasDP, userEmail }: Props) {
   const [showCancel, setShowCancel] = useState(false);
   const [cancelReason, setCancelReason] = useState('');
   // The cancel status picked ("Cancelled", "Canceled"…), written as chosen.
@@ -316,8 +315,8 @@ function AdminItemRow({ record, onUpdate, onGroupUpdate, onDateGroupUpdate, onDp
   const [clientNumber, setClientNumber] = useState(record.clientNumber || '');
   const [invoiceNum, setInvoiceNum] = useState(record.pureWeight || '');
   const [resetKey, setResetKey] = useState(Date.now());
-  const [hasDownpayment, setHasDownpayment] = useState(!!record.downpayment);
-  const [downpayment, setDownpayment] = useState(record.downpayment || '');
+  const [qty, setQty] = useState(String(getQty(record)));
+  const [confirmRegen, setConfirmRegen] = useState(false);
   const [generating, setGenerating] = useState(false);
   const generatingRef = useRef(false);
   const overdue = isOverdue(record);
@@ -329,12 +328,21 @@ function AdminItemRow({ record, onUpdate, onGroupUpdate, onDateGroupUpdate, onDp
     if (record.pureWeight) setInvoiceNum(record.pureWeight);
   }, [record.pureWeight]);
 
+  // Keep Qty in step when it changes elsewhere (Dispatch, a refresh…).
+  const recordQty = getQty(record);
+  useEffect(() => { setQty(String(recordQty)); }, [recordQty]);
+
+  // Remarks like "TABBY APPROVED" fill THIS item's empty Mode of Payment, once.
+  // (It used to overwrite the MOP of every item in the card, from every row,
+  // on every screen refresh.)
+  const autoFilledRef = useRef(false);
   useEffect(() => {
-    if (!record.modeOfPayment && record.liverAdminRemarks) {
-      const auto = detectAutoFill(record.liverAdminRemarks);
-      if (auto) onGroupUpdate(auto);
-    }
-  }, [record.modeOfPayment, record.liverAdminRemarks, onGroupUpdate]);
+    if (autoFilledRef.current || record.modeOfPayment || !record.liverAdminRemarks) return;
+    const auto = detectAutoFill(record.liverAdminRemarks);
+    if (!auto) return;
+    autoFilledRef.current = true;
+    void onUpdate(record.id, auto);
+  }, [record.id, record.modeOfPayment, record.liverAdminRemarks, onUpdate]);
 
   const debouncedDownpayment = useDebouncedCallback(async (val: string) => {
     await onUpdate(latestRecordRef.current.id, { downpayment: val });
@@ -346,7 +354,9 @@ function AdminItemRow({ record, onUpdate, onGroupUpdate, onDateGroupUpdate, onDp
     await onUpdate(r.id, { liverAdminRemarks: val });
     flashSaved();
     if (autoFill) {
-      await onGroupUpdate(autoFill);
+      // This item follows the remark; the card's other items only when they have no MOP yet.
+      await onUpdate(r.id, autoFill);
+      if (onFillMissingMop) await onFillMissingMop(autoFill);
       toast.success('Auto-filled MOP from remarks');
     }
   }, 700);
@@ -356,10 +366,43 @@ function AdminItemRow({ record, onUpdate, onGroupUpdate, onDateGroupUpdate, onDp
     flashSaved();
   }, 700);
 
+  // Qty is saved once typing stops, and never as 0 / blank (that used to be
+  // written on every key press, so clearing the box to retype saved 0).
+  const debouncedQty = useDebouncedCallback(async (val: string) => {
+    const n = Number(val);
+    if (!val.trim() || !Number.isFinite(n) || n <= 0) return;
+    if (n === getQty(latestRecordRef.current)) return;
+    await onUpdate(latestRecordRef.current.id, { qty: n });
+    flashSaved();
+  }, 700);
+
   const debouncedNumber = useDebouncedCallback(async (val: string) => {
     await onUpdate(latestRecordRef.current.id, { clientNumber: val });
     flashSaved();
   }, 700);
+
+  // Makes the invoice # and puts it on every item of this client's live day.
+  const generateInvoice = async () => {
+    if (generatingRef.current) return;
+    generatingRef.current = true;
+    setGenerating(true);
+    try {
+      const prefix = getDatePrefix(record.dateOfLive);
+      const { invoiceNumber } = await generateInvoiceNumber({ prefix, recordId: record.id, dateOfLive: record.dateOfLive || '', minerName: record.minerName || '', rowKey: record.rowKey || undefined });
+      setInvoiceNum(invoiceNumber);
+      if (onDateGroupUpdate) {
+        await onDateGroupUpdate({ pureWeight: invoiceNumber, invoiceNumber: invoiceNumber });
+      } else {
+        await onUpdate(record.id, { pureWeight: invoiceNumber, invoiceNumber: invoiceNumber });
+      }
+      toast.success(`Invoice # ${invoiceNumber} assigned to all items of this day`);
+    } catch {
+      toast.error('Failed to generate invoice #');
+    } finally {
+      generatingRef.current = false;
+      setGenerating(false);
+    }
+  };
 
   const handleMopChange = async (mop: string) => {
     const fields: Partial<DatabaseRowType> = { modeOfPayment: mop };
@@ -400,7 +443,10 @@ function AdminItemRow({ record, onUpdate, onGroupUpdate, onDateGroupUpdate, onDp
   const isWaitingForDetails = !record.status || record.status === 'Waiting for Details';
   // Item is unlocked if: it has its own DP amount, OR the group-level DP is
   // satisfied, OR the customer provided their EID instead of a downpayment.
-  const hasDPAmount = hasDownpayment && !!downpayment && (downpayment === 'acknowledged' || parseFloat(downpayment) > 0 || (downpayment.toUpperCase().startsWith('CHARGE:') && parseFloat(downpayment.split(':')[2] || '0') > 0));
+  // Read from the record itself: the downpayment is set on the card, so a copy
+  // kept here went stale and could keep the status locked after a DP was entered.
+  const downpayment = String(record.downpayment || '').trim();
+  const hasDPAmount = !!downpayment && (downpayment === 'acknowledged' || parseFloat(downpayment) > 0 || (downpayment.toUpperCase().startsWith('CHARGE:') && parseFloat(downpayment.split(':')[2] || '0') > 0));
   const hasEid = String(record.downpayment || '').trim().toUpperCase() === 'EID';
   // The lock can be turned off per-customer in Settings.
   const dpLocked = getRequirePaymentForPullout() && isWaitingForDP && !hasDPAmount && !groupHasDP && !hasEid;
@@ -419,24 +465,19 @@ function AdminItemRow({ record, onUpdate, onGroupUpdate, onDateGroupUpdate, onDp
       if (!record.modeOfPayment) { toast.error('Mode of Payment is required'); return; }
       if (record.locationOfMiner === 'Local' && !record.regions) { toast.error('Region required for Local miners'); return; }
     }
-    const fields: Partial<DatabaseRowType> = { status: newStatus };
-    if (userEmail) {
-      const timestamp = new Date().toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' });
-      const newEntry = `[${newStatus} by ${userEmail.split('@')[0]} on ${timestamp}]`;
-      fields.auditTrail = record.auditTrail ? `${record.auditTrail} ${newEntry}` : newEntry;
-    }
-    await onUpdate(record.id, fields);
+    // The change history line is written by the app itself (who + when).
+    await onUpdate(record.id, { status: newStatus });
     flashSaved();
     toast.success(`Status set to ${newStatus}`);
   };
 
   return (
-    <div className={`rounded-lg border p-3 mb-2 ${overdue ? 'border-destructive bg-destructive/5' : 'border-border bg-secondary/30'}`}>
-      <div className="flex items-start justify-between mb-2">
+    <div className={`rounded-lg border p-2.5 sm:p-3 mb-2 ${overdue ? 'border-destructive bg-destructive/5' : 'border-border bg-secondary/30'}`}>
+      <div className="flex items-start justify-between gap-2 mb-2">
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-1.5">
-            <p className="text-sm font-medium truncate">{record.itemDescription || '—'}</p>
-            <button onClick={() => setShowEdit(true)} className="shrink-0 text-muted-foreground hover:text-primary transition-colors" title="Edit item details">
+            <p className="text-sm font-medium break-words min-w-0">{record.itemDescription || '—'}</p>
+            <button type="button" onClick={() => setShowEdit(true)} className="shrink-0 p-1 -m-1 text-muted-foreground hover:text-primary transition-colors" title="Edit item details" aria-label="Edit item details">
               <Pencil className="h-3 w-3" />
             </button>
             <SavedTick show={justSaved} />
@@ -451,7 +492,7 @@ function AdminItemRow({ record, onUpdate, onGroupUpdate, onDateGroupUpdate, onDp
             )}
           </div>
         </div>
-        <div className="text-right ml-2 shrink-0">
+        <div className="text-right shrink-0">
           <p className="text-xs text-muted-foreground">{record.category}</p>
           <p className="text-xs text-muted-foreground">
             {(record.category || '').toLowerCase().includes('screw type')
@@ -511,8 +552,8 @@ function AdminItemRow({ record, onUpdate, onGroupUpdate, onDateGroupUpdate, onDp
           </div>
         )}
 
-        <div className="grid grid-cols-3 gap-2">
-          <div>
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+          <div className="sm:order-1">
             <Label className="text-xs text-muted-foreground">T.O.G</Label>
             <Select value={record.tog || ''} onValueChange={handleTogChange}>
               <SelectTrigger className="h-8 text-xs bg-background border-border mt-0.5">
@@ -523,7 +564,20 @@ function AdminItemRow({ record, onUpdate, onGroupUpdate, onDateGroupUpdate, onDp
               </SelectContent>
             </Select>
           </div>
-          <div>
+          <div className="sm:order-3">
+            <Label className="text-xs text-muted-foreground">Qty</Label>
+            <Input
+              type="number"
+              inputMode="numeric"
+              min={1}
+              value={qty}
+              onChange={e => { setQty(e.target.value); debouncedQty(e.target.value); }}
+              onBlur={() => { if (!qty.trim() || Number(qty) <= 0) setQty(String(getQty(latestRecordRef.current))); }}
+              className="h-8 text-xs bg-background border-border mt-0.5"
+              placeholder="1"
+            />
+          </div>
+          <div className="col-span-2 sm:col-span-1 sm:order-2">
             <Label className="text-xs text-primary/80 font-semibold">Invoice #</Label>
             <div className="flex gap-1 mt-0.5">
               <Input
@@ -549,42 +603,12 @@ function AdminItemRow({ record, onUpdate, onGroupUpdate, onDateGroupUpdate, onDp
                 variant="outline"
                 className="h-8 text-xs px-2 border-border shrink-0"
                 disabled={generating}
-                onClick={async () => {
-                  if (generatingRef.current) return;
-                  generatingRef.current = true;
-                  setGenerating(true);
-                  try {
-                    const prefix = getDatePrefix(record.dateOfLive);
-                    const { invoiceNumber } = await generateInvoiceNumber({ prefix, recordId: record.id, dateOfLive: record.dateOfLive || '', minerName: record.minerName || '', rowKey: record.rowKey || undefined });
-                    setInvoiceNum(invoiceNumber);
-                    // Apply to ALL items in the same client+date group (not just this one)
-                    if (onDateGroupUpdate) {
-                      await onDateGroupUpdate({ pureWeight: invoiceNumber, invoiceNumber: invoiceNumber });
-                    } else {
-                      await onUpdate(record.id, { pureWeight: invoiceNumber, invoiceNumber: invoiceNumber });
-                    }
-                    toast.success(`Invoice # ${invoiceNumber} assigned to all items in this group`);
-                  } catch {
-                    toast.error('Failed to generate invoice #');
-                  } finally {
-                    generatingRef.current = false;
-                    setGenerating(false);
-                  }
-                }}
+                onClick={() => { if (invoiceNum) setConfirmRegen(true); else void generateInvoice(); }}
+                title={invoiceNum ? 'Make a new invoice number' : 'Make the invoice number for this day'}
               >
                 {generating ? <Loader2 className="h-3 w-3 animate-spin" /> : 'Gen'}
               </Button>
             </div>
-          </div>
-          <div>
-            <Label className="text-xs text-muted-foreground">Qty</Label>
-            <Input
-              type="number"
-              defaultValue={getQty(record)}
-              onChange={e => onUpdate(record.id, { qty: Number(e.target.value) })}
-              className="h-8 text-xs bg-background border-border mt-0.5"
-              placeholder="1"
-            />
           </div>
         </div>
 
@@ -626,7 +650,7 @@ function AdminItemRow({ record, onUpdate, onGroupUpdate, onDateGroupUpdate, onDp
 
         {/* Downpayment is managed at the group level in AdminClientCard */}
 
-        <div className="flex items-center justify-between">
+        <div className="flex flex-col-reverse gap-2 sm:flex-row sm:items-center sm:justify-between">
           {!inStore ? (
             <div className="flex flex-col gap-1.5">
               <div className="flex items-center gap-3 flex-wrap">
@@ -657,7 +681,7 @@ function AdminItemRow({ record, onUpdate, onGroupUpdate, onDateGroupUpdate, onDp
           ) : <div />}
 
           <Select key={resetKey} onValueChange={handleStatusChange}>
-            <SelectTrigger className="h-7 text-xs w-40 bg-background border-border">
+            <SelectTrigger className="h-8 sm:h-7 text-xs w-full sm:w-40 shrink-0 bg-background border-border">
               <SelectValue placeholder="Change status..." />
             </SelectTrigger>
             <SelectContent className="bg-popover border-border">
@@ -709,17 +733,32 @@ function AdminItemRow({ record, onUpdate, onGroupUpdate, onDateGroupUpdate, onDp
         />
       )}
 
+      <AlertDialog open={confirmRegen} onOpenChange={setConfirmRegen}>
+        <AlertDialogContent className="bg-card border-border">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Replace invoice # {invoiceNum}?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This day already has an invoice number. A new one will replace it on all items of this day. Any invoice already sent to the customer keeps the old number.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Keep {invoiceNum}</AlertDialogCancel>
+            <AlertDialogAction onClick={() => { setConfirmRegen(false); void generateInvoice(); }}>Make a new number</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
       <AlertDialog open={showCancel} onOpenChange={setShowCancel}>
         <AlertDialogContent className="bg-card border-border">
           <AlertDialogHeader>
-            <AlertDialogTitle>Cancel this item?</AlertDialogTitle>
+            <AlertDialogTitle>Set this item to {cancelStatus}?</AlertDialogTitle>
             <AlertDialogDescription>This cannot be undone from the app.</AlertDialogDescription>
           </AlertDialogHeader>
           <CancelReasonField value={cancelReason} onChange={setCancelReason} />
           <AlertDialogFooter>
             <AlertDialogCancel>Keep it</AlertDialogCancel>
-            <AlertDialogAction className="bg-destructive text-destructive-foreground" onClick={async () => { await onUpdate(record.id, { status: cancelStatus, cancelReason: cancelReason.trim() }); toast.success('Item cancelled'); }}>
-              Cancel Item
+            <AlertDialogAction className="bg-destructive text-destructive-foreground" onClick={async () => { await onUpdate(record.id, { status: cancelStatus, cancelReason: cancelReason.trim() }); flashSaved(); toast.success(`Item set to ${cancelStatus}`); }}>
+              Set to {cancelStatus}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

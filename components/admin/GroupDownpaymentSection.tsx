@@ -12,6 +12,7 @@ import { getRatesForDate } from '@/lib/ratesStore';
 interface Props {
   items: DatabaseRowType[];
   onUpdate: (rowId: number, fields: Partial<DatabaseRowType>) => Promise<void>;
+  onBulkUpdate?: (updates: { rowId: number; fields: Partial<DatabaseRowType> }[]) => Promise<void>;
 }
 
 /** Infer the payment currency from Mode of Payment — this determines how the stored amount is interpreted by calcTotalPaid */
@@ -47,7 +48,17 @@ function hasSavedDP(items: DatabaseRowType[]): boolean {
   return getPrimaryDP(items).amount !== '';
 }
 
-export default function GroupDownpaymentSection({ items, onUpdate }: Props) {
+export default function GroupDownpaymentSection({ items, onUpdate, onBulkUpdate }: Props) {
+  // One request for the whole group when possible (was one save per item with a pause).
+  const save = async (updates: { rowId: number; fields: Partial<DatabaseRowType> }[]) => {
+    if (updates.length === 0) return;
+    if (onBulkUpdate) { await onBulkUpdate(updates); return; }
+    for (const u of updates) {
+      await onUpdate(u.rowId, u.fields);
+      await new Promise((res) => setTimeout(res, 80));
+    }
+  };
+
   const { amount: initialAmount } = getPrimaryDP(items);
   const inferredCurrency = inferDpCurrency(items[0]?.modeOfPayment);
 
@@ -89,11 +100,8 @@ export default function GroupDownpaymentSection({ items, onUpdate }: Props) {
     setEidChecked(on);
     if (on) { setChecked(false); setAmount(''); }
     setSaving(true);
-    for (const r of items) {
-      await onUpdate(r.id, { downpayment: on ? 'EID' : '' });
-      await new Promise((res) => setTimeout(res, 80));
-    }
-    setSaving(false);
+    try { await save(items.map(r => ({ rowId: r.id, fields: { downpayment: on ? 'EID' : '' } }))); }
+    finally { setSaving(false); }
   };
 
   /** C3 FIX: Store original currency using billing modifier format to avoid losing currency info */
@@ -121,12 +129,8 @@ export default function GroupDownpaymentSection({ items, onUpdate }: Props) {
     if (!val || isNaN(parseFloat(val))) return;
     const valueToSave = resolveAmountToSave(val, currency);
     setSaving(true);
-    for (let i = 0; i < items.length; i++) {
-      const dpVal = i === 0 ? valueToSave : 'acknowledged';
-      await onUpdate(items[i].id, { downpayment: dpVal });
-      await new Promise(res => setTimeout(res, 80));
-    }
-    setSaving(false);
+    try { await save(items.map((r, i) => ({ rowId: r.id, fields: { downpayment: i === 0 ? valueToSave : 'acknowledged' } }))); }
+    finally { setSaving(false); }
   }, 600);
 
   const handleCheck = async (on: boolean) => {
@@ -137,22 +141,14 @@ export default function GroupDownpaymentSection({ items, onUpdate }: Props) {
       if (eidChecked) {
         setEidChecked(false);
         setSaving(true);
-        for (const r of items) {
-          if (String(r.downpayment || '').trim().toUpperCase() === 'EID') {
-            await onUpdate(r.id, { downpayment: '' });
-            await new Promise(res => setTimeout(res, 80));
-          }
-        }
-        setSaving(false);
+        try { await save(items.filter(r => String(r.downpayment || '').trim().toUpperCase() === 'EID').map(r => ({ rowId: r.id, fields: { downpayment: '' } }))); }
+        finally { setSaving(false); }
       }
     } else {
       setAmount('');
       setSaving(true);
-      for (const r of items) {
-        await onUpdate(r.id, { downpayment: '' });
-        await new Promise(res => setTimeout(res, 80));
-      }
-      setSaving(false);
+      try { await save(items.map(r => ({ rowId: r.id, fields: { downpayment: '' } }))); }
+      finally { setSaving(false); }
     }
   };
 
@@ -231,7 +227,7 @@ export default function GroupDownpaymentSection({ items, onUpdate }: Props) {
               onChange={e => handleAmount(e.target.value)}
               className="h-8 text-xs bg-background border-border flex-1"
               placeholder={`Enter ${dpCurrency} downpayment...`}
-              disabled={saving}
+              inputMode="decimal"
               autoFocus
             />
           </div>

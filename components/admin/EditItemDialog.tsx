@@ -8,6 +8,7 @@ import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { DatabaseRowType } from '@/types';
 import { getFieldLabel } from '@/lib/labelConfig';
+import { toast } from 'sonner';
 
 const LOCATION_OPTIONS = ['Local', 'Pinas', 'Dubai'];
 const CURRENCY_OPTIONS = ['AED', 'PHP', 'USD'];
@@ -31,21 +32,26 @@ export default function EditItemDialog({ record, onSave, onClose }: Props) {
 
 
   const handleSave = async () => {
+    // A blank name would orphan the item from its customer card.
+    if (!minerName.trim()) { toast.error('Enter the client name'); return; }
     setSaving(true);
-    const fields: Partial<DatabaseRowType> = { minerName };
+    const fields: Partial<DatabaseRowType> = { minerName: minerName.trim() };
     if (itemDescription.trim()) fields.itemDescription = itemDescription.trim().toUpperCase();
     if (clientRate !== '') fields.clientRate = parseFloat(clientRate) || 0;
     fields.currency = currency;
     if (grams !== '') fields.grams = parseFloat(grams) || 0;
     if (location) fields.locationOfMiner = location;
-    await onSave(fields);
-    setSaving(false);
-    onClose();
+    try {
+      await onSave(fields);
+      onClose();
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
     <Dialog open onOpenChange={onClose}>
-      <DialogContent className="bg-card border-border max-w-sm" aria-describedby={undefined}>
+      <DialogContent className="bg-card border-border max-w-sm w-[calc(100vw-2rem)]" aria-describedby={undefined}>
         <DialogHeader>
           <DialogTitle className="text-sm font-semibold">Edit Item Details</DialogTitle>
         </DialogHeader>

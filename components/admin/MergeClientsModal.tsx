@@ -80,11 +80,12 @@ function ProfilePicker({
         {filtered.map(p => (
           <button
             key={p.customerId}
+            type="button"
             onClick={() => onSelect(p)}
             className={`w-full text-left px-3 py-2 text-xs flex justify-between items-center transition-colors border-b border-border last:border-0 hover:bg-secondary/60
               ${selected?.customerId === p.customerId ? 'bg-primary/10 text-primary font-semibold' : 'text-foreground'}`}
           >
-            <span className="truncate max-w-[160px]">{p.minerName}</span>
+            <span className="truncate min-w-0">{p.minerName}</span>
             <span className={`text-[10px] font-mono shrink-0 ml-2 ${selected?.customerId === p.customerId ? 'text-primary' : 'text-muted-foreground'}`}>
               {p.customerId} · {p.recordCount}
             </span>
@@ -158,7 +159,7 @@ export default function MergeClientsModal({ onClose, onRefresh, records }: Props
             </div>
 
             {/* Two pickers */}
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <ProfilePicker
                 label="① Duplicate Profile (To Delete)"
                 profiles={profiles}
