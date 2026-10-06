@@ -486,29 +486,39 @@ export async function splitItem(params: {
   const parentPatch = { grams: remaining, ...parentMoney } as Partial<DatabaseRowType>;
   const expected = Object.fromEntries(Object.keys(parentPatch).map((k) => [k, rec[k] ?? ""])) as Partial<DatabaseRowType>;
 
-  // The new row goes in first, then the original is cut down. Resolved by Row
-  // Key, not position, through the locked batch writer, and only while the
-  // grams and payments are still the ones this screen read (a second split
-  // from a stale screen would otherwise invent grams and money). If that write
-  // fails, the new row is taken out again, so nothing is counted twice or lost.
-  const added = await sheet.addRow(databaseRecordToRow(newRow as Partial<DatabaseRowType>, headers, aliases));
+  // The original is cut down first: resolved by Row Key, not position, through
+  // the locked batch writer, and only while its grams and payments are still
+  // the ones this screen read (a second split from a stale screen would
+  // otherwise invent grams and money). Then the new row is added. If adding
+  // it fails, the original is put back (again by Row Key, and only if nobody
+  // changed it meanwhile), so nothing is lost or counted twice.
+  const original = { rowNumber: params.rowId, rowKey: String(rec.rowKey ?? "") || undefined };
+  const historyCol = auditHeader(headers, aliases);
+  await writeRowsByCells(sheet, [
+    {
+      ...original,
+      patch: databaseRecordToRow(parentPatch, headers, aliases),
+      expect: databaseRecordToRow(expected, headers, aliases),
+      audit: { header: historyCol, lines: [`${now} | ${who} | Split ${params.splitGrams}g off to a new row (${changes.join(", ")})`] },
+    },
+  ]);
   try {
-    await writeRowsByCells(sheet, [
-      {
-        rowNumber: params.rowId,
-        rowKey: String(rec.rowKey ?? "") || undefined,
-        patch: databaseRecordToRow(parentPatch, headers, aliases),
-        expect: databaseRecordToRow(expected, headers, aliases),
-        audit: { header: auditHeader(headers, aliases), lines: [`${now} | ${who} | Split ${params.splitGrams}g off to a new row (${changes.join(", ")})`] },
-      },
-    ]);
+    await sheet.addRow(databaseRecordToRow(newRow as Partial<DatabaseRowType>, headers, aliases));
   } catch (err) {
+    const why = err instanceof Error ? err.message : String(err);
     try {
-      await added.delete();
+      await writeRowsByCells(sheet, [
+        {
+          ...original,
+          patch: databaseRecordToRow(expected, headers, aliases),
+          expect: databaseRecordToRow(parentPatch, headers, aliases),
+          audit: { header: historyCol, lines: [`${new Date().toISOString()} | ${who} | Split undone: the new row couldn't be added`] },
+        },
+      ]);
     } catch {
-      throw new Error(`Split failed after the new row was added. Delete the new ${params.splitGrams}g row by hand. (${err instanceof Error ? err.message : String(err)})`);
+      throw new Error(`The split-off row couldn't be added and the original couldn't be put back. Its change history shows the old grams and payments. (${why})`);
     }
-    throw err;
+    throw new Error(`Split failed, nothing was changed. (${why})`);
   }
 
   return { success: true, remainingGrams: remaining, splitGrams: params.splitGrams };

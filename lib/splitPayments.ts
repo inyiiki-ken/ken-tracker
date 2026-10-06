@@ -1,6 +1,8 @@
 import type { DatabaseRowType } from "@/types";
 import type { FulfilmentStage } from "@/lib/fulfilment";
-import { calcTotalPaid, calcItemPriceAED, calcCCFee } from "@/lib/calculations";
+import { calcTotalPaid, calcItemPrice, calcItemPriceAED, calcCCFee, getEffectiveCurrency } from "@/lib/calculations";
+import { getRatesForDate } from "@/lib/ratesStore";
+import { getUsdToAed } from "@/lib/pricingConfig";
 
 export type MoneyKey = "downpayment" | "la1MonthPayment" | "la2MonthPayment" | "la3MonthPayment" | "la4MonthPayment" | "amountReceived";
 export const MONEY_KEYS: MoneyKey[] = ["downpayment", "la1MonthPayment", "la2MonthPayment", "la3MonthPayment", "la4MonthPayment", "amountReceived"];
@@ -51,8 +53,18 @@ export function planSplitPayments(record: DatabaseRowType, splitGrams: number, n
 
   const child = { ...record, grams: splitGrams };
   const parent = { ...record, grams: Math.round((origGrams - splitGrams) * 10000) / 10000 };
-  const ownChild = calcItemPriceAED(child) + calcCCFee(child);
-  const ownParent = calcItemPriceAED(parent) + calcCCFee(parent);
+  // Each row's own price in AED. A PHP / USD item is billed in its own
+  // currency, so its price is taken from there at the plain rate (the invoice
+  // converts paid money the same way), not from the rounded AED price.
+  const currency = getEffectiveCurrency(record);
+  const phpRate = getRatesForDate(record.dateOfLive || "").phpRate;
+  const own = (r: DatabaseRowType) => {
+    if (currency === "PHP" && phpRate > 0) return calcItemPrice(r) / phpRate + calcCCFee(r);
+    if (currency === "USD") return calcItemPrice(r) * getUsdToAed() + calcCCFee(r);
+    return calcItemPriceAED(r) + calcCCFee(r);
+  };
+  const ownChild = own(child);
+  const ownParent = own(parent);
   const total = ownChild + ownParent;
   if (!(total > 0)) return keep;
   const target = paid >= total ? ownChild : (paid * ownChild) / total;
