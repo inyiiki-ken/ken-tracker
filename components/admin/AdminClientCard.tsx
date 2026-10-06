@@ -21,6 +21,7 @@ import GroupDownpaymentSection from './GroupDownpaymentSection';
 import CustomerHistoryModal from '@/components/CustomerHistoryModal';
 import CancelReasonField from '@/components/CancelReasonField';
 import { fulfilmentStage, dayKey } from '@/lib/fulfilment';
+import { adminBucket, adminPageName } from '@/lib/adminBuckets';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 
 interface Props {
@@ -30,6 +31,8 @@ interface Props {
   onUpdate: (rowId: number, fields: Partial<DatabaseRowType>) => Promise<void>;
   onBulkUpdate?: (updates: { rowId: number; fields: Partial<DatabaseRowType> }[]) => Promise<void>;
   userEmail?: string;
+  /** Reloads the sheet (quiet = no loading screen), e.g. after an item is split. */
+  onRefresh?: (quiet?: boolean) => void;
 }
 
 /** The live day an item belongs to; the same day typed two ways is one day. */
@@ -42,7 +45,7 @@ function isPinasRecord(r: DatabaseRowType) {
   return r.locationOfMiner === 'Pinas' || r.currency === 'PHP';
 }
 
-function AdminClientCard({ minerName, records, allRecords, onUpdate, onBulkUpdate, userEmail }: Props) {
+function AdminClientCard({ minerName, records, allRecords, onUpdate, onBulkUpdate, userEmail, onRefresh }: Props) {
   const [expanded, setExpanded] = useState(false);
   const [showInvoice, setShowInvoice] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
@@ -246,6 +249,45 @@ function AdminClientCard({ minerName, records, allRecords, onUpdate, onBulkUpdat
   }, [records]);
 
   // Any item with an invoice # unlocks the invoice (not only the first one).
+  // Admin's card for an item, keyed as AdminPipeline groups them: section +
+  // page + live day + client (an "Items on Hold" card spans days). Items that
+  // have left Admin are a "card" of their own each.
+  const cardKeyOf = useCallback((r: DatabaseRowType) => {
+    const b = adminBucket(r, false);
+    if (!b || b === 'review') return `row|${r.id}`;
+    const page = adminPageName(r).toLowerCase();
+    const name = r.minerName?.trim() || 'Unknown Client';
+    return b === 'hold' ? `hold|${page}|${name}` : `${b}|${page}|${liveDay(r)}|${name}`;
+  }, []);
+
+  // Every item of this card, including any hidden by the search or the Needs
+  // Action filter, so the invoice never leaves one out.
+  const cardAll = useMemo(() => {
+    if (!expanded || records.length === 0) return records;
+    const own = cardKeyOf(records[0]);
+    return allRecords.filter(r => cardKeyOf(r) === own);
+  }, [expanded, records, allRecords, cardKeyOf]);
+
+  // The invoice covers THIS card's items only (ken, 2026-10-06). The client's
+  // cards before this one, by first live day then sheet row (undated last), go
+  // in whole as earlier invoices, so shipping is charged once per client and
+  // their credit carries over once, as on the Invoicing tab.
+  const invoicePrior = useMemo(() => {
+    if (!showInvoice || cardAll.length === 0) return [];
+    const dayOf = (r: DatabaseRowType) => { const d = liveDay(r); return isIsoDay(d) ? d : '9999-99-99'; };
+    const before = (a: DatabaseRowType, b: DatabaseRowType) => dayOf(a) < dayOf(b) || (dayOf(a) === dayOf(b) && a.id < b.id);
+    const cardFirst = cardAll.reduce((m, r) => (before(r, m) ? r : m), cardAll[0]);
+    const own = cardKeyOf(cardFirst);
+    const name = minerName.trim().toLowerCase();
+    const others = allRecords.filter(r =>
+      cardKeyOf(r) !== own
+      && (r.minerName?.trim() || 'Unknown Client').toLowerCase() === name
+      && fulfilmentStage(r.status) !== 'excluded');
+    // A card is earlier when its first item is: then all of it counts.
+    const earlier = new Set(others.filter(r => before(r, cardFirst)).map(cardKeyOf));
+    return others.filter(r => earlier.has(cardKeyOf(r)));
+  }, [showInvoice, cardAll, allRecords, minerName, cardKeyOf]);
+
   const hasInvoiceNumber = records.some(r => String(r.pureWeight ?? '').trim() !== '');
   const { isCompact } = useCompactMode();
 
@@ -398,7 +440,7 @@ function AdminClientCard({ minerName, records, allRecords, onUpdate, onBulkUpdat
             style={hasInvoiceNumber ? {} : { opacity: 0.5 }}
           >
             <FileText className="h-3.5 w-3.5 mr-1.5" />
-            {hasInvoiceNumber ? `Generate Invoice (${records.length} items)` : 'Click "Gen" on an item below to unlock'}
+            {hasInvoiceNumber ? `Generate Invoice (${cardAll.length} items)` : 'Click "Gen" on an item below to unlock'}
           </Button>
 
           {sortedDates.map(date => {
@@ -468,6 +510,7 @@ function AdminClientCard({ minerName, records, allRecords, onUpdate, onBulkUpdat
                                   onFillMissingMop={fillMissingMop}
                                   groupHasDP={groupHasDP}
                                   userEmail={userEmail}
+                                  onSplitDone={() => onRefresh?.(true)}
                                 />
                               ))}
                             </div>
@@ -493,7 +536,8 @@ function AdminClientCard({ minerName, records, allRecords, onUpdate, onBulkUpdat
 
       {showInvoice && (
         <InvoiceModal
-          records={allRecords.filter(r => r.minerName?.trim().toLowerCase() === minerName.trim().toLowerCase())}
+          records={cardAll}
+          priorRecords={invoicePrior}
           onClose={() => setShowInvoice(false)}
         />
       )}
@@ -575,5 +619,6 @@ export default memo(AdminClientCard, (prev, next) => {
   if (prev.onBulkUpdate !== next.onBulkUpdate) return false;
   if (prev.onUpdate !== next.onUpdate) return false;
   if (prev.userEmail !== next.userEmail) return false;
+  if (prev.onRefresh !== next.onRefresh) return false;
   return true;
 });

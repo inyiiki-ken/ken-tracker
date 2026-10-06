@@ -16,6 +16,7 @@ import { isLiverOnly, getUserRole } from "@/config/roles";
 import { customerKey as rowCustomerKey, parseDateRobust } from "@/lib/calculations";
 import { newestPurchaseRawByCustomer } from "@/lib/purchaseDates";
 import { boxStatusName, ownBox } from "@/lib/pulloutTargets";
+import { fulfilmentStage, type FulfilmentStage } from "@/lib/fulfilment";
 import { customersEverWithOtherLivers, customersWithOtherLivers, sharedShippingCarriers } from "@/lib/liverMoney";
 
 
@@ -410,10 +411,12 @@ export async function splitItem(params: {
   rowId: number;
   splitGrams: number;
   newStatus: string;
+  /** The new status's stage, worked out on the screen with the customer's own settings. */
+  newStage?: FulfilmentStage;
   existingRecord: Record<string, unknown>;
   userEmail?: string;
 }): Promise<{ success: boolean; remainingGrams: number; splitGrams: number }> {
-  await requireRole(RECORD_WRITE_ROLES);
+  const sessionEmail = await requireRole(RECORD_WRITE_ROLES);
   const origGrams = Number(params.existingRecord.grams) || 0;
   const remaining = origGrams - params.splitGrams;
   if (remaining <= 0) {
@@ -441,12 +444,34 @@ export async function splitItem(params: {
   }
   newRow.grams = params.splitGrams;
   newRow.status = params.newStatus;
+  // Money stays on the original row only (the Split window says so). Copying
+  // it counted the same downpayment / payment / charge twice in the balance.
+  // A downpayment amount becomes "acknowledged" (covered by the original's),
+  // so the new row isn't locked as having no downpayment; the EID marker stays.
+  // "0", "-" or other junk isn't a downpayment: it must not unlock the new row.
+  const dp = String(newRow.downpayment ?? "").trim();
+  if (dp !== "acknowledged" && dp.toUpperCase() !== "EID") {
+    const amt = parseFloat(dp.toUpperCase().startsWith("CHARGE:") ? dp.split(":")[2] || "0" : dp);
+    if (amt > 0) newRow.downpayment = "acknowledged";
+    else delete newRow.downpayment;
+  }
+  for (const key of ["la1MonthPayment", "la2MonthPayment", "la3MonthPayment", "la4MonthPayment", "amountReceived", "additionalCharges", "cancelReason"]) {
+    delete newRow[key];
+  }
+  // Ship dates follow the new row's own status, not the original's. The stage
+  // comes from the screen: here only default status settings are known.
+  const now = new Date().toISOString();
+  const stage = params.newStage ?? fulfilmentStage(params.newStatus);
+  if (stage !== "delivered") delete newRow.deliveredDate;
+  if (stage !== "delivered" && stage !== "dispatched") delete newRow.dispatchDate;
+  if (stage === "dispatched" && !String(newRow.dispatchDate ?? "").trim()) newRow.dispatchDate = now;
+  if (stage === "delivered" && !String(newRow.deliveredDate ?? "").trim()) newRow.deliveredDate = now;
   // The copy loop above clones every field, which included the parent's Row Key
   // — leaving two rows sharing one key. Row-key lookup would then resolve BOTH
   // items to whichever appeared last, so every later edit to either one hit the
   // wrong record. The split-off item is a new record and needs its own key.
   newRow.rowKey = newRowKey();
-  newRow.auditTrail = `${new Date().toISOString()} | ${params.userEmail ?? "unknown"} | Split from row ${params.rowId}`;
+  newRow.auditTrail = `${now} | ${sessionEmail || params.userEmail || "unknown"} | Split from row ${params.rowId}`;
 
   await sheet.addRow(databaseRecordToRow(newRow as Partial<DatabaseRowType>, await activeHeaderSet(sheet), await getTenantColumnAliases()));
 

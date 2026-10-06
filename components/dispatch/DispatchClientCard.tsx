@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, memo, useCallback, useMemo, useEffect } from 'react';
-import { autoStageDates, fulfilmentStage, orderBox } from '@/lib/fulfilment';
+import { autoStageDates, fulfilmentStage, orderBox, isStillWithAdmin } from '@/lib/fulfilment';
 import { Checkbox } from '@/components/ui/checkbox';
 import { formatDate, orderedRangeLabel } from '@/lib/formatters';
 import { parseDateRobust } from '@/lib/calculations';
@@ -18,7 +18,7 @@ import { parseNotes, buildNoteAppend, type ParsedNote } from '@/lib/notes';
 import { toast } from 'sonner';
 import { DatabaseRowType } from '@/types';
 import { useCompactMode } from '@/lib/compactMode';
-import { calcShippingFee, isFreeSf, isPromoSf, getPromoSf, getQty, calcTotalPaid, calcItemPriceAED, calcCCFee, roundPrice } from '@/lib/calculations';
+import { calcShippingFee, isFreeSf, isPromoSf, getPromoSf, getQty, calcTotalPaid, calcItemPriceAED, calcCCFee, roundPrice, customerKey, canSplitItem } from '@/lib/calculations';
 import { getEffectiveStatuses } from '@/lib/statusRegistry';
 import { getOptions } from '@/lib/optionsConfig';
 import StatusBadge from '@/components/StatusBadge';
@@ -39,6 +39,8 @@ interface Props {
   /** Search text: matching items are highlighted and the card opens. */
   highlight?: string;
   onSelect?: (ids: number[], on: boolean) => void;
+  /** Reloads the sheet quietly, e.g. after an item is split. */
+  onRefresh?: () => void;
 }
 
 const MOP_OPTIONS = [
@@ -266,7 +268,7 @@ function StickyNotes({ notes }: { notes: ParsedNote[] }) {
 }
 
 // ─── Main Card ────────────────────────────────────────────────────────────────
-function DispatchClientCard({ minerName, records, allRecords, onUpdate, userEmail, clientMilestones, selectedIds, onSelect, highlight }: Props) {
+function DispatchClientCard({ minerName, records, allRecords, onUpdate, userEmail, clientMilestones, selectedIds, onSelect, highlight, onRefresh }: Props) {
   const [isExpanded, setIsExpanded] = useState(false);
   // Items whose details (fees, history, notes) are shown.
   const [openItems, setOpenItems] = useState<Set<number>>(new Set());
@@ -366,6 +368,31 @@ function DispatchClientCard({ minerName, records, allRecords, onUpdate, userEmai
 
   const first = records[0];
   const deliverySummary = getDeliverySummary(records);
+  // Accounts on this card whose billed items are paid up as a whole: a split-off
+  // row carries no payment (it stays on the original row), so its own check
+  // fails. Same rule as canDispatch, summed per account: COD items, and unpaid
+  // orders still with Admin (Pending, Waiting for…), aren't owed yet. One pass,
+  // only while the card is open; each row is checked against its own account.
+  const paidUpAccounts = useMemo(() => {
+    const ok = new Set<string>();
+    if (!isExpanded) return ok;
+    const keys = new Set(records.map(customerKey));
+    const sums = new Map<string, { owed: number; paid: number; n: number }>();
+    for (const r of allRecords) {
+      const k = customerKey(r);
+      if (!keys.has(k) || fulfilmentStage(r.status) === 'excluded') continue;
+      if ((r.modeOfPayment || '').toUpperCase().includes('COD')) continue;
+      const paid = calcTotalPaid(r);
+      if (isStillWithAdmin(r.status) && paid <= 0) continue;
+      const s = sums.get(k) ?? { owed: 0, paid: 0, n: 0 };
+      s.owed += calcItemPriceAED(r) + calcCCFee(r);
+      s.paid += paid;
+      s.n++;
+      sums.set(k, s);
+    }
+    for (const [k, s] of sums) if (s.n > 0 && s.paid + 0.5 * s.n >= s.owed) ok.add(k);
+    return ok;
+  }, [isExpanded, records, allRecords]);
   // Order dates on this card, e.g. "Ordered Sep 26 – Sep 30", so a card filed
   // under its latest (or shipped) date still shows when each item was ordered.
   const orderedRange = useMemo(() => orderedRangeLabel(records), [records]);
@@ -536,7 +563,9 @@ function DispatchClientCard({ minerName, records, allRecords, onUpdate, userEmai
             const effective = getEffective(record);
             const givenToShopMode = isGivenToShopMode(effective);
             const latestAudit = effective.auditTrail ? effective.auditTrail.split(/(?=\[)/).pop() : null;
-            const dispatchAllowed = canDispatch(effective);
+            // A split-off row carries no payment (it stays on the original row),
+            // so an item also passes when the customer's whole account is paid up.
+            const dispatchAllowed = canDispatch(effective) || paidUpAccounts.has(customerKey(record));
             const isScrewType = (effective.category || '').toLowerCase().includes('screw type');
             const isEditingThis = editingItemId === record.id;
             const isAddingNote = addingNoteId === record.id;
@@ -619,7 +648,7 @@ function DispatchClientCard({ minerName, records, allRecords, onUpdate, userEmai
                     {effective.source && <span className="border-l border-border/40 pl-2">📦 {effective.source}</span>}
                     {effective.orderId && <span className="border-l border-border/40 pl-2 font-mono">{effective.orderId}</span>}
                     <span className="ml-auto flex items-center gap-2">
-                      {record.status === 'Outsource' && (record.grams ?? 0) > 0 && !isEditingThis && (
+                      {record.status === 'Outsource' && canSplitItem(record) && !isEditingThis && (
                         <button className="flex items-center gap-1 text-success hover:underline" onClick={() => setSplitRecord(record)}>
                           <Scissors className="h-3.5 w-3.5" /> Split
                         </button>
@@ -698,7 +727,7 @@ function DispatchClientCard({ minerName, records, allRecords, onUpdate, userEmai
         />
       )}
       {splitRecord && (
-        <SplitItemDialog record={splitRecord} onClose={() => setSplitRecord(null)} onComplete={() => onUpdate(splitRecord.id, {})} />
+        <SplitItemDialog record={splitRecord} onClose={() => setSplitRecord(null)} onComplete={() => onRefresh?.()} />
       )}
       {showHistory && first?.customerId && (
         <CustomerHistoryModal customerId={first.customerId} minerName={minerName} allRecords={allRecords} onClose={() => setShowHistory(false)} />

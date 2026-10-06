@@ -7,6 +7,7 @@ import { applySearch, groupByMiner, groupByMinerName, formatDate } from '@/lib/f
 import { isOverdue } from '@/lib/calculations';
 import { dayKey } from '@/lib/fulfilment';
 import { todayLocalISO } from '@/lib/businessConfig';
+import { adminBucket, adminPageName, type AdminBucket } from '@/lib/adminBuckets';
 import TabHeader from '@/components/TabHeader';
 import AdminClientCard from './AdminClientCard';
 import ReviewChasingCard from './ReviewChasingCard';
@@ -22,31 +23,7 @@ import { masterlistTemplateBlob } from '@/lib/masterlistExport';
 import { base64ToBlob, downloadBlob } from '@/lib/fileBase64';
 import { XLSX_MIME } from '@/components/settings/MasterlistTemplateSettings';
 
-// Statuses that all belong to the "waiting for the payment to be secured" phase,
-// grouped under one section so the admin sees them together.
-const WFDP_GROUP = ['Waiting for Downpayment', 'Pending for Tamara', 'Pending for Tabby'];
 const WFDP_LABEL = 'Waiting for DP / Pending Tamara & Tabby';
-const WFDP_LOWER = WFDP_GROUP.map(s => s.toLowerCase());
-
-type AdminBucket = 'mined' | 'wfdp' | 'verif' | 'review' | 'hold';
-
-/**
- * Which Admin section an item belongs in, or null when it isn't Admin's any
- * more. Statuses are compared without case or extra spaces, because they are
- * often typed straight into the sheet; a blank status is Waiting for Details.
- */
-function adminBucket(r: DatabaseRowType, reviewHidden: boolean): AdminBucket | null {
-  const s = String(r.status || '').trim().replace(/\s+/g, ' ').toLowerCase();
-  if (!s || s === 'pending' || s === 'waiting for details') return 'mined';
-  if (WFDP_LOWER.includes(s)) return 'wfdp';
-  if (s === 'payment for verification') return 'verif';
-  if (s === 'paid/dp but item hold') return 'hold';
-  if (s === 'delivered') {
-    if (reviewHidden) return null;
-    return r.reviewChasing === 'Skipped' || r.reviewChasing === 'Completed' ? null : 'review';
-  }
-  return null;
-}
 
 const UNKNOWN_DATE = 'Unknown Date';
 
@@ -145,7 +122,7 @@ export default function AdminPipeline({ records, searchQuery, onSearchChange, on
     // One section per page. "Page A" and "page a " are the same page.
     const groups = new Map<string, { name: string; items: DatabaseRowType[] }>();
     for (const r of visible) {
-      const name = String(r.page || '').trim().replace(/\s+/g, ' ') || 'Other';
+      const name = adminPageName(r);
       const key = name.toLowerCase();
       if (!groups.has(key)) groups.set(key, { name, items: [] });
       groups.get(key)!.items.push(r);
@@ -157,7 +134,7 @@ export default function AdminPipeline({ records, searchQuery, onSearchChange, on
   }, [records, searchQuery, needsActionOnly, showItemHold, reviewHidden]);
 
   const card = (name: string, items: DatabaseRowType[]) => (
-    <AdminClientCard key={name} minerName={name} records={items} allRecords={records} onUpdate={onUpdate} onBulkUpdate={onBulkUpdate} userEmail={userEmail} />
+    <AdminClientCard key={name} minerName={name} records={items} allRecords={records} onUpdate={onUpdate} onBulkUpdate={onBulkUpdate} userEmail={userEmail} onRefresh={onRefresh} />
   );
 
   /** Day headers (collapsible), each holding one card per customer. */
