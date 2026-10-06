@@ -1,7 +1,7 @@
 "use client";
 
 import { getRequirePaymentForPullout, isPulloutStatus } from '@/lib/appConfig';
-import { useState, memo, useMemo, useEffect } from 'react';
+import { useState, memo, useMemo, useEffect, useRef, useCallback } from 'react';
 import { useCompactMode } from '@/lib/compactMode';
 import { ChevronDown, FileText, MapPin, Upload, History, Copy, Check, AlertTriangle, Loader2, Layers } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -9,12 +9,10 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { toast } from 'sonner';
 import { DatabaseRowType } from '@/types';
 import { isOverdue, calcItemPriceAED, calcTotalPaid, calcGroupBalance } from '@/lib/calculations';
-import { formatDate, MOP_OPTIONS, REGION_OPTIONS, getLocationFromRegion } from '@/lib/formatters';
+import { formatDate, getLocationFromRegion } from '@/lib/formatters';
 import { getEffectiveStatuses } from '@/lib/statusRegistry';
 import { getOptions } from '@/lib/optionsConfig';
-
-const TOG_OPTIONS = ['18K', 'VCA', '21K', '24K', 'S-925'];
-import { getPhpRate, setPhpRate, getRatesForDate, setSilverSellRate, setSilverBrandedSellRate, hasRatesSnapshotForDate } from '@/lib/ratesStore';
+import { getPhpRate, setPhpRate, setSilverSellRate, setSilverBrandedSellRate, hasRatesSnapshotForDate } from '@/lib/ratesStore';
 import StatusBadge from '@/components/StatusBadge';
 import AdminItemRow from './AdminItemRow';
 import PhpRateDialog from './PhpRateDialog';
@@ -22,7 +20,7 @@ import InvoiceModal from '@/components/InvoiceModal';
 import GroupDownpaymentSection from './GroupDownpaymentSection';
 import CustomerHistoryModal from '@/components/CustomerHistoryModal';
 import CancelReasonField from '@/components/CancelReasonField';
-import { fulfilmentStage } from '@/lib/fulfilment';
+import { fulfilmentStage, dayKey } from '@/lib/fulfilment';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 
 interface Props {
@@ -33,6 +31,12 @@ interface Props {
   onBulkUpdate?: (updates: { rowId: number; fields: Partial<DatabaseRowType> }[]) => Promise<void>;
   userEmail?: string;
 }
+
+/** The live day an item belongs to; the same day typed two ways is one day. */
+function liveDay(r: DatabaseRowType): string {
+  return dayKey(r.dateOfLive) || String(r.dateOfLive || '').trim() || 'Unknown Date';
+}
+const isIsoDay = (k: string) => /^\d{4}-\d{2}-\d{2}$/.test(k);
 
 function isPinasRecord(r: DatabaseRowType) {
   return r.locationOfMiner === 'Pinas' || r.currency === 'PHP';
@@ -54,10 +58,19 @@ function AdminClientCard({ minerName, records, allRecords, onUpdate, onBulkUpdat
   const overdueRecords = records.filter(isOverdue);
   const hasOverdue = overdueRecords.length > 0;
 
+  // The latest items, read by the group-update helpers below. Item rows keep
+  // the first helper they were given, so the helpers must not close over an
+  // old list (a new item added to this card would otherwise be skipped).
+  const recordsRef = useRef(records);
+  recordsRef.current = records;
+
+  // Oldest → newest, by the real day (not the text of the date).
   const uniqueDates = useMemo(() => {
-    const dates = [...new Set(records.map(r => r.dateOfLive).filter(Boolean) as string[])].sort();
-    return dates;
+    const days = [...new Set(records.map(liveDay))];
+    return days.filter(isIsoDay).sort().concat(days.filter(d => !isIsoDay(d)));
   }, [records]);
+  // The raw dates as typed, for the PHP rate lookups (stored per typed date).
+  const rawDates = useMemo(() => [...new Set(records.map(r => r.dateOfLive).filter(Boolean) as string[])], [records]);
 
   const dateLabel = uniqueDates.length === 1
     ? formatDate(uniqueDates[0])
@@ -81,9 +94,10 @@ function AdminClientCard({ minerName, records, allRecords, onUpdate, onBulkUpdat
   const grouped = useMemo(() => {
     const map: Record<string, Record<string, Record<string, DatabaseRowType[]>>> = {};
     for (const r of records) {
-      const date = r.dateOfLive || 'Unknown Date';
+      const date = liveDay(r);
       const liver = r.liverName?.trim().toUpperCase() || 'UNKNOWN LIVER';
-      const status = r.status || 'No Status';
+      // A blank status (typed straight into the sheet) is Waiting for Details.
+      const status = String(r.status || '').trim() || 'Waiting for Details';
       if (!map[date]) map[date] = {};
       if (!map[date][liver]) map[date][liver] = {};
       if (!map[date][liver][status]) map[date][liver][status] = [];
@@ -93,22 +107,35 @@ function AdminClientCard({ minerName, records, allRecords, onUpdate, onBulkUpdat
   }, [records]);
 
   // Newest date first
-  const sortedDates = Object.keys(grouped).sort((a, b) => b.localeCompare(a));
+  const sortedDates = Object.keys(grouped).sort((a, b) => {
+    if (isIsoDay(a) !== isIsoDay(b)) return isIsoDay(a) ? -1 : 1;
+    return b.localeCompare(a);
+  });
 
   const toggleDate = (date: string) =>
     setCollapsedDates(prev => ({ ...prev, [date]: !prev[date] }));
 
-  const handleGroupUpdate = async (fields: Partial<DatabaseRowType>) => {
-    // Build every row's patch first, then send them in ONE request (previously
-    // this was a sequential loop with a 300ms pause per row).
-    const updates = records.map((r) => ({ rowId: r.id, fields }));
+  const sendUpdates = useCallback(async (updates: { rowId: number; fields: Partial<DatabaseRowType> }[]) => {
     if (updates.length === 0) return;
-    if (onBulkUpdate) {
-      await onBulkUpdate(updates);
-    } else {
-      for (const u of updates) await onUpdate(u.rowId, u.fields);
-    }
-  };
+    if (onBulkUpdate) await onBulkUpdate(updates);
+    else for (const u of updates) await onUpdate(u.rowId, u.fields);
+  }, [onBulkUpdate, onUpdate]);
+
+  // Sets the fields on every item in this card, in ONE request.
+  const handleGroupUpdate = useCallback(async (fields: Partial<DatabaseRowType>) => {
+    await sendUpdates(recordsRef.current.map((r) => ({ rowId: r.id, fields })));
+  }, [sendUpdates]);
+
+  // Mode of Payment read from the remarks ("TABBY APPROVED"…) fills only the
+  // items that have none yet; one already chosen by hand is never replaced.
+  const fillMissingMop = useCallback(async (fields: Partial<DatabaseRowType>) => {
+    await sendUpdates(recordsRef.current.filter(r => !String(r.modeOfPayment || '').trim()).map((r) => ({ rowId: r.id, fields })));
+  }, [sendUpdates]);
+
+  // Sets the fields on every item of one live day (the invoice # is per day).
+  const handleDayUpdate = useCallback(async (day: string, fields: Partial<DatabaseRowType>) => {
+    await sendUpdates(recordsRef.current.filter(r => liveDay(r) === day).map((r) => ({ rowId: r.id, fields })));
+  }, [sendUpdates]);
 
   // Bulk-set a field on EVERY item in this client's card (unconditional overwrite).
   const bulkApplyAll = async (fields: Partial<DatabaseRowType>, label: string) => {
@@ -180,7 +207,7 @@ function AdminClientCard({ minerName, records, allRecords, onUpdate, onBulkUpdat
     if (!hasPinas) return;
 
     const loaded: Record<string, number> = {};
-    for (const date of uniqueDates) {
+    for (const date of rawDates) {
       const r = getPhpRate(date);
       if (r !== null) loaded[date] = r;
     }
@@ -190,7 +217,7 @@ function AdminClientCard({ minerName, records, allRecords, onUpdate, onBulkUpdat
     const pinasDates = [...new Set(pinasRecords.map(r => r.dateOfLive).filter(Boolean) as string[])];
     const needsRate = pinasDates.find(d => !hasRatesSnapshotForDate(d));
     if (needsRate) setPhpRateDialogDate(needsRate);
-  }, [expanded, records, uniqueDates]);
+  }, [expanded, records, rawDates]);
 
   const handleRateConfirm = (phpRate: number, silverRate?: number, silverBrandedRate?: number) => {
     if (!phpRateDialogDate) return;
@@ -218,23 +245,32 @@ function AdminClientCard({ minerName, records, allRecords, onUpdate, onBulkUpdat
     return unique.length === 1 ? unique[0] : `${unique[0]} +${unique.length - 1} more`;
   }, [records]);
 
-  const hasInvoiceNumber = first?.pureWeight && String(first.pureWeight).trim() !== '';
+  // Any item with an invoice # unlocks the invoice (not only the first one).
+  const hasInvoiceNumber = records.some(r => String(r.pureWeight ?? '').trim() !== '');
   const { isCompact } = useCompactMode();
 
   return (
     <div className={`kt-lift mb-3 border overflow-hidden brand-left-bar rounded-md bg-card ${hasOverdue ? 'border-destructive/30' : 'border-border'}`}>
-      <button
-        className="w-full text-left px-4 py-3 flex items-center justify-between"
+      {/* A div, not a button: it holds the copy / history buttons, and a
+          button inside a button is invalid and misfires on some phones. */}
+      <div
+        role="button"
+        tabIndex={0}
+        aria-expanded={expanded}
+        className="w-full text-left px-3 sm:px-4 py-3 flex items-center justify-between cursor-pointer"
         onClick={() => setExpanded(e => !e)}
+        onKeyDown={e => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); setExpanded(v => !v); } }}
       >
         <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 mb-1">
-            <span className="font-cinzel text-[13px] truncate text-primary">{minerName}</span>
+          <div className="flex items-center gap-2 mb-1 min-w-0">
+            <span className="font-cinzel text-[13px] truncate text-primary min-w-0">{minerName}</span>
             {/* Copy name button */}
             <button
+              type="button"
               onClick={handleCopyName}
-              className="shrink-0 text-muted-foreground hover:text-primary transition-colors"
+              className="shrink-0 p-1 -m-1 text-muted-foreground hover:text-primary transition-colors"
               title="Copy client name"
+              aria-label="Copy client name"
             >
               {copiedName ? <Check className="h-3 w-3 text-success" /> : <Copy className="h-3 w-3" />}
             </button>
@@ -246,8 +282,10 @@ function AdminClientCard({ minerName, records, allRecords, onUpdate, onBulkUpdat
             )}
             {first?.customerId && (
               <button
-                className="shrink-0 text-muted-foreground hover:text-primary transition-colors"
+                type="button"
+                className="shrink-0 p-1 -m-1 text-muted-foreground hover:text-primary transition-colors"
                 title="View Lifetime History"
+                aria-label="View lifetime history"
                 onClick={e => { e.stopPropagation(); setShowHistory(true); }}
               >
                 <History className="h-3.5 w-3.5" />
@@ -264,7 +302,7 @@ function AdminClientCard({ minerName, records, allRecords, onUpdate, onBulkUpdat
               🗨 {remarksSummary}
             </p>
           )}
-          <div className="flex items-center gap-3 mt-0.5">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-0.5">
             {!isCompact && <div className="text-[11px] text-primary/70 font-semibold">📅 {dateLabel}</div>}
             {/* Quick balance summary when collapsed */}
             {!expanded && quickSummary && quickSummary.totalOwed > 0 && (
@@ -280,10 +318,10 @@ function AdminClientCard({ minerName, records, allRecords, onUpdate, onBulkUpdat
           </div>
         </div>
         <ChevronDown className={`h-4 w-4 shrink-0 ml-2 transition-transform text-muted-foreground ${expanded ? 'rotate-180' : ''}`} />
-      </button>
+      </div>
 
       {expanded && (
-        <div className="px-3 pb-3 border-t border-border pt-3">
+        <div className="px-2 sm:px-3 pb-3 border-t border-border pt-3">
           {/* Bulk apply to all items in this client's card */}
           <div className="mb-3 rounded-lg border border-primary/30 bg-primary/5 p-2.5">
             <p className="text-[10px] font-semibold text-primary uppercase tracking-wider mb-1.5 flex items-center gap-1.5">
@@ -369,14 +407,6 @@ function AdminClientCard({ minerName, records, allRecords, onUpdate, onBulkUpdat
             const dateRecordCount = dateAllItems.length;
             const dateHasOverdue = dateAllItems.some(isOverdue);
 
-            // Updates EVERY item in this date group — used for invoice # assignment
-            const handleDateGroupUpdate = async (fields: Partial<DatabaseRowType>) => {
-              for (const r of dateAllItems) {
-                await onUpdate(r.id, fields);
-                await new Promise(res => setTimeout(res, 150));
-              }
-            };
-
             return (
               <div key={date} className="mb-3 rounded-lg border border-border/40 overflow-hidden">
                 <button
@@ -385,7 +415,7 @@ function AdminClientCard({ minerName, records, allRecords, onUpdate, onBulkUpdat
                 >
                   <div className="flex items-center gap-2">
                     <span className="text-[11px] font-bold text-primary uppercase tracking-widest">
-                      📅 {formatDate(date)}
+                      📅 {date === 'Unknown Date' ? 'No live date' : formatDate(date)}
                     </span>
                     {dateHasOverdue && (
                       <span className="text-[9px] font-bold text-destructive bg-destructive/10 border border-destructive/20 px-1 py-0.5 rounded">
@@ -400,7 +430,7 @@ function AdminClientCard({ minerName, records, allRecords, onUpdate, onBulkUpdat
                 </button>
 
                 {!isDateCollapsed && (
-                  <div className="px-3 pt-2 pb-2">
+                  <div className="px-2 sm:px-3 pt-2 pb-2">
                     {Object.entries(grouped[date]).map(([liver, statuses]) => (
                       <div key={liver} className="mb-2">
                         <div className="text-[10px] font-semibold text-primary/70 uppercase tracking-wide mb-1 px-0.5">
@@ -419,14 +449,14 @@ function AdminClientCard({ minerName, records, allRecords, onUpdate, onBulkUpdat
                             return parseFloat(v) > 0;
                           });
                           return (
-                            <div key={status} className="mb-2 ml-2">
+                            <div key={status} className="mb-2 sm:ml-2">
                               <div className="flex items-center gap-1.5 mb-1">
                                 <StatusBadge status={status} />
                                 <span className="text-[10px] text-muted-foreground">({items.length})</span>
                                 <div className="h-px flex-1 bg-border/30" />
                               </div>
                               {status === 'Waiting for Downpayment' && (
-                                <GroupDownpaymentSection items={items} onUpdate={onUpdate} />
+                                <GroupDownpaymentSection items={items} onUpdate={onUpdate} onBulkUpdate={onBulkUpdate} />
                               )}
                               {items.map(record => (
                                 <AdminItemRow
@@ -434,7 +464,8 @@ function AdminClientCard({ minerName, records, allRecords, onUpdate, onBulkUpdat
                                   record={record}
                                   onUpdate={onUpdate}
                                   onGroupUpdate={handleGroupUpdate}
-                                  onDateGroupUpdate={handleDateGroupUpdate}
+                                  onDateGroupUpdate={(fields) => handleDayUpdate(date, fields)}
+                                  onFillMissingMop={fillMissingMop}
                                   groupHasDP={groupHasDP}
                                   userEmail={userEmail}
                                 />
@@ -542,5 +573,7 @@ export default memo(AdminClientCard, (prev, next) => {
   }
   if (prev.allRecords !== next.allRecords) return false;
   if (prev.onBulkUpdate !== next.onBulkUpdate) return false;
+  if (prev.onUpdate !== next.onUpdate) return false;
+  if (prev.userEmail !== next.userEmail) return false;
   return true;
 });

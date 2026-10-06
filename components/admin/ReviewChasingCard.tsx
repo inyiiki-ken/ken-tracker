@@ -6,7 +6,6 @@ import { DatabaseRowType } from '@/types';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { formatDate } from '@/lib/formatters';
 import { toast } from 'sonner';
-import { bulkUpdateRecords } from '@/lib/api';
 import CustomerHistoryModal from '@/components/CustomerHistoryModal';
 
 interface Props {
@@ -14,20 +13,22 @@ interface Props {
   records: DatabaseRowType[];
   allRecords: DatabaseRowType[];
   onUpdate: (id: number, fields: Partial<DatabaseRowType>) => Promise<void>;
+  onBulkUpdate?: (updates: { rowId: number; fields: Partial<DatabaseRowType> }[]) => Promise<void>;
 }
 
-function ReviewChasingCard({ minerName, records, allRecords, onUpdate }: Props) {
+function ReviewChasingCard({ minerName, records, allRecords, onUpdate, onBulkUpdate }: Props) {
   const [showHistory, setShowHistory] = useState(false);
   // Use the first record to dictate display values
   const firstRecord = records[0];
   const status = firstRecord.reviewChasing || 'Pending';
   const isChased = status === 'Chased';
 
+  // One write per item (this used to save every item twice: once directly and
+  // again through onUpdate).
   const handleStatusChange = async (val: string) => {
     try {
-      await bulkUpdateRecords({ updates: records.map(r => ({ rowId: r.id, fields: { reviewChasing: val } })) });
-      // Also update local state via onUpdate for optimistic UI
-      for (const r of records) onUpdate(r.id, { reviewChasing: val });
+      if (onBulkUpdate) await onBulkUpdate(records.map(r => ({ rowId: r.id, fields: { reviewChasing: val } })));
+      else for (const r of records) await onUpdate(r.id, { reviewChasing: val });
       toast.success(`Marked ${minerName} as ${val}`);
     } catch {
       toast.error('Failed to update review chasing');
@@ -103,5 +104,6 @@ export default memo(ReviewChasingCard, (prev, next) => {
     if (prev.records[i] !== next.records[i]) return false;
   }
   if (prev.allRecords !== next.allRecords) return false;
+  if (prev.onBulkUpdate !== next.onBulkUpdate) return false;
   return true;
 });

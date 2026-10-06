@@ -23,6 +23,7 @@ import {
   type RateMetal,
 } from '@/lib/ratesStore';
 import { saveRatesConfig } from '@/lib/api';
+import { todayLocalISO } from '@/lib/businessConfig';
 
 async function persistRatesToBackend() {
   try {
@@ -42,7 +43,7 @@ export default function DailyRatesEditor({ date }: Props) {
   const isSuperAdmin = useIsSuperAdmin();
 
   const [open, setOpen] = useState(false);
-  const [selectedRateDate, setSelectedRateDate] = useState(date || new Date().toISOString().split('T')[0]);
+  const [selectedRateDate, setSelectedRateDate] = useState(date || todayLocalISO());
   const [silverRetail, setSilverRetailVal] = useState('');
   const [silverCost, setSilverCostVal] = useState('');
   const [silverBrandedCost, setSilverBrandedCostVal] = useState('');
@@ -168,7 +169,8 @@ export default function DailyRatesEditor({ date }: Props) {
   };
 
   const snap = getRatesForDate(selectedRateDate);
-  const isToday = selectedRateDate === new Date().toISOString().split('T')[0];
+  // Today on the business's clock (the UTC day was yesterday before 4am in the UAE).
+  const isToday = selectedRateDate === todayLocalISO();
   const hasDateOverride = hasRatesSnapshotForDate(selectedRateDate);
 
   return (
@@ -180,7 +182,7 @@ export default function DailyRatesEditor({ date }: Props) {
       >
         <Settings2 className="h-3.5 w-3.5 text-primary shrink-0" />
         <span className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">Daily Rates</span>
-        <span className="text-[10px] text-foreground ml-1">
+        <span className="text-[10px] text-foreground ml-1 min-w-0">
           {showGold && (
             <>Gold <span className="text-primary font-semibold">{snap.goldRate || '—'}</span>{showSilver && <>&nbsp;·&nbsp;</>}</>
           )}
@@ -205,7 +207,7 @@ export default function DailyRatesEditor({ date }: Props) {
         <div className="mt-2 px-3 py-3 rounded-lg bg-card border border-border space-y-3 animate-in fade-in slide-in-from-top-2 duration-200">
 
           {/* ── RATE METAL (per customer) ── */}
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <span className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider shrink-0">Rate for</span>
             {(['silver', 'gold', 'both'] as RateMetal[]).map(m => (
               <button
@@ -225,12 +227,12 @@ export default function DailyRatesEditor({ date }: Props) {
 
           {/* ── STICKY DEFAULT RATE SECTION ── */}
           <div className="rounded-md border border-info/30 bg-info/5 px-3 py-2.5 space-y-2">
-            <div className="flex items-center justify-between">
+            <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="flex items-center gap-2">
                 <Pin className="h-3.5 w-3.5 text-info" />
                 <span className="text-xs font-bold text-info">Default Rate (Sticky)</span>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <span className="text-[10px] text-muted-foreground">
                   {showGold && <>Gold <strong>{stickySnap.goldRate || '—'}</strong>{showSilver && ' · '}</>}
                   {showSilver && <>Retail <strong>{stickySnap.silverRetailRate}</strong> · Cost <strong>{stickySnap.silverCostRate}</strong> · B.Cost <strong>{stickySnap.silverBrandedCostRate}</strong></>}
@@ -254,24 +256,24 @@ export default function DailyRatesEditor({ date }: Props) {
               <div className="space-y-2 pt-1 border-t border-info/20">
                 {showGold && (
                   <div className="flex items-center gap-3">
-                    <span className="text-xs text-muted-foreground w-40 shrink-0">Gold Rate (AED/g)</span>
+                    <span className="text-xs text-muted-foreground w-36 sm:w-40 shrink-0">Gold Rate (AED/g)</span>
                     <Input type="number" step="0.01" value={stickyGold} onChange={e => setStickyGold(e.target.value)}
                       placeholder="e.g. 426.25" className="h-7 text-xs bg-background border-border w-24" />
                   </div>
                 )}
                 {showSilver && (<>
                 <div className="flex items-center gap-3">
-                  <span className="text-xs text-muted-foreground w-40 shrink-0">Silver Retail (AED/g)</span>
+                  <span className="text-xs text-muted-foreground w-36 sm:w-40 shrink-0">Silver Retail (AED/g)</span>
                   <Input type="number" step="0.5" value={stickyRetail} onChange={e => setStickyRetail(e.target.value)}
                     className="h-7 text-xs bg-background border-border w-24" />
                 </div>
                 <div className="flex items-center gap-3">
-                  <span className="text-xs text-muted-foreground w-40 shrink-0">Silver Cost Non-Branded</span>
+                  <span className="text-xs text-muted-foreground w-36 sm:w-40 shrink-0">Silver Cost Non-Branded</span>
                   <Input type="number" step="0.5" value={stickyCost} onChange={e => setStickyCost(e.target.value)}
                     className="h-7 text-xs bg-background border-border w-24" />
                 </div>
                 <div className="flex items-center gap-3">
-                  <span className="text-xs text-muted-foreground w-40 shrink-0">Silver Cost Branded</span>
+                  <span className="text-xs text-muted-foreground w-36 sm:w-40 shrink-0">Silver Cost Branded</span>
                   <Input type="number" step="0.5" value={stickyBrandedCost} onChange={e => setStickyBrandedCost(e.target.value)}
                     className="h-7 text-xs bg-background border-border w-24" />
                 </div>
@@ -286,7 +288,7 @@ export default function DailyRatesEditor({ date }: Props) {
           <div className="h-px bg-border" />
 
           {/* ── DATE-SPECIFIC OVERRIDE ── */}
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
             <span className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider shrink-0">Date Override</span>
             <input
               type="date"
@@ -300,7 +302,7 @@ export default function DailyRatesEditor({ date }: Props) {
 
           {/* Lock Status */}
           {isLocked ? (
-            <div className="flex items-center justify-between rounded-md border border-warning/30 bg-warning/10 px-3 py-2">
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-warning/30 bg-warning/10 px-3 py-2">
               <div className="flex items-center gap-2">
                 <Lock className="h-3.5 w-3.5 text-warning" />
                 <span className="text-xs font-semibold text-warning">Rates Locked for {selectedRateDate}</span>
@@ -344,7 +346,7 @@ export default function DailyRatesEditor({ date }: Props) {
                 <>
                   <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">Gold</p>
                   <div className="flex items-center gap-3">
-                    <span className="text-xs text-muted-foreground w-40 shrink-0">Gold Rate (AED/g)</span>
+                    <span className="text-xs text-muted-foreground w-36 sm:w-40 shrink-0">Gold Rate (AED/g)</span>
                     <Input type="number" step="0.01" value={goldVal} onChange={e => setGoldVal(e.target.value)}
                       placeholder="e.g. 426.25" disabled={isLocked}
                       className="h-7 text-xs bg-background border-border w-24 disabled:opacity-50" />
@@ -355,7 +357,7 @@ export default function DailyRatesEditor({ date }: Props) {
               {showSilver && (<>
               <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">Silver Retail (selling price for all silver)</p>
               <div className="flex items-center gap-3">
-                <span className="text-xs text-muted-foreground w-40 shrink-0">Retail Rate (AED/g)</span>
+                <span className="text-xs text-muted-foreground w-36 sm:w-40 shrink-0">Retail Rate (AED/g)</span>
                 <Input type="number" step="0.5" value={silverRetail} onChange={e => setSilverRetailVal(e.target.value)}
                   placeholder={String(DEFAULT_RATES.silverRetailRate)} disabled={isLocked}
                   className="h-7 text-xs bg-background border-border w-24 disabled:opacity-50" />
@@ -364,13 +366,13 @@ export default function DailyRatesEditor({ date }: Props) {
               <div className="h-px bg-border" />
               <p className="text-[10px] font-semibold text-warning/80 uppercase tracking-wider">Silver Cost Rates</p>
               <div className="flex items-center gap-3">
-                <span className="text-xs text-muted-foreground w-40 shrink-0">Cost Non-Branded (AED/g)</span>
+                <span className="text-xs text-muted-foreground w-36 sm:w-40 shrink-0">Cost Non-Branded (AED/g)</span>
                 <Input type="number" step="0.5" value={silverCost} onChange={e => setSilverCostVal(e.target.value)}
                   placeholder="24" disabled={isLocked}
                   className="h-7 text-xs bg-background border-border w-24 disabled:opacity-50" />
               </div>
               <div className="flex items-center gap-3">
-                <span className="text-xs text-muted-foreground w-40 shrink-0">Cost Branded (AED/g)</span>
+                <span className="text-xs text-muted-foreground w-36 sm:w-40 shrink-0">Cost Branded (AED/g)</span>
                 <Input type="number" step="0.5" value={silverBrandedCost} onChange={e => setSilverBrandedCostVal(e.target.value)}
                   placeholder="27" disabled={isLocked}
                   className="h-7 text-xs bg-background border-border w-24 disabled:opacity-50" />
