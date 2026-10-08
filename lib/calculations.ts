@@ -3,7 +3,7 @@ import { parseISO, isValid } from 'date-fns';
 import { getRatesForDate, RateSnapshot, usesGold } from '@/lib/ratesStore';
 import { parseBillingModifiers, getTotalChargesAED, getTotalDiscountsAED } from '@/lib/billingModifiers';
 import { getTimezoneOffsetMs } from '@/lib/businessConfig';
-import { getMakingCharge } from '@/lib/pricingConfig';
+import { getMakingCharge, getPricing, paymentPriceMultiplier } from '@/lib/pricingConfig';
 import { getMasterlistMapping } from '@/lib/masterlistMapping';
 import { getUsdToAed, getPerPcFallback, getB1t1Multiplier, getCcSurchargeRate, getShippingFeeForRegion, getShippingFeeInternational, getShippingFeeMeetUp } from '@/lib/pricingConfig';
 import { isUnitMode } from '@/lib/businessConfig';
@@ -278,6 +278,9 @@ export function clientRateAED(record: DatabaseRowType): number {
 }
 
 export function calcItemPrice(record: DatabaseRowType): number {
+  if (paymentPriceMultiplier(record.modeOfPayment) !== 1) {
+    return roundPrice(fromAED(calcItemPriceAED(record), record));
+  }
   // Unit (retail/cosmetics) mode: selling price per unit × qty, in native currency.
   if (isUnitMode()) return roundPrice(n(record.clientRate) * getQty(record));
 
@@ -300,25 +303,27 @@ export function calcItemPrice(record: DatabaseRowType): number {
 }
 
 export function calcItemPriceAED(record: DatabaseRowType): number {
+  const multiplier = paymentPriceMultiplier(record.modeOfPayment);
+  const roundItem = (amount: number) => roundPrice(amount * multiplier);
   // Unit mode: unit price (converted to AED) × qty.
-  if (isUnitMode()) return roundPrice(clientRateAED(record) * getQty(record));
+  if (isUnitMode()) return roundItem(clientRateAED(record) * getQty(record));
 
   const rateAED = clientRateAED(record);
   const category = (record.category || '').toLowerCase();
   const silverRate = getSilverRate(category, record);
 
   if (silverRate !== null) {
-    if (n(record.clientRate) > 0) return roundPrice(n(record.grams) * rateAED);
-    return roundPrice(n(record.grams) * silverRate);
+    if (n(record.clientRate) > 0) return roundItem(n(record.grams) * rateAED);
+    return roundItem(n(record.grams) * silverRate);
   }
 
   if (category.includes('per pc') || category.includes('screw type') || category.includes('diamond')) {
-    return roundPrice(rateAED * getQty(record));
+    return roundItem(rateAED * getQty(record));
   }
 
-  if (isPcItem(record)) return roundPrice(rateAED);
-  const price = roundPrice(n(record.grams) * rateAED);
-  return price > 0 ? price : (rateAED > 0 ? roundPrice(rateAED) : 0);
+  if (isPcItem(record)) return roundItem(rateAED);
+  const price = roundItem(n(record.grams) * rateAED);
+  return price > 0 ? price : (rateAED > 0 ? roundItem(rateAED) : 0);
 }
 
 export function calcItemCostAED(record: DatabaseRowType): number {
@@ -597,8 +602,71 @@ export function netChargeAED(r: DatabaseRowType): number {
 
 /** Shipping for ONE customer's items, charged once: a promo SF wins, any free SF means none. */
 export function groupShippingFee(records: DatabaseRowType[]): number {
-  const from = shippingFeeRow(records);
-  return from ? calcShippingFee(from) : 0;
+  return shippingGroups(records).reduce((total, rows) => {
+    const from = shippingFeeRow(rows);
+    return total + (from ? calcShippingFee(from) : 0);
+  }, 0);
+}
+
+/** Actual dispatch days close a shipment; purchases after it start a new one.
+ * Never use the live date as a pretend dispatch date for old records. */
+export function shippingGroups(records: DatabaseRowType[], perShipment = getPricing().shippingPerShipment, timezoneOffsetMs = getTimezoneOffsetMs()): DatabaseRowType[][] {
+  if (!perShipment) return records.length ? [records] : [];
+  const day = (value?: string) => {
+    const date = parseDateRobust(value);
+    if (!date) return '';
+    if (/^\d{4}-\d{2}-\d{2}[T ]/.test(value || '')) {
+      return new Date(date.getTime() + timezoneOffsetMs).toISOString().slice(0, 10);
+    }
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+  };
+  const shippedDay = (r: DatabaseRowType) => day(r.dispatchDate) || day(r.deliveredDate);
+  const shipments = new Map<string, { day: string; at: number }>();
+  const keyFor = (r: DatabaseRowType) => r.shipmentId || shippedDay(r);
+  for (const row of records) {
+    const date = shippedDay(row);
+    if (!date) continue;
+    const key = keyFor(row);
+    const at = parseDateRobust(row.dispatchDate || row.deliveredDate)?.getTime() || 0;
+    const saved = shipments.get(key);
+    if (!saved || at < saved.at) shipments.set(key, { day: date, at });
+  }
+  const ordered = [...shipments].sort((a, b) => a[1].at - b[1].at);
+  const groups = new Map<string, DatabaseRowType[]>();
+  for (const row of records) {
+    const purchase = day(row.dateOfLive);
+    // A newly created purchase after today's dispatch starts another shipment.
+    // Historical imports retain their original live day rather than import time.
+    const created = String(row.auditTrail || '').split('\n').find(line => /\|\s*Created\s*$/.test(line));
+    const createdAt = created ? parseDateRobust(created.split(' | ')[0])?.getTime() : undefined;
+    const createdDay = created ? day(created.split(' | ')[0]) : '';
+    const waitingShipment = purchase ? ordered.find(([, shipment]) =>
+      shipment.day > purchase || (shipment.day === purchase &&
+        (createdDay !== purchase || !createdAt || createdAt <= shipment.at)))?.[0] : undefined;
+    const key = shippedDay(row) ? keyFor(row) : waitingShipment || 'open';
+    const group = groups.get(key) || [];
+    group.push(row);
+    groups.set(key, group);
+  }
+  return [...groups.values()];
+}
+
+/** Reuse the waiting order's shipment when Dispatch marks its items one at a time. */
+export function shipmentIdentityFor(row: DatabaseRowType, all: DatabaseRowType[], now: string): string {
+  const customer = all.filter(r => customerKey(r) === customerKey(row));
+  const group = shippingGroups(customer).find(rows => rows.some(r => r.id === row.id)) || [];
+  const sent = group.find(r => r.dispatchDate || r.deliveredDate);
+  if (sent?.shipmentId) return sent.shipmentId;
+  if (sent) {
+    // Match the legacy day key used by shippingGroups (business timezone).
+    const value = sent.dispatchDate || sent.deliveredDate;
+    const date = parseDateRobust(value);
+    if (date) {
+      if (/^\d{4}-\d{2}-\d{2}[T ]/.test(value || '')) return new Date(date.getTime() + getTimezoneOffsetMs()).toISOString().slice(0, 10);
+      return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+    }
+  }
+  return `shipment:${now}`;
 }
 
 /** The row a customer's shipping fee is worked out from (the promo one, else the first); null when free. */

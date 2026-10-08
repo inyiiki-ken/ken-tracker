@@ -454,6 +454,7 @@ export function buildDemoSettings(today: Date = new Date()): Record<string, stri
     __APP_CONFIG__: JSON.stringify(app),
     __OPTIONS_CONFIG__: JSON.stringify(options),
     __BUSINESS_CONFIG__: JSON.stringify({ mode: "weight", preset: "jewellery", timezoneOffsetHours: 4 }),
+    __PRICING_CONFIG__: JSON.stringify({ tabbySurchargePct: 15, shippingPerShipment: true, shippingFeeDefault: 30, shippingFeeInternational: 450, shippingFees: { western: 45 } }),
     __RESELLER_CONFIG__: JSON.stringify(resellers),
     __LIVE_PRICELIST__: JSON.stringify(livePrices),
   };

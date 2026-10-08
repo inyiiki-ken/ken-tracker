@@ -124,7 +124,7 @@ export function isCancelledOrReturned(r: Pick<DatabaseRowType, 'status'>): boole
  * the Dispatch / Delivered date by hand. Existing dates are never overwritten.
  */
 export function autoStageDates(
-  before: Pick<DatabaseRowType, 'dispatchDate' | 'deliveredDate'> | undefined,
+  before: Pick<DatabaseRowType, 'dispatchDate' | 'deliveredDate' | 'shipmentId'> | undefined,
   newStatus: string,
   now: string = new Date().toISOString(),
 ): Partial<DatabaseRowType> {
@@ -132,9 +132,11 @@ export function autoStageDates(
   const out: Partial<DatabaseRowType> = {};
   if (stage === 'dispatched' && !String(before?.dispatchDate ?? '').trim()) {
     out.dispatchDate = now;
+    if (!before?.shipmentId) out.shipmentId = `shipment:${now}`;
   }
   if (stage === 'delivered' && !String(before?.deliveredDate ?? '').trim()) {
     out.deliveredDate = now;
+    if (!before?.dispatchDate && !before?.shipmentId) out.shipmentId = `shipment:${now}`;
   }
   return out;
 }

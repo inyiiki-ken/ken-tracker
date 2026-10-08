@@ -24,6 +24,8 @@ export type DatabaseRowType = {
   la4MonthPayment?: string;
   liverAdminRemarks?: string;
   dispatchDate?: string;
+  /** Items dispatched in one action share a shipment identity. */
+  shipmentId?: string;
   deliveredDate?: string;
   reviewChasing?: string;
   fbProfileName?: string;

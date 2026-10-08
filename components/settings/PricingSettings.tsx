@@ -32,11 +32,9 @@ export default function PricingSettings() {
   useEffect(() => {
     getPricingConfig()
       .then((res) => {
-        if (res.config) {
           applyPricingConfig(res.config);
           setCfg(getPricing());
           setSavedSnap(JSON.stringify(getPricing()));
-        }
       })
       .catch(() => { /* keep defaults */ })
       .finally(() => setLoading(false));
@@ -119,6 +117,17 @@ export default function PricingSettings() {
       </div>
 
       {/* Making charges by category */}
+      <div className="space-y-2">
+        <NumField label="Tabby increase % (0 disables it)" value={cfg.tabbySurchargePct}
+          onChange={(v) => setCfg(c => ({ ...c, tabbySurchargePct: Math.max(0, num(v)) }))} />
+        <p className="text-xs text-muted-foreground">The increase is applied to each item, rounded to whole AED, then added together.</p>
+        <label className="flex items-center gap-2 text-xs">
+          <input type="checkbox" checked={cfg.shippingPerShipment}
+            onChange={e => setCfg(c => ({ ...c, shippingPerShipment: e.target.checked }))} />
+          Charge shipping once per shipment. Purchases waiting to ship together share one fee.
+        </label>
+      </div>
+
       <div>
         <Label className="text-xs text-muted-foreground mb-2 block">Gold making charge (MC) by category</Label>
         <KeyNumEditor

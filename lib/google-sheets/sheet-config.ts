@@ -79,11 +79,12 @@ export const DATABASE_HEADERS: Record<string, string> = {
    * period"). Optional: the column is added to the sheet the first time a
    * reason is saved. */
   cancelReason: "Cancel Reason",
+  shipmentId: "Shipment ID",
 };
 
 /** Columns the app adds by itself when first needed, so a sheet without them
  * is not reported as broken. */
-export const OPTIONAL_DATABASE_KEYS = new Set<string>(["cancelReason"]);
+export const OPTIONAL_DATABASE_KEYS = new Set<string>(["cancelReason", "shipmentId"]);
 
 /**
  * Alternate header names some customers use for the same field. The app reads

@@ -506,6 +506,9 @@ function DispatchClientCard({ minerName, records, allRecords, onUpdate, userEmai
           </div>
           <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground mt-0.5">
             <span>{records.length} item{records.length !== 1 ? 's' : ''}</span>
+            {records.some(r => /\bpull\s?out\b/i.test(r.status || '')) && (
+              <Badge variant="outline" className="text-[10px]">For Pullout</Badge>
+            )}
             {orderedRange && <span>{orderedRange}</span>}
             {!isCompact && <span className={deliverySummary.startsWith('🔴') ? 'text-destructive font-medium' : ''}>{deliverySummary}</span>}
             {!isCompact && first?.liverName && <span className="flex items-center gap-1"><Upload className="h-3 w-3" />{first.liverName}</span>}

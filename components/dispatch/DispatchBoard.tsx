@@ -90,6 +90,7 @@ function QueueButton({
 
 export default function DispatchBoard({ records, searchQuery, onSearchChange, onUpdate, onBulkUpdate, userEmail, clientMilestones, onRefresh }: TabProps) {
   const [showReport, setShowReport] = useState(false);
+  const [onlyPullout, setOnlyPullout] = useState(false);
   const [showCancelReport, setShowCancelReport] = useState(false);
   const [showReminders, setShowReminders] = useState(false);
   // Items a liver reported delivered / picked up: not overdue while Dispatch checks.
@@ -117,7 +118,8 @@ export default function DispatchBoard({ records, searchQuery, onSearchChange, on
       return mos === 'in-store' || mos === 'walk-in' || mos === 'walk in';
     };
     const searched = applySearch(
-      records.filter(r => String(r.status || '').trim() && !isWalkIn(r) && !isStillWithAdmin(r.status)),
+      records.filter(r => String(r.status || '').trim() && !isWalkIn(r) && !isStillWithAdmin(r.status)
+        && (!onlyPullout || /\bpull\s?out\b/i.test(r.status || ''))),
       searchQuery,
     );
     const buckets = new Map<OrderBox, DatabaseRowType[]>(ORDER_BOXES.map(b => [b.key, []]));
@@ -147,7 +149,7 @@ export default function DispatchBoard({ records, searchQuery, onSearchChange, on
       }
       return [b.key, groupByPageDateMiner(list, dateOf)];
     }));
-  }, [records, searchQuery]);
+  }, [records, searchQuery, onlyPullout]);
 
   // Items waiting to go out, i.e. what the Pullout Report prints.
   const pulloutCount = useMemo(
@@ -320,6 +322,13 @@ export default function DispatchBoard({ records, searchQuery, onSearchChange, on
 
       <PulloutRequestsPanel records={records} onRefresh={onRefresh} />
       <DeliveryReportsPanel records={records} onRefresh={onRefresh} onOpenReportsChange={onOpenReportsChange} />
+      <div className="px-4 pt-4">
+        <Button size="sm" variant={onlyPullout ? 'default' : 'outline'} aria-pressed={onlyPullout}
+          onClick={() => { setOnlyPullout(v => !v); setSelected(new Set()); }}>
+          {onlyPullout ? 'For Pullout only — show all' : 'Filter: For Pullout'}
+        </Button>
+        {onlyPullout && <p className="text-xs text-muted-foreground mt-2">Pullout items stay in their delivery boxes. Choose a box to prepare collection.</p>}
+      </div>
 
       {/* Work queue: pick a queue on the left, work it on the right. Replaces the
           six stacked accordions — one click instead of expand/collapse, and the

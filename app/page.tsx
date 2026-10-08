@@ -47,6 +47,7 @@ import UploadMasterlistFAB from '@/components/UploadMasterlistFAB';
 import PreviewAsUser from '@/components/PreviewAsUser';
 import RateCalculatorWidget from '@/components/RateCalculatorWidget';
 import { autoStageDates, fulfilmentStage } from '@/lib/fulfilment';
+import { shipmentIdentityFor } from '@/lib/calculations';
 import { liverKey } from '@/lib/pulloutRequests';
 type TabKey = 'admin' | 'dispatch' | 'accounts' | 'bossing' | 'liver' | 'purchasing' | 'invoicing' | 'livesellers' | 'settings' | 'godmode';
 
@@ -133,7 +134,7 @@ function AppContent() {
         getRecords({ tailOnly: false }).catch((e) => { console.error('Failed to load records:', e); return null; }),
         getRoles({}).catch(() => null),
         getRatesConfig({}).catch(() => ({ config: '' })),
-        getPricingConfig({}).catch(() => ({ config: '' })),
+        getPricingConfig({}).catch(() => null),
         getTabConfig({}).catch(() => null),
         getBusinessConfig({}).catch(() => ({ config: '' })),
         getLabelConfig({}).catch(() => ({ config: '' })),
@@ -155,7 +156,7 @@ function AppContent() {
       }
       if (rolesRes) setDynamicRoles(rolesRes as any[]);
       if (ratesRes?.config) applyRatesConfig(ratesRes.config);
-      if (pricingRes?.config) applyPricingConfig(pricingRes.config);
+      if (pricingRes) applyPricingConfig(pricingRes.config);
       applyBusinessConfig(bizRes?.config || '');
       applyLabelConfig(labelRes?.config || '');
       // Only when the read worked: a failed read keeps what's already loaded.
@@ -215,7 +216,11 @@ function AppContent() {
     }
     // Shipping statuses fill in Dispatch / Delivered dates automatically.
     if (fields.status !== undefined && fields.status !== before?.status) {
-      const stamps = autoStageDates({ ...before, ...fields }, fields.status);
+      const stage = fulfilmentStage(fields.status);
+      if (before && !before.shipmentId && !before.dispatchDate && !before.deliveredDate && (stage === 'dispatched' || stage === 'delivered')) {
+        fields = { ...fields, shipmentId: shipmentIdentityFor(before, recordsRef.current, new Date().toISOString()) };
+      }
+      const stamps = autoStageDates({ ...before, ...fields }, fields.status!);
       if (Object.keys(stamps).length) fields = { ...fields, ...stamps };
       fields = { ...fields, ...clearedCancelReason(before, fields) };
     }
@@ -246,7 +251,11 @@ function AppContent() {
     updates = updates.map(u => {
       const existing = recordsRef.current.find(r => r.id === u.rowId);
       if (u.fields.status === undefined || u.fields.status === existing?.status) return u;
-      const stamps = { ...autoStageDates({ ...existing, ...u.fields }, u.fields.status, now), ...clearedCancelReason(existing, u.fields) };
+      const stage = fulfilmentStage(u.fields.status);
+      if (existing && !existing.shipmentId && !existing.dispatchDate && !existing.deliveredDate && (stage === 'dispatched' || stage === 'delivered')) {
+        u = { ...u, fields: { ...u.fields, shipmentId: shipmentIdentityFor(existing, recordsRef.current, now) } };
+      }
+      const stamps = { ...autoStageDates({ ...existing, ...u.fields }, u.fields.status!, now), ...clearedCancelReason(existing, u.fields) };
       return Object.keys(stamps).length ? { ...u, fields: { ...u.fields, ...stamps } } : u;
     });
     const byId = new Map(updates.map(u => [u.rowId, u.fields]));

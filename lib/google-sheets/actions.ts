@@ -5,7 +5,8 @@ import { getActiveDoc, getActiveWorksheet, getActiveRows, invalidateActiveRows }
 import { readConfig, writeConfig, readConfigByPrefix, deleteConfigMarker, readConfigChunks, writeConfigChunks, clearConfigChunks } from "./config-store";
 import { parseSheetId } from "./sheetId";
 import { requireSession, requireRole, getSessionRoles, getSessionAccess } from "./authz";
-import { isDeveloper } from "./tenancy-core";
+import { isDeveloper, getMyContextCore } from "./tenancy-core";
+import { upgradeCrownDeliveryRules } from "@/lib/crownDeliveryRules";
 import { rowToDatabaseRecord, databaseRecordToRow } from "./row-mapper";
 import { activeHeaderSet, ensureOptionalColumns, writeRowsByCells, withSheetWriteLock, getTenantColumnAliases, newRowKey, auditHeader, appendAudit } from "./recordStore";
 import { DATABASE_HEADERS, DATABASE_HEADER_ALIASES, OPTIONAL_DATABASE_KEYS, ROLES_HEADERS, UPLOADS_HEADERS } from "./sheet-config";
@@ -250,7 +251,20 @@ export async function getRecords(_params?: { tailOnly?: boolean }): Promise<{ re
   // need the browser's rates). Ever bought from another liver: no loyalty count.
   const shared = customersWithOtherLivers(all, me);
   // ...except the shipping fee: one open COD item across all their livers carries it.
-  const carriers = sharedShippingCarriers(all, shared);
+  // Resolve this tenant's config explicitly: server calculations must never
+  // call the browser's module-level pricing / timezone getters.
+  let perShipment = false;
+  try { perShipment = JSON.parse((await getPricingConfig()).config || '{}').shippingPerShipment === true; }
+  catch { /* malformed saved pricing keeps the existing once-per-customer behaviour */ }
+  let timezoneOffsetHours = 4;
+  try {
+    const business = JSON.parse(await readConfig('__BUSINESS_CONFIG__') || '{}');
+    if (typeof business.timezoneOffsetHours === 'number') timezoneOffsetHours = business.timezoneOffsetHours;
+  } catch { /* default business clock */ }
+  const carriers = sharedShippingCarriers(all, shared, {
+    perShipment,
+    timezoneOffsetMs: timezoneOffsetHours * 60 * 60 * 1000,
+  });
   const everShared = customersEverWithOtherLivers(all, me);
   // Where "Liver came" sends her international / reseller items, named from
   // every row like Dispatch's (her own rows may spell the box differently).
@@ -487,6 +501,7 @@ export async function splitItem(params: {
   // comes from the screen: here only default status settings are known.
   if (stage !== "delivered") delete newRow.deliveredDate;
   if (stage !== "delivered" && stage !== "dispatched") delete newRow.dispatchDate;
+  if (stage !== "delivered" && stage !== "dispatched") delete newRow.shipmentId;
   if (stage === "dispatched" && !String(newRow.dispatchDate ?? "").trim()) newRow.dispatchDate = now;
   if (stage === "delivered" && !String(newRow.deliveredDate ?? "").trim()) newRow.deliveredDate = now;
   // The copy loop above clones every field, which included the parent's Row Key
@@ -1199,7 +1214,9 @@ export async function deletePageLogo(params: { page: string }): Promise<{ succes
 const LIVER_HIDDEN_PRICING = ["makingCharges", "perPcRates", "perPcFallback", "b1t1Multiplier"] as const;
 
 export async function getPricingConfig(_params?: Record<string, never>): Promise<{ config: string }> {
-  const config = await readConfig("__PRICING_CONFIG__");
+  const stored = await readConfig("__PRICING_CONFIG__");
+  const context = await getMyContextCore();
+  const config = upgradeCrownDeliveryRules(stored, context.activeTenant?.displayName || '');
   const access = await getSessionAccess();
   if (!access.all && access.roles.length === 0) return { config: "" };
   if (access.all || !isLiverOnly(access.roles) || !config) return { config };

@@ -19,6 +19,9 @@
  */
 
 export interface PricingConfig {
+  tabbySurchargePct: number;
+  shippingPerShipment: boolean;
+  crownDeliveryRulesVersion?: number;
   usdToAed: number;
   /** MC added on top of the gold rate, keyed by category label. */
   makingCharges: Record<string, number>;
@@ -43,6 +46,8 @@ export interface PricingConfig {
 }
 
 export const DEFAULT_PRICING: PricingConfig = {
+  tabbySurchargePct: 0,
+  shippingPerShipment: false,
   usdToAed: 3.67,
   makingCharges: {
     "Gold Normal": 16,
@@ -103,6 +108,9 @@ function loadFromCache(): PricingConfig {
 function mergeConfig(partial: Partial<PricingConfig> | null | undefined): PricingConfig {
   const p = partial ?? {};
   return {
+    tabbySurchargePct: typeof p.tabbySurchargePct === "number" && p.tabbySurchargePct >= 0 ? p.tabbySurchargePct : 0,
+    shippingPerShipment: p.shippingPerShipment === true,
+    crownDeliveryRulesVersion: p.crownDeliveryRulesVersion,
     usdToAed: typeof p.usdToAed === "number" && p.usdToAed > 0 ? p.usdToAed : DEFAULT_PRICING.usdToAed,
     // Saved list wins exactly, so a removed entry stays removed.
     makingCharges: p.makingCharges && typeof p.makingCharges === "object" ? { ...p.makingCharges } : { ...DEFAULT_PRICING.makingCharges },
@@ -141,7 +149,7 @@ export function setPricing(config: PricingConfig): void {
 
 /** Apply a JSON blob loaded from the tenant sheet at app start. */
 export function applyPricingConfig(configJson: string): void {
-  if (!configJson) return;
+  if (!configJson) { setPricing({ ...DEFAULT_PRICING }); return; }
   try {
     setPricing(mergeConfig(JSON.parse(configJson)));
   } catch { /* ignore malformed */ }
@@ -193,6 +201,11 @@ export function getCcSurchargeRate(): number {
 
 export function getCcIncludeShipping(): boolean {
   return !!_pricing.ccIncludeShipping;
+}
+
+/** Apply Tabby's increase to each item before whole-AED rounding. */
+export function paymentPriceMultiplier(payment?: string): number {
+  return /\btabby\b/i.test(payment || '') ? 1 + getPricing().tabbySurchargePct / 100 : 1;
 }
 
 /** Shipping fee for a region label (case-insensitive contains match). */
