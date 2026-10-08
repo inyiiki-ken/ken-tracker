@@ -27,6 +27,10 @@ import { getMasterlistMapping } from '@/lib/masterlistMapping';
 import { getFieldLabel } from '@/lib/labelConfig';
 import { getEffectiveStatuses } from '@/lib/statusRegistry';
 import { suggestOrderCodes, exampleCode, codeKey, dayKey, splitCode } from '@/lib/orderCode';
+import { useCustomerMemory } from '@/lib/useCustomerMemory';
+import { fillFromMemory, profileFor, isRepeat, type MemoryField } from '@/lib/customerMemory';
+import { karatOf, ratesFor } from '@/lib/resellers';
+import RememberedTag from '@/components/RememberedTag';
 
 // S6 FIX: Use timestamp + crypto random to avoid collisions
 function generateCustomerId(): string {
@@ -80,7 +84,9 @@ interface Props {
 // Pages & Sources are business-specific — derived from THIS customer's own data,
 // not a hardcoded list (see getKnownPages/getKnownSources).
 
-export default function AddClientModal({ onClose, userFirstName, userEmail, onRefresh, existingRecords = [] }: Props) {
+const NO_RECORDS: DatabaseRowType[] = [];
+
+export default function AddClientModal({ onClose, userFirstName, userEmail, onRefresh, existingRecords = NO_RECORDS }: Props) {
   const [saving, setSaving] = useState(false);
   // Editable dropdown lists from the DATA'S sheet tab, merged over the
   // built-in defaults below (sheet wins, defaults fill any gaps).
@@ -130,7 +136,84 @@ export default function AddClientModal({ onClose, userFirstName, userEmail, onRe
     supplierRateOverride: '',
   });
 
-  const set = (key: string, val: string) => setForm(p => ({ ...p, [key]: val }));
+  // Customer Memory: a repeat customer's empty fields are filled in from what
+  // the app learnt, and tagged "remembered" until changed by hand.
+  const { memory, resellerCfg } = useCustomerMemory(existingRecords);
+  const [touched, setTouched] = useState<Set<string>>(() => new Set());
+  const [remembered, setRemembered] = useState<Set<string>>(() => new Set());
+  const [wasName, setWasName] = useState('');
+  const [memSf, setMemSf] = useState('');
+  const isRemembered = (k: string) => remembered.has(k);
+
+  const set = (key: string, val: string) => {
+    setForm(p => ({ ...p, [key]: val }));
+    setTouched(t => (t.has(key) ? t : new Set(t).add(key)));
+    setRemembered(r => {
+      if (!r.has(key)) return r;
+      const next = new Set(r);
+      next.delete(key);
+      return next;
+    });
+  };
+
+  const ADD_CLIENT_FILL: MemoryField[] = ['clientAddress', 'clientNumber', 'regions', 'locationOfMiner', 'modeOfPayment', 'page'];
+  const FORM_DEFAULTS: Record<string, string> = { locationOfMiner: 'Local' };
+
+  /** Runs when the name box is left: fix a remembered misspelling, fill the rest. */
+  const applyMemory = (typed: string) => {
+    const name = normalizeMinerName(typed);
+    const base: typeof form = { ...form, minerName: name };
+    // Fields filled for the previous name go back to empty first.
+    for (const k of remembered) {
+      if (k in base && k !== 'minerName' && k !== 'clientRate') (base as Record<string, string>)[k] = FORM_DEFAULTS[k] ?? '';
+    }
+    // A default nobody picked (Location "Local") counts as empty.
+    const row: Record<string, string> = { ...base };
+    for (const k of Object.keys(FORM_DEFAULTS)) if (!touched.has(k) && row[k] === FORM_DEFAULTS[k]) row[k] = '';
+    const fill = fillFromMemory(row, memory, ADD_CLIENT_FILL);
+    const next = { ...base };
+    const got = new Set<string>(remembered.has('clientRate') ? ['clientRate'] : []);
+    if (fill.minerName) { next.minerName = normalizeMinerName(fill.minerName); got.add('minerName'); }
+    for (const [k, v] of Object.entries(fill.fields)) {
+      if (k === 'freeSf' || !v) continue;
+      (next as Record<string, string>)[k] = v;
+      got.add(k);
+    }
+    if (got.has('locationOfMiner') && !touched.has('currency') && next.locationOfMiner === 'Pinas') next.currency = 'PHP';
+    setForm(next);
+    setRemembered(got);
+    setWasName(fill.wasName ?? '');
+    setMemSf(fill.fields.freeSf ?? '');
+  };
+
+  const memProfile = useMemo(() => {
+    const p = profileFor(form.minerName, memory);
+    return isRepeat(p) ? p : undefined;
+  }, [form.minerName, memory]);
+
+  // A reseller gets her own rate for the item's type (18K / SP / EF), from the
+  // reseller rates already saved for that day (or her latest earlier day).
+  useEffect(() => {
+    if (touched.has('clientRate')) return;
+    if (memProfile?.type !== 'Reseller') {
+      // No longer a reseller (another name typed): drop her rate.
+      if (remembered.has('clientRate')) {
+        setForm(p => ({ ...p, clientRate: '' }));
+        setRemembered(r => { const next = new Set(r); next.delete('clientRate'); return next; });
+      }
+      return;
+    }
+    const karat = karatOf(form.category);
+    const rate = karat ? ratesFor(resellerCfg, memProfile.name, form.dateOfLive).rates[karat] : undefined;
+    const value = rate ? String(rate) : '';
+    setForm(p => (p.clientRate === value ? p : { ...p, clientRate: value }));
+    setRemembered(r => {
+      if (!!value === r.has('clientRate')) return r;
+      const next = new Set(r);
+      if (value) next.add('clientRate'); else next.delete('clientRate');
+      return next;
+    });
+  }, [memProfile, form.category, form.dateOfLive, form.clientRate, resellerCfg, touched, remembered]);
 
   const isManualSupplierRate = form.category === 'Diamond' || form.category === 'Per PC';
   const autoSupplierRate = useMemo(() => {
@@ -313,7 +396,10 @@ export default function AddClientModal({ onClose, userFirstName, userEmail, onRe
           profit,
           auditTrail,
           customerId,
+          ...(memSf ? { freeSf: memSf } : {}),
         },
+        rememberedFields: [...remembered, ...(memSf ? ['freeSf'] : [])],
+        rememberedWasName: remembered.has('minerName') ? wasName : undefined,
       });
       // Persist the full rate snapshot for this date (historical rate locking)
       saveRatesForDate(form.dateOfLive, {
@@ -371,10 +457,22 @@ export default function AddClientModal({ onClose, userFirstName, userEmail, onRe
               <Input
                 value={form.minerName}
                 onChange={e => set('minerName', e.target.value)}
-                onBlur={e => set('minerName', normalizeMinerName(e.target.value))}
+                onBlur={e => applyMemory(e.target.value)}
                 className="h-8 text-xs mt-0.5 bg-background border-border"
                 placeholder="e.g. Estella Jimenez"
               />
+              {memProfile && (
+                <div className="flex items-start gap-1 mt-1 text-[10px] rounded px-2 py-1 text-info bg-info/10 border border-info/20">
+                  <Info className="w-3 h-3 mt-0.5 shrink-0" />
+                  <span>
+                    Repeat customer{memProfile.orders ? ` · ${memProfile.orders} order${memProfile.orders === 1 ? '' : 's'}` : ''}
+                    {memProfile.box ? ` · usually ${memProfile.box}` : ''}
+                    {memProfile.type === 'Reseller' ? ' · Reseller' : ''}
+                    {wasName ? ` · name fixed from "${wasName}"` : ''}
+                    {remembered.size > 0 ? '. Fields tagged "remembered" were filled in for you; please double-check them.' : ''}
+                  </span>
+                </div>
+              )}
               {duplicateNameWarning && (
                 <div className={`flex items-start gap-1 mt-1 text-[10px] rounded px-2 py-1 ${duplicateNameWarning.includes('new ID created') ? 'text-attention bg-attention/10 border border-attention/20' : 'text-info bg-info/10 border border-info/20'}`}>
                   <Info className="w-3 h-3 mt-0.5 shrink-0" />
@@ -388,7 +486,7 @@ export default function AddClientModal({ onClose, userFirstName, userEmail, onRe
             </div>
 
             <div>
-              <Label className="text-xs text-muted-foreground">{getFieldLabel('page')} *</Label>
+              <Label className="text-xs text-muted-foreground">{getFieldLabel('page')} *<RememberedTag show={isRemembered('page')} /></Label>
               <Select value={form.page} onValueChange={v => set('page', v)}>
                 <SelectTrigger className="h-8 text-xs mt-0.5 bg-background border-border"><SelectValue placeholder="Select..." /></SelectTrigger>
                 <SelectContent className="bg-popover border-border">
@@ -466,7 +564,7 @@ export default function AddClientModal({ onClose, userFirstName, userEmail, onRe
               <Input type="number" value={form.goldRate} onChange={e => set('goldRate', e.target.value)} className="h-8 text-xs mt-0.5 bg-background border-border" placeholder="0.00" />
             </div>
             <div>
-              <Label className="text-xs text-muted-foreground">{getFieldLabel('clientRate')}</Label>
+              <Label className="text-xs text-muted-foreground">{getFieldLabel('clientRate')}<RememberedTag show={isRemembered('clientRate')} /></Label>
               <Input type="number" value={form.clientRate} onChange={e => set('clientRate', e.target.value)} className="h-8 text-xs mt-0.5 bg-background border-border" placeholder={autoClientRate ? `${autoClientRate} (rate + MC)` : '0.00'} />
             </div>
             <div>
@@ -516,7 +614,7 @@ export default function AddClientModal({ onClose, userFirstName, userEmail, onRe
             </div>
 
             <div>
-              <Label className="text-xs text-muted-foreground">Location</Label>
+              <Label className="text-xs text-muted-foreground">Location<RememberedTag show={isRemembered('locationOfMiner')} /></Label>
               <Select value={form.locationOfMiner} onValueChange={v => {
                 set('locationOfMiner', v);
                 if (v === 'Pinas') set('currency', 'PHP');
@@ -591,7 +689,7 @@ export default function AddClientModal({ onClose, userFirstName, userEmail, onRe
 
             {form.locationOfMiner === 'Local' && (
               <div>
-                <Label className="text-xs text-muted-foreground">Region</Label>
+                <Label className="text-xs text-muted-foreground">Region<RememberedTag show={isRemembered('regions')} /></Label>
                 <Select value={form.regions} onValueChange={v => set('regions', v)}>
                   <SelectTrigger className="h-8 text-xs mt-0.5 bg-background border-border"><SelectValue placeholder="Select..." /></SelectTrigger>
                   <SelectContent className="bg-popover border-border">
@@ -602,7 +700,7 @@ export default function AddClientModal({ onClose, userFirstName, userEmail, onRe
             )}
 
             <div>
-              <Label className="text-xs text-muted-foreground">Mode of Payment</Label>
+              <Label className="text-xs text-muted-foreground">Mode of Payment<RememberedTag show={isRemembered('modeOfPayment')} /></Label>
               <Select value={form.modeOfPayment} onValueChange={v => set('modeOfPayment', v)}>
                 <SelectTrigger className="h-8 text-xs mt-0.5 bg-background border-border"><SelectValue placeholder="Select..." /></SelectTrigger>
                 <SelectContent className="bg-popover border-border">
@@ -630,7 +728,7 @@ export default function AddClientModal({ onClose, userFirstName, userEmail, onRe
             </div>
             {!isFieldHidden('clientAddress') && (
               <div>
-                <Label className="text-xs text-muted-foreground">Client Address</Label>
+                <Label className="text-xs text-muted-foreground">Client Address<RememberedTag show={isRemembered('clientAddress')} /></Label>
                 <Input
                   value={form.clientAddress}
                   onChange={e => set('clientAddress', e.target.value)}
@@ -641,7 +739,7 @@ export default function AddClientModal({ onClose, userFirstName, userEmail, onRe
             )}
             {!isFieldHidden('clientNumber') && (
               <div>
-                <Label className="text-xs text-muted-foreground">Client Number</Label>
+                <Label className="text-xs text-muted-foreground">Client Number<RememberedTag show={isRemembered('clientNumber')} /></Label>
                 <Input
                   value={form.clientNumber}
                   onChange={e => set('clientNumber', e.target.value)}

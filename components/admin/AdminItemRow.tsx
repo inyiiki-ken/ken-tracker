@@ -1,8 +1,10 @@
 "use client";
 
+import RememberedTag from '@/components/RememberedTag';
+import { rememberedFieldsOf } from '@/lib/customerMemory';
 import { isPulloutStatus } from '@/lib/appConfig';
 import { fulfilmentStage } from '@/lib/fulfilment';
-import { useState, useEffect, useRef, memo, useCallback } from 'react';
+import { useState, useEffect, useRef, memo, useCallback, useMemo } from 'react';
 import { useDebouncedCallback } from 'use-debounce';
 import { AlertCircle, Loader2, Pencil, Copy, Check, Scissors } from 'lucide-react';
 import EditItemDialog from '@/components/admin/EditItemDialog';
@@ -322,6 +324,8 @@ function AdminItemRow({ record, onUpdate, onGroupUpdate, onDateGroupUpdate, onFi
   const [generating, setGenerating] = useState(false);
   const generatingRef = useRef(false);
   const overdue = isOverdue(record);
+  // Filled in from Customer Memory and not changed since: tagged for a double-check.
+  const remembered = useMemo(() => rememberedFieldsOf(record.auditTrail), [record.auditTrail]);
   const inStore = isInStore(record);
   const canSplit = canSplitItem(record);
   // A blank status (typed in the sheet) is Waiting for Details.
@@ -527,7 +531,7 @@ function AdminItemRow({ record, onUpdate, onGroupUpdate, onDateGroupUpdate, onFi
       <div className="space-y-2">
         <div>
           <div className="flex items-center justify-between">
-            <Label className="text-xs text-muted-foreground">Mode of Payment</Label>
+            <Label className="text-xs text-muted-foreground">Mode of Payment<RememberedTag show={remembered.has('modeOfPayment')} /></Label>
             {record.modeOfPayment && (
               <button
                 onClick={handleMopApplyAll}
@@ -550,7 +554,7 @@ function AdminItemRow({ record, onUpdate, onGroupUpdate, onDateGroupUpdate, onFi
 
         {!inStore && !isCompact && (
           <div>
-            <Label className="text-xs text-muted-foreground">Region <span className="text-primary/60">(applies to all items)</span></Label>
+            <Label className="text-xs text-muted-foreground">Region <span className="text-primary/60">(applies to all items)</span><RememberedTag show={remembered.has('regions')} /></Label>
             <Select value={record.regions || ''} onValueChange={handleRegionChange}>
               <SelectTrigger className="h-8 text-xs bg-background border-border mt-0.5">
                 <SelectValue placeholder="Select region..." />
@@ -635,7 +639,7 @@ function AdminItemRow({ record, onUpdate, onGroupUpdate, onDateGroupUpdate, onFi
           <div className="rounded-lg border border-primary/20 bg-primary/5 px-3 py-2 grid grid-cols-1 sm:grid-cols-2 gap-2">
             {!isFieldHidden('clientAddress') && (
               <div>
-                <Label className="text-xs text-muted-foreground">Client Address</Label>
+                <Label className="text-xs text-muted-foreground">Client Address<RememberedTag show={remembered.has('clientAddress')} /></Label>
                 <Input
                   value={clientAddress}
                   onChange={e => { setClientAddress(e.target.value); debouncedAddress(e.target.value); }}
@@ -646,7 +650,7 @@ function AdminItemRow({ record, onUpdate, onGroupUpdate, onDateGroupUpdate, onFi
             )}
             {!isFieldHidden('clientNumber') && (
               <div>
-                <Label className="text-xs text-muted-foreground">Client Number</Label>
+                <Label className="text-xs text-muted-foreground">Client Number<RememberedTag show={remembered.has('clientNumber')} /></Label>
                 <Input
                   value={clientNumber}
                   onChange={e => { setClientNumber(e.target.value); debouncedNumber(e.target.value); }}
@@ -670,7 +674,7 @@ function AdminItemRow({ record, onUpdate, onGroupUpdate, onDateGroupUpdate, onFi
                     onCheckedChange={v => onGroupUpdate({ freeSf: v ? 'TRUE' : '' })}
                     className="scale-90"
                   />
-                  <Label className="text-xs">FREE SF</Label>
+                  <Label className="text-xs">FREE SF<RememberedTag show={remembered.has('freeSf')} title="Shipping fee from this customer's saved details. Please double-check." /></Label>
                 </div>
                 <PromoSfToggle record={record} onGroupUpdate={onGroupUpdate} />
                 <AdditionalChargeToggle record={record} onUpdate={onUpdate} />

@@ -19,6 +19,8 @@ import { boxStatusName, ownBox } from "@/lib/pulloutTargets";
 import { fulfilmentStage, type FulfilmentStage } from "@/lib/fulfilment";
 import { keepPaymentsOnOriginal, MONEY_KEYS, type MoneyKey, type SplitPayments } from "@/lib/splitPayments";
 import { customersEverWithOtherLivers, customersWithOtherLivers, sharedShippingCarriers } from "@/lib/liverMoney";
+import { buildCustomerMemory, fillFromMemory, isSpellingFix, rememberedNote, UPLOAD_FILL_FIELDS, type CustomerMemory } from "@/lib/customerMemory";
+import { readStoredCustomers, rememberAliases } from "./customerMemoryStore";
 
 
 /**
@@ -282,6 +284,10 @@ export async function getRecords(_params?: { tailOnly?: boolean }): Promise<{ re
 export async function createRecord(params: {
   fields: Partial<DatabaseRowType>;
   userEmail?: string;
+  /** Fields Add Client filled from Customer Memory (and still holds), for the "Remembered:" history line. */
+  rememberedFields?: string[];
+  /** The name as typed, when memory corrected its spelling. */
+  rememberedWasName?: string;
 }): Promise<{ success: boolean }> {
   const sessionEmailForAudit = await requireRole(RECORD_WRITE_ROLES);
   const sheet = await getActiveWorksheet("database");
@@ -298,9 +304,12 @@ export async function createRecord(params: {
     fieldsWithId.customerId = resolveCustomerIdFor(String(fieldsWithId.minerName), index);
   }
 
+  const createdBy = sessionEmailForAudit || params.userEmail || "unknown";
+  const remembered = (params.rememberedFields ?? []).filter((f) => f === "minerName" || String((fieldsWithId as Record<string, unknown>)[f] ?? "").trim());
+  const note = rememberedNote({ remembered, wasName: params.rememberedWasName });
   const row = {
     ...fieldsWithId,
-    auditTrail: `${timestamp} | ${sessionEmailForAudit || params.userEmail || "unknown"} | Created`,
+    auditTrail: `${timestamp} | ${createdBy} | Created${note ? `\n${timestamp} | ${createdBy} | ${note}` : ""}`,
   };
   await sheet.addRow(databaseRecordToRow(row, await activeHeaderSet(sheet), await getTenantColumnAliases()));
   invalidateActiveRows();
@@ -337,6 +346,14 @@ export async function updateRecord(params: {
     { rowNumber: params.rowId, rowKey: params.existingRecord?.rowKey, patch: patchRow, audit: { header: auditHeader(headers, aliases), lines: [auditEntry] } },
   ]);
   if (written === 0) throw new Error(`No record found at row ${params.rowId}`);
+  // A customer's name spelled better (ROTH LYN → RUTH LYN) is remembered, so
+  // the next upload fixes it by itself. A different customer is not.
+  const oldName = String(params.existingRecord?.minerName ?? "");
+  const newName = String(fields.minerName ?? "");
+  if (newName && isSpellingFix(oldName, newName)) {
+    await rememberAliases([{ from: oldName, to: newName, customerId: String(params.existingRecord?.customerId ?? "") }], sessionEmailForAudit || "unknown")
+      .catch((err) => console.warn("Customer memory: couldn't learn name fix", err));
+  }
   return { success: true };
 }
 
@@ -376,10 +393,11 @@ export async function mergeClients(params: {
   masterCustomerId: string;
   masterMinerName: string;
 }): Promise<{ updatedCount: number; success: boolean; message: string }> {
-  await requireRole(RECORD_WRITE_ROLES);
+  const mergedBy = await requireRole(RECORD_WRITE_ROLES);
   const sheet = await getActiveWorksheet("database");
   const rows = await sheet.getRows();
   const toUpdate = rows.filter((r) => r.get(DATABASE_HEADERS.customerId) === params.duplicateCustomerId);
+  const oldNames = [...new Set(toUpdate.map((r) => String(r.get(DATABASE_HEADERS.minerName) ?? "").trim()).filter(Boolean))];
 
   // Previously capped at 10 rows per merge (so a 22-row duplicate silently only
   // half-merged). Now every matching row is rewritten in one batched request.
@@ -394,6 +412,11 @@ export async function mergeClients(params: {
     }))
   );
   invalidateActiveRows();
+  // Merged = the same person: her other spellings are fixed automatically from now on.
+  await rememberAliases(
+    oldNames.map((from) => ({ from, to: params.masterMinerName, customerId: params.masterCustomerId })),
+    mergedBy || "unknown",
+  ).catch((err) => console.warn("Customer memory: couldn't learn merged names", err));
 
   return {
     updatedCount: count,
@@ -652,6 +675,13 @@ export async function importRows(params: {
     if (!customerKey(rec.minerName ?? "") || !dateKey(rec.dateOfLive)) continue;
     manualByDayClient.set(k, [...(manualByDayClient.get(k) ?? []), rec]);
   }
+  // What the app learnt about this tenant's customers. Never blocks an upload.
+  let memory: CustomerMemory | null = null;
+  try {
+    memory = buildCustomerMemory(existingRows.map((r) => rowToDatabaseRecord(r, dbAliases)), await readStoredCustomers());
+  } catch (err) {
+    console.warn("Customer memory unavailable for this upload", err);
+  }
   const claimed = new Set<number>();
   const MATCH_FILL_FIELDS = [
     "orderId", "page", "liverName", "source", "category", "tog", "mc", "goldRate",
@@ -673,7 +703,12 @@ export async function importRows(params: {
   };
   let matchedManual = 0;
 
-  for (const rawRow of params.rows.slice(0, 300)) {
+  for (const inRow of params.rows.slice(0, 300)) {
+    // Repeat customer: a remembered misspelling is fixed before anything else
+    // (so her id, duplicate and hand-added matches use the right name), and her
+    // empty delivery details are filled from what the app learnt.
+    const fill = memory ? fillFromMemory(inRow, memory, UPLOAD_FILL_FIELDS) : null;
+    const rawRow = fill?.minerName ? { ...inRow, minerName: fill.minerName } : inRow;
     // Retry of a batch that already went in (same Row Key) → skip silently.
     if (rawRow.rowKey && existingRowKeys.has(String(rawRow.rowKey))) { alreadyImported++; continue; }
     const k = itemKey(rawRow.liverName, rawRow.dateOfLive, rawRow.orderId, rawRow.itemDescription);
@@ -712,6 +747,9 @@ export async function importRows(params: {
       }
 
       // Sensible defaults for a freshly uploaded masterlist.
+      if (fill) {
+        for (const [f, v] of Object.entries(fill.fields)) if (v && !row[f]) row[f] = v;
+      }
       if (!row.status) row.status = "Waiting for Details";
       if (!row.modeOfSale) row.modeOfSale = "Live";
 
@@ -721,7 +759,8 @@ export async function importRows(params: {
       }
 
       if (!row.rowKey) row.rowKey = newRowKey();
-      row.auditTrail = `${timestamp} | ${who} | Imported from masterlist${idTag}`;
+      const note = fill ? rememberedNote(fill) : "";
+      row.auditTrail = `${timestamp} | ${who} | Imported from masterlist${idTag}${note ? `\n${timestamp} | ${who} | ${note}` : ""}`;
       toAdd.push(row);
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Unknown error";
