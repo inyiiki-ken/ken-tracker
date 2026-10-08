@@ -181,6 +181,13 @@ async function readTitle(orig: ImageData, box: { x0: number; y0: number; x1: num
 
 // ── 2. OCR ───────────────────────────────────────────────────────────────────
 
+// The whole-page read uses tesseract.js's own default, one uniform block
+// ("6"). It reads these spreadsheet screenshots row by row; the automatic page
+// layout ("3") splits the header into separate pieces and the header row is
+// then never found (2026-10-08 AMBIE: every photo after the first failed,
+// because the closer row reads used to leave the reader on "3").
+const PAGE_MODE = "6";
+
 let workerPromise: Promise<any> | null = null;
 async function getWorker() {
   if (!workerPromise) {
@@ -197,8 +204,9 @@ async function getWorker() {
   return workerPromise;
 }
 
-async function ocrLines(canvas: HTMLCanvasElement): Promise<{ lines: OcrLine[]; text: string }> {
+async function ocrLines(canvas: HTMLCanvasElement, mode?: string): Promise<{ lines: OcrLine[]; text: string }> {
   const worker = await getWorker();
+  if (mode) await worker.setParameters({ tessedit_char_whitelist: "", tessedit_pageseg_mode: mode });
   const { data } = await worker.recognize(canvas, {}, { blocks: true, text: true });
   const lines: OcrLine[] = [];
   for (const b of data.blocks || []) {
@@ -237,7 +245,7 @@ async function ocrRegion(src: HTMLCanvasElement, box: { x0: number; y0: number; 
     const { lines } = await ocrLines(c);
     return lines.map((l) => ({ ...l, words: l.words.map((wd) => ({ ...wd, x0: x0 + (wd.x0 - pad) / scale, x1: x0 + (wd.x1 - pad) / scale, y0: y0 + (wd.y0 - pad) / scale, y1: y0 + (wd.y1 - pad) / scale })) }));
   } finally {
-    if (digits) await worker.setParameters({ tessedit_char_whitelist: "", tessedit_pageseg_mode: "3" });
+    if (digits) await worker.setParameters({ tessedit_char_whitelist: "", tessedit_pageseg_mode: PAGE_MODE });
   }
 }
 
@@ -432,10 +440,16 @@ export function missingCodes(codes: string[]): string[] {
 export async function parseMasterlistImage(file: File, mapping?: MasterlistMapping, history: DatabaseRowType[] = []): Promise<PhotoParseResult> {
   const m = mapping ?? getMasterlistMapping();
   const { canvas, colLines, orig } = await prepareImage(file);
-  const { lines, text } = await ocrLines(canvas);
+  let { lines, text } = await ocrLines(canvas, PAGE_MODE);
   const warnings: string[] = [];
 
-  const headerIdx = findHeader(lines);
+  let headerIdx = findHeader(lines);
+  if (headerIdx < 0) {
+    // Second try with the automatic page layout before giving up.
+    ({ lines, text } = await ocrLines(canvas, "3"));
+    headerIdx = findHeader(lines);
+    await (await getWorker()).setParameters({ tessedit_pageseg_mode: PAGE_MODE });
+  }
   if (headerIdx < 0) throw new Error("Couldn't find the header row (CODE / CUSTOMER NAME / …) in the picture. Try a clearer, uncropped screenshot.");
   const header = lines[headerIdx];
 
