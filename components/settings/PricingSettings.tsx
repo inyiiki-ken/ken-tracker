@@ -12,7 +12,6 @@ import {
   DEFAULT_PRICING,
   getPricing,
   setPricing,
-  serializePricingConfig,
   applyPricingConfig,
   type PricingConfig,
 } from "@/lib/pricingConfig";
@@ -28,17 +27,28 @@ export default function PricingSettings() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [savedSnap, setSavedSnap] = useState(() => JSON.stringify(getPricing()));
+  // Fingerprint of the copy loaded from the sheet; null = not loaded, so
+  // nothing can be saved (a save would put defaults over the real settings).
+  const [version, setVersion] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState("");
 
-  useEffect(() => {
+  const load = () => {
+    setLoading(true);
+    setLoadError("");
     getPricingConfig()
       .then((res) => {
-          applyPricingConfig(res.config);
-          setCfg(getPricing());
-          setSavedSnap(JSON.stringify(getPricing()));
+        if (!applyPricingConfig(res.config)) throw new Error("The saved pricing in the sheet is not readable.");
+        setCfg(getPricing());
+        setSavedSnap(JSON.stringify(getPricing()));
+        setVersion(res.version);
       })
-      .catch(() => { /* keep defaults */ })
+      .catch((err) => {
+        setVersion(null);
+        setLoadError(err instanceof Error && err.message ? err.message : "Couldn't load pricing from the sheet.");
+      })
       .finally(() => setLoading(false));
-  }, []);
+  };
+  useEffect(load, []);
 
   const num = (v: string, fallback = 0) => {
     const n = parseFloat(v);
@@ -51,12 +61,15 @@ export default function PricingSettings() {
     setCfg((c) => ({ ...c, perPcRates: { ...c.perPcRates, [tog]: num(v) } }));
 
   const persist = async () => {
-    setPricing(cfg); // update in-memory + cache so calcs use it immediately
-    await savePricingConfig({ config: serializePricingConfig() });
+    if (version === null) throw new Error("Pricing didn't load, so it can't be saved. Reload and try again.");
+    // Saved to the sheet first; the app only uses the new numbers once that worked.
+    const res = await savePricingConfig({ config: JSON.stringify(cfg), baseVersion: version });
+    setPricing(cfg);
+    setVersion(res.version);
     setSavedSnap(JSON.stringify(getPricing()));
   };
   const dirty = JSON.stringify(cfg) !== savedSnap;
-  useSectionSaver("pricing", { label: "Pricing & Rates", isDirty: () => JSON.stringify(cfg) !== savedSnap, save: persist });
+  useSectionSaver("pricing", { label: "Pricing & Rates", isDirty: () => version !== null && JSON.stringify(cfg) !== savedSnap, save: persist });
 
   const save = async () => {
     setSaving(true);
@@ -71,6 +84,19 @@ export default function PricingSettings() {
   };
 
   const resetDefaults = () => setCfg({ ...DEFAULT_PRICING, makingCharges: { ...DEFAULT_PRICING.makingCharges }, perPcRates: { ...DEFAULT_PRICING.perPcRates } });
+
+  if (!loading && loadError) {
+    return (
+      <section className="space-y-3 rounded-lg border border-destructive/50 bg-card p-4">
+        <h2 className="font-cinzel text-sm text-primary flex items-center gap-2">
+          <Calculator className="h-4 w-4" /> Pricing &amp; Rates
+        </h2>
+        <p className="text-sm text-destructive">Pricing couldn&apos;t be loaded, so it can&apos;t be edited or saved right now.</p>
+        <p className="text-xs text-muted-foreground">{loadError}</p>
+        <Button size="sm" variant="outline" onClick={load}>Try again</Button>
+      </section>
+    );
+  }
 
   if (loading) {
     return (
@@ -120,12 +146,30 @@ export default function PricingSettings() {
       <div className="space-y-2">
         <NumField label="Tabby increase % (0 disables it)" value={cfg.tabbySurchargePct}
           onChange={(v) => setCfg(c => ({ ...c, tabbySurchargePct: Math.max(0, num(v)) }))} />
-        <p className="text-xs text-muted-foreground">The increase is applied to each item, rounded to whole AED, then added together.</p>
+        <p className="text-xs text-muted-foreground">The increase is applied to each item, rounded to whole AED, then added together. Tamara gets no increase. A row whose &quot;Tabby Included&quot; column says Yes gets none either.</p>
         <label className="flex items-center gap-2 text-xs">
           <input type="checkbox" checked={cfg.shippingPerShipment}
             onChange={e => setCfg(c => ({ ...c, shippingPerShipment: e.target.checked }))} />
-          Charge shipping once per shipment. Purchases waiting to ship together share one fee.
+          Charge shipping once per parcel. Purchases sent together share one fee; purchases after a parcel left pay a new one.
         </label>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div>
+            <Label className="text-xs text-muted-foreground">New rules start (live date, empty = all items)</Label>
+            <Input type="date" value={cfg.newRulesFrom}
+              onChange={(e) => setCfg((c) => ({ ...c, newRulesFrom: e.target.value }))}
+              className="h-8 text-sm mt-0.5" />
+          </div>
+          <div>
+            <Label className="text-xs text-muted-foreground">Leftover sent later in its own parcel</Label>
+            <select value={cfg.leftoverShipping}
+              onChange={(e) => setCfg((c) => ({ ...c, leftoverShipping: e.target.value === "free" ? "free" : "charge" }))}
+              className="h-8 w-full rounded-md border border-input bg-background px-2 text-sm mt-0.5">
+              <option value="charge">Charge shipping again</option>
+              <option value="free">Free (paid with the first parcel)</option>
+            </select>
+          </div>
+        </div>
+        <p className="text-xs text-muted-foreground">Items bought before the start date keep the old prices (no Tabby increase) and one shipping fee per customer.</p>
       </div>
 
       <div>
@@ -187,7 +231,7 @@ export default function PricingSettings() {
       </div>
 
       <div className="flex justify-end">
-        <Button size="sm" onClick={save} disabled={saving} className="font-cinzel uppercase tracking-widest">
+        <Button size="sm" onClick={save} disabled={saving || version === null} className="font-cinzel uppercase tracking-widest">
           {saving ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Save className="h-4 w-4 mr-2" />}
           {dirty ? "Save pricing (unsaved changes)" : "Save pricing"}
         </Button>

@@ -5,8 +5,8 @@ import { getActiveDoc, getActiveWorksheet, getActiveRows, invalidateActiveRows }
 import { readConfig, writeConfig, readConfigByPrefix, deleteConfigMarker, readConfigChunks, writeConfigChunks, clearConfigChunks } from "./config-store";
 import { parseSheetId } from "./sheetId";
 import { requireSession, requireRole, getSessionRoles, getSessionAccess } from "./authz";
-import { isDeveloper, getMyContextCore } from "./tenancy-core";
-import { upgradeCrownDeliveryRules } from "@/lib/crownDeliveryRules";
+import { isDeveloper } from "./tenancy-core";
+import { loadStoredPricing, pricingVersion, savePricingChecked, serverShipRules } from "./pricingStore";
 import { rowToDatabaseRecord, databaseRecordToRow } from "./row-mapper";
 import { activeHeaderSet, ensureOptionalColumns, writeRowsByCells, withSheetWriteLock, getTenantColumnAliases, newRowKey, auditHeader, appendAudit } from "./recordStore";
 import { DATABASE_HEADERS, DATABASE_HEADER_ALIASES, OPTIONAL_DATABASE_KEYS, ROLES_HEADERS, UPLOADS_HEADERS } from "./sheet-config";
@@ -251,20 +251,9 @@ export async function getRecords(_params?: { tailOnly?: boolean }): Promise<{ re
   // need the browser's rates). Ever bought from another liver: no loyalty count.
   const shared = customersWithOtherLivers(all, me);
   // ...except the shipping fee: one open COD item across all their livers carries it.
-  // Resolve this tenant's config explicitly: server calculations must never
+  // Resolve this tenant's rules explicitly: server calculations must never
   // call the browser's module-level pricing / timezone getters.
-  let perShipment = false;
-  try { perShipment = JSON.parse((await getPricingConfig()).config || '{}').shippingPerShipment === true; }
-  catch { /* malformed saved pricing keeps the existing once-per-customer behaviour */ }
-  let timezoneOffsetHours = 4;
-  try {
-    const business = JSON.parse(await readConfig('__BUSINESS_CONFIG__') || '{}');
-    if (typeof business.timezoneOffsetHours === 'number') timezoneOffsetHours = business.timezoneOffsetHours;
-  } catch { /* default business clock */ }
-  const carriers = sharedShippingCarriers(all, shared, {
-    perShipment,
-    timezoneOffsetMs: timezoneOffsetHours * 60 * 60 * 1000,
-  });
+  const carriers = sharedShippingCarriers(all, shared, await serverShipRules());
   const everShared = customersEverWithOtherLivers(all, me);
   // Where "Liver came" sends her international / reseller items, named from
   // every row like Dispatch's (her own rows may spell the box differently).
@@ -1213,27 +1202,37 @@ export async function deletePageLogo(params: { page: string }): Promise<{ succes
 /** Supplier-cost inputs in the pricing config — never sent to a liver. */
 const LIVER_HIDDEN_PRICING = ["makingCharges", "perPcRates", "perPcFallback", "b1t1Multiplier"] as const;
 
-export async function getPricingConfig(_params?: Record<string, never>): Promise<{ config: string }> {
-  const stored = await readConfig("__PRICING_CONFIG__");
-  const context = await getMyContextCore();
-  const config = upgradeCrownDeliveryRules(stored, context.activeTenant?.displayName || '');
+/**
+ * The active tenant's pricing. A failed sheet read THROWS (the browser then
+ * keeps the last settings it loaded for this tenant) instead of returning ""
+ * (= nothing saved, defaults). `version` fingerprints the stored value so
+ * savePricingConfig can refuse a save made from an old or unloaded copy.
+ */
+export async function getPricingConfig(_params?: Record<string, never>): Promise<{ config: string; version: string }> {
   const access = await getSessionAccess();
-  if (!access.all && access.roles.length === 0) return { config: "" };
-  if (access.all || !isLiverOnly(access.roles) || !config) return { config };
+  if (!access.all && access.roles.length === 0) return { config: "", version: "" };
+  const { stored, config } = await loadStoredPricing({ persistUpgrade: true });
+  const version = pricingVersion(stored);
+  if (access.all || !isLiverOnly(access.roles) || !config) return { config, version };
   // A liver keeps USD→AED, card surcharge and shipping fees for her Collect / Balance amounts.
   try {
     const parsed = JSON.parse(config) as Record<string, unknown>;
     for (const k of LIVER_HIDDEN_PRICING) delete parsed[k];
-    return { config: JSON.stringify(parsed) };
+    return { config: JSON.stringify(parsed), version };
   } catch {
-    return { config: "" };
+    return { config: "", version };
   }
 }
 
-export async function savePricingConfig(params: { config: string }): Promise<{ success: boolean }> {
+/**
+ * Save pricing. Refused unless the sheet can be read now and still holds the
+ * copy the editor loaded (baseVersion), so a screen that never loaded, or a
+ * stale one, can't overwrite real settings (e.g. MC) with defaults.
+ */
+export async function savePricingConfig(params: { config: string; baseVersion: string }): Promise<{ success: boolean; version: string }> {
   await requireRole(["super_admin"]);
-  await writeConfig("__PRICING_CONFIG__", params.config);
-  return { success: true };
+  const version = await savePricingChecked(params.config, params.baseVersion);
+  return { success: true, version };
 }
 
 // ---------- Reseller rates (Uploads marker) ----------
