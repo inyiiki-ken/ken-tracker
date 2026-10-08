@@ -31,6 +31,31 @@ export async function readConfig(marker: string): Promise<string> {
   }
 }
 
+/** A config read that failed (Google error, quota), as opposed to "nothing saved". */
+export class ConfigReadError extends Error {
+  constructor(marker: string) {
+    super(`Couldn't read the saved settings (${marker}) from the sheet. Nothing was changed; try again.`);
+    this.name = "ConfigReadError";
+  }
+}
+
+/**
+ * Like readConfig, but a failed read throws ConfigReadError instead of looking
+ * like "nothing saved". The legacy Uploads value is used only when the config
+ * tab was read successfully and simply has no such marker (how it was before
+ * the config tab existed). Use it for settings where defaults would do harm.
+ */
+export async function readConfigStrict(marker: string): Promise<string> {
+  let cfg;
+  try { cfg = await getActiveRows("config"); } catch { throw new ConfigReadError(marker); }
+  const v = cfg.find((r) => r.get(MARKER) === marker)?.get(VALUE);
+  if (v) return String(v);
+  let up;
+  try { up = await getActiveRows("uploads"); } catch { throw new ConfigReadError(marker); }
+  const u = up.find((r) => r.get(MARKER) === marker)?.get(VALUE);
+  return u ? String(u) : "";
+}
+
 /** Create/update a single marker's value in the config tab. */
 export async function writeConfig(marker: string, value: string): Promise<void> {
   const sheet = await getActiveWorksheet("config");

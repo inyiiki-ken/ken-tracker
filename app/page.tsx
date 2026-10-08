@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useAuth } from '@/lib/auth';
 import { getMyRoles, getRecords, getRoles, getRatesConfig, getPricingConfig, getTabConfig, getBusinessConfig, getLabelConfig, getAppConfig, getMasterlistMapping, getOptionsConfig, getCustomToggles, updateRecord, bulkUpdateRecords } from '@/lib/api';
-import { applyPricingConfig } from '@/lib/pricingConfig';
+import { applyPricingConfig, hasCachedPricing } from '@/lib/pricingConfig';
 import { trimAudit } from '@/lib/auditTrim';
 import { setDevAccess } from '@/lib/devAccess';
 import { applyBusinessConfig } from '@/lib/businessConfig';
@@ -157,6 +157,9 @@ function AppContent() {
       if (rolesRes) setDynamicRoles(rolesRes as any[]);
       if (ratesRes?.config) applyRatesConfig(ratesRes.config);
       if (pricingRes) applyPricingConfig(pricingRes.config);
+      else toast.error(hasCachedPricing()
+        ? "Pricing couldn't be loaded from the sheet. Using the copy loaded earlier on this device; reload to try again."
+        : "Pricing couldn't be loaded from the sheet, so prices and shipping may be wrong. Reload before invoicing.", { duration: 15000 });
       applyBusinessConfig(bizRes?.config || '');
       applyLabelConfig(labelRes?.config || '');
       // Only when the read worked: a failed read keeps what's already loaded.

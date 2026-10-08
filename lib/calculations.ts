@@ -3,7 +3,7 @@ import { parseISO, isValid } from 'date-fns';
 import { getRatesForDate, RateSnapshot, usesGold } from '@/lib/ratesStore';
 import { parseBillingModifiers, getTotalChargesAED, getTotalDiscountsAED } from '@/lib/billingModifiers';
 import { getTimezoneOffsetMs } from '@/lib/businessConfig';
-import { getMakingCharge, getPricing, paymentPriceMultiplier } from '@/lib/pricingConfig';
+import { getMakingCharge, getPricing } from '@/lib/pricingConfig';
 import { getMasterlistMapping } from '@/lib/masterlistMapping';
 import { getUsdToAed, getPerPcFallback, getB1t1Multiplier, getCcSurchargeRate, getShippingFeeForRegion, getShippingFeeInternational, getShippingFeeMeetUp } from '@/lib/pricingConfig';
 import { isUnitMode } from '@/lib/businessConfig';
@@ -278,7 +278,7 @@ export function clientRateAED(record: DatabaseRowType): number {
 }
 
 export function calcItemPrice(record: DatabaseRowType): number {
-  if (paymentPriceMultiplier(record.modeOfPayment) !== 1) {
+  if (tabbyMultiplier(record) !== 1) {
     return roundPrice(fromAED(calcItemPriceAED(record), record));
   }
   // Unit (retail/cosmetics) mode: selling price per unit × qty, in native currency.
@@ -303,7 +303,7 @@ export function calcItemPrice(record: DatabaseRowType): number {
 }
 
 export function calcItemPriceAED(record: DatabaseRowType): number {
-  const multiplier = paymentPriceMultiplier(record.modeOfPayment);
+  const multiplier = tabbyMultiplier(record);
   const roundItem = (amount: number) => roundPrice(amount * multiplier);
   // Unit mode: unit price (converted to AED) × qty.
   if (isUnitMode()) return roundItem(clientRateAED(record) * getQty(record));
@@ -601,70 +601,170 @@ export function netChargeAED(r: DatabaseRowType): number {
 }
 
 /** Shipping for ONE customer's items, charged once: a promo SF wins, any free SF means none. */
-export function groupShippingFee(records: DatabaseRowType[]): number {
-  return shippingGroups(records).reduce((total, rows) => {
+export function groupShippingFee(records: DatabaseRowType[], rules: ShipRules = currentShipRules()): number {
+  return shippingGroups(records, rules).reduce((total, rows) => {
     const from = shippingFeeRow(rows);
     return total + (from ? calcShippingFee(from) : 0);
   }, 0);
 }
 
-/** Actual dispatch days close a shipment; purchases after it start a new one.
- * Never use the live date as a pretend dispatch date for old records. */
-export function shippingGroups(records: DatabaseRowType[], perShipment = getPricing().shippingPerShipment, timezoneOffsetMs = getTimezoneOffsetMs()): DatabaseRowType[][] {
-  if (!perShipment) return records.length ? [records] : [];
-  const day = (value?: string) => {
-    const date = parseDateRobust(value);
-    if (!date) return '';
-    if (/^\d{4}-\d{2}-\d{2}[T ]/.test(value || '')) {
-      return new Date(date.getTime() + timezoneOffsetMs).toISOString().slice(0, 10);
-    }
-    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
-  };
-  const shippedDay = (r: DatabaseRowType) => day(r.dispatchDate) || day(r.deliveredDate);
-  const shipments = new Map<string, { day: string; at: number }>();
-  const keyFor = (r: DatabaseRowType) => r.shipmentId || shippedDay(r);
-  for (const row of records) {
-    const date = shippedDay(row);
-    if (!date) continue;
-    const key = keyFor(row);
-    const at = parseDateRobust(row.dispatchDate || row.deliveredDate)?.getTime() || 0;
-    const saved = shipments.get(key);
-    if (!saved || at < saved.at) shipments.set(key, { day: date, at });
+/** A date as YYYY-MM-DD on the business clock; '' when missing or unreadable. */
+export function businessDay(value?: string, timezoneOffsetMs = getTimezoneOffsetMs()): string {
+  const raw = String(value ?? '').trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+  const date = parseDateRobust(raw);
+  if (!date) return '';
+  if (/^\d{4}-\d{2}-\d{2}[T ]/.test(raw)) {
+    return new Date(date.getTime() + timezoneOffsetMs).toISOString().slice(0, 10);
   }
-  const ordered = [...shipments].sort((a, b) => a[1].at - b[1].at);
-  const groups = new Map<string, DatabaseRowType[]>();
-  for (const row of records) {
-    const purchase = day(row.dateOfLive);
-    // A newly created purchase after today's dispatch starts another shipment.
-    // Historical imports retain their original live day rather than import time.
-    const created = String(row.auditTrail || '').split('\n').find(line => /\|\s*Created\s*$/.test(line));
-    const createdAt = created ? parseDateRobust(created.split(' | ')[0])?.getTime() : undefined;
-    const createdDay = created ? day(created.split(' | ')[0]) : '';
-    const waitingShipment = purchase ? ordered.find(([, shipment]) =>
-      shipment.day > purchase || (shipment.day === purchase &&
-        (createdDay !== purchase || !createdAt || createdAt <= shipment.at)))?.[0] : undefined;
-    const key = shippedDay(row) ? keyFor(row) : waitingShipment || 'open';
-    const group = groups.get(key) || [];
-    group.push(row);
-    groups.set(key, group);
-  }
-  return [...groups.values()];
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 }
 
-/** Reuse the waiting order's shipment when Dispatch marks its items one at a time. */
-export function shipmentIdentityFor(row: DatabaseRowType, all: DatabaseRowType[], now: string): string {
-  const customer = all.filter(r => customerKey(r) === customerKey(row));
-  const group = shippingGroups(customer).find(rows => rows.some(r => r.id === row.id)) || [];
-  const sent = group.find(r => r.dispatchDate || r.deliveredDate);
-  if (sent?.shipmentId) return sent.shipmentId;
-  if (sent) {
-    // Match the legacy day key used by shippingGroups (business timezone).
-    const value = sent.dispatchDate || sent.deliveredDate;
-    const date = parseDateRobust(value);
-    if (date) {
-      if (/^\d{4}-\d{2}-\d{2}[T ]/.test(value || '')) return new Date(date.getTime() + getTimezoneOffsetMs()).toISOString().slice(0, 10);
-      return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+/** The tenant's shipping rules, passed explicitly on the server (which has no
+ * loaded pricing) and read from Settings → Pricing in the browser. */
+export type ShipRules = { perShipment: boolean; from: string; leftover: 'charge' | 'free'; timezoneOffsetMs: number };
+
+export function shipRulesFor(cfg: { shippingPerShipment?: boolean; newRulesFrom?: string; leftoverShipping?: string }, timezoneOffsetMs: number): ShipRules {
+  return {
+    perShipment: cfg.shippingPerShipment === true,
+    from: typeof cfg.newRulesFrom === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(cfg.newRulesFrom) ? cfg.newRulesFrom : '',
+    leftover: cfg.leftoverShipping === 'free' ? 'free' : 'charge',
+    timezoneOffsetMs,
+  };
+}
+
+export function currentShipRules(): ShipRules {
+  return shipRulesFor(getPricing(), getTimezoneOffsetMs());
+}
+
+/**
+ * Bought on or after the start date (Settings → Pricing), so the new Tabby and
+ * per-parcel shipping rules apply. A missing or unreadable live date keeps the
+ * old rules: an item never becomes a new-rule item by accident.
+ */
+export function usesNewRules(r: Pick<DatabaseRowType, 'dateOfLive'>, from = getPricing().newRulesFrom, timezoneOffsetMs = getTimezoneOffsetMs()): boolean {
+  if (!from) return true;
+  const bought = businessDay(r.dateOfLive, timezoneOffsetMs);
+  return !!bought && bought >= from;
+}
+
+/** Tabby's increase for one item (1 = none). Added once, to items bought from
+ * the start date, unless the row says its rate already includes it. */
+export function tabbyMultiplier(r: Pick<DatabaseRowType, 'modeOfPayment' | 'dateOfLive' | 'tabbyIncluded'>): number {
+  const pct = getPricing().tabbySurchargePct;
+  if (!(pct > 0) || !/\btabby\b/i.test(r.modeOfPayment || '')) return 1;
+  if (/^(yes|y|true|1|included)$/i.test(String(r.tabbyIncluded ?? '').trim())) return 1;
+  if (!usesNewRules(r)) return 1;
+  return 1 + pct / 100;
+}
+
+/** When the row was first saved: the first timestamped history line (Created,
+ * Imported from masterlist, Reseller invoice...). undefined when unknown. */
+export function createdAtMs(r: Pick<DatabaseRowType, 'auditTrail'>): number | undefined {
+  const first = String(r.auditTrail ?? '').split('\n').find(line => line.trim()) ?? '';
+  if (!/^\d{4}-\d{2}-\d{2}T[^|]*\|/.test(first)) return undefined;
+  const t = Date.parse(first.split('|')[0].trim());
+  return Number.isFinite(t) ? t : undefined;
+}
+
+type Shipment = { key: string; day: string; at: number };
+
+function shippedDay(r: DatabaseRowType, tz: number): string {
+  return businessDay(r.dispatchDate, tz) || businessDay(r.deliveredDate, tz);
+}
+
+/** The parcel a shipped row went out in: its Shipment ID, else (older rows) its dispatch day. */
+function shipmentKey(r: DatabaseRowType, tz: number): string {
+  return String(r.shipmentId ?? '').trim() || shippedDay(r, tz);
+}
+
+/** One customer's parcels that have left, oldest first. */
+function shipmentsOf(records: DatabaseRowType[], tz: number): Shipment[] {
+  const out = new Map<string, Shipment>();
+  for (const r of records) {
+    const day = shippedDay(r, tz);
+    if (!day) continue;
+    const key = shipmentKey(r, tz);
+    const at = parseDateRobust(r.dispatchDate || r.deliveredDate)?.getTime() || 0;
+    const seen = out.get(key);
+    if (!seen || at < seen.at) out.set(key, { key, day, at });
+  }
+  return [...out.values()].sort((a, b) => a.at - b.at);
+}
+
+/** Bought before this parcel left (same day: only when the row's save time shows it). */
+function boughtBefore(r: DatabaseRowType, s: Shipment, tz: number): boolean {
+  const bought = businessDay(r.dateOfLive, tz);
+  if (!bought) return false;
+  if (bought < s.day) return true;
+  if (bought > s.day) return false;
+  const created = createdAtMs(r);
+  return created !== undefined && created <= s.at;
+}
+
+/**
+ * One customer's items split into the groups that each pay one shipping fee.
+ *
+ * - Per-shipment off (every tenant by default): one group, the old rule.
+ * - Items bought before the start date keep the old rule: together they pay one
+ *   fee, and so does any parcel that carries one of them (a parcel mixing old
+ *   and new purchases pays once).
+ * - New items: each parcel that left pays one fee; items still waiting form the
+ *   next parcel. With leftover = 'free', a waiting item bought before an earlier
+ *   parcel left counts as part of that parcel.
+ */
+export function shippingGroups(records: DatabaseRowType[], rules: ShipRules = currentShipRules()): DatabaseRowType[][] {
+  if (!records.length) return [];
+  if (!rules.perShipment) return [records];
+  const tz = rules.timezoneOffsetMs;
+  const shipments = shipmentsOf(records, tz);
+  const keyOf = (r: DatabaseRowType): string => {
+    if (shippedDay(r, tz)) return shipmentKey(r, tz);
+    if (rules.leftover === 'free') {
+      const earlier = shipments.find(s => boughtBefore(r, s, tz));
+      if (earlier) return earlier.key;
     }
+    return 'open';
+  };
+  const legacy: DatabaseRowType[] = [];
+  const oldParcels = new Set<string>();
+  for (const r of records) {
+    if (usesNewRules(r, rules.from, tz)) continue;
+    legacy.push(r);
+    if (shippedDay(r, tz)) oldParcels.add(shipmentKey(r, tz));
+  }
+  const groups = new Map<string, DatabaseRowType[]>();
+  for (const r of records) {
+    if (!usesNewRules(r, rules.from, tz)) continue;
+    const key = keyOf(r);
+    if (key !== 'open' && oldParcels.has(key)) { legacy.push(r); continue; }
+    const g = groups.get(key);
+    if (g) g.push(r); else groups.set(key, [r]);
+  }
+  return [...(legacy.length ? [legacy] : []), ...groups.values()];
+}
+
+/**
+ * The Shipment ID for a row that is being marked Dispatched / Delivered now.
+ * It joins the customer's parcel that left earlier the same day (Dispatch
+ * marking a parcel's items one at a time, or a second liver report for the
+ * same delivery) unless the row was saved after that parcel left. With
+ * leftover = 'free' it joins the earlier parcel it was bought before.
+ * Otherwise it starts a new parcel.
+ */
+export function shipmentIdentityFor(row: DatabaseRowType, all: DatabaseRowType[], now: string, rules: ShipRules = currentShipRules()): string {
+  const tz = rules.timezoneOffsetMs;
+  const customer = all.filter(r => customerKey(r) === customerKey(row) && r.id !== row.id);
+  const shipments = shipmentsOf(customer, tz);
+  const today = businessDay(now, tz);
+  const created = createdAtMs(row);
+  const boughtToday = businessDay(row.dateOfLive, tz) === today;
+  // Bought on an earlier day, or no save time: it's this parcel's item marked late.
+  const sameDay = [...shipments].reverse().find(s => s.day === today && (!boughtToday || created === undefined || created <= s.at));
+  if (sameDay) return sameDay.key;
+  if (rules.perShipment && rules.leftover === 'free') {
+    const earlier = shipments.find(s => boughtBefore(row, s, tz));
+    if (earlier) return earlier.key;
   }
   return `shipment:${now}`;
 }
