@@ -115,3 +115,11 @@ export {
   confirmDeliveryReport,
   rejectDeliveryReport,
 } from "./google-sheets/deliveryReports";
+
+export {
+  getCustomerMemory,
+  saveCustomerMemory,
+  deleteCustomerMemory,
+  importCustomerList,
+  learnCustomerAlias,
+} from "./google-sheets/customerMemory";

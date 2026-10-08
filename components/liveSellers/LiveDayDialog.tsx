@@ -7,7 +7,9 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Loader2, Plus, Trash2, CheckCircle2, AlertTriangle, ListChecks, Wand2 } from "lucide-react";
 import { toast } from "sonner";
-import { startLiveSession, finishLiveSession, addLiveItems, bulkUpdateRecords } from "@/lib/api";
+import { startLiveSession, finishLiveSession, addLiveItems, bulkUpdateRecords, learnCustomerAlias } from "@/lib/api";
+import { useCustomerMemory } from "@/lib/useCustomerMemory";
+import { correctedName, isSpellingFix } from "@/lib/customerMemory";
 import { calcItemPriceAED, isPcItem, parseDateRobust } from "@/lib/calculations";
 import { generateCustomerId } from "@/lib/customerId";
 import { suggestCustomer, fixSpelling, buildDictionary } from "@/lib/nameFix";
@@ -63,7 +65,9 @@ interface Props {
   onRecordsChanged?: () => void;
 }
 
-export default function LiveDayDialog({ open, mode, onClose, onSaved, priceList, sellers, session, seller, records = [], usedKeys, alreadyListed = 0, onRecordsChanged }: Props) {
+const NO_RECORDS: DatabaseRowType[] = [];
+
+export default function LiveDayDialog({ open, mode, onClose, onSaved, priceList, sellers, session, seller, records = NO_RECORDS, usedKeys, alreadyListed = 0, onRecordsChanged }: Props) {
   const [date, setDate] = useState(todayISO());
   const [name, setName] = useState("");
   const [weightOut, setWeightOut] = useState("");
@@ -121,6 +125,9 @@ export default function LiveDayDialog({ open, mode, onClose, onSaved, priceList,
     }
     return m;
   }, [records]);
+  // Names fixed before are fixed again by themselves (Customer Memory).
+  const { memory } = useCustomerMemory(records);
+  const fixName = (v: string) => correctedName(v, memory);
   const dict = useMemo(() => buildDictionary(records.map((r) => String(r.itemDescription ?? ""))), [records]);
   const changedOf = (r: Row) => {
     if (!r.record || !r.orig) return [] as string[];
@@ -238,6 +245,10 @@ export default function LiveDayDialog({ open, mode, onClose, onSaved, priceList,
           // Existing customer → their id; a brand-new name → a fresh id, never the old customer's.
           fields.customerId = same?.customerId || generateCustomerId();
           notes.push(`customer "${r.orig!.customer}" → "${to}"`);
+          // A spelling fix is remembered for next time; a different customer is not.
+          if (isSpellingFix(r.orig!.customer, to)) {
+            void learnCustomerAlias({ from: r.orig!.customer, to, customerId: fields.customerId }).catch(() => undefined);
+          }
         }
         const lines = String(rec.auditTrail ?? "").split("\n").filter(Boolean);
         lines.push(`${stamp} | Gold room check | Corrected ${notes.join(", ")}`);
@@ -388,10 +399,10 @@ export default function LiveDayDialog({ open, mode, onClose, onSaved, priceList,
                     <Fragment key={r.key}>
                     <tr className={changed.length ? "bg-warning/5" : ""}>
                       <td className="px-1 py-1 align-top">
-                        <Input list="ls-customers" value={r.customer} onChange={(e) => setRow(r.key, { customer: e.target.value })} placeholder="Customer" className={`h-8 text-sm uppercase ${changed.includes("customer") ? "border-warning" : ""}`} />
+                        <Input list="ls-customers" value={r.customer} onChange={(e) => setRow(r.key, { customer: e.target.value })} onBlur={(e) => { const f = fixName(e.target.value); if (f) setRow(r.key, { customer: f }); }} placeholder="Customer" className={`h-8 text-sm uppercase ${changed.includes("customer") ? "border-warning" : ""}`} />
                       </td>
                       <td className="px-1 py-1 align-top">
-                        <Input list="ls-customers" value={r.billTo} onChange={(e) => setRow(r.key, { billTo: e.target.value })} placeholder="—" className={`h-8 text-sm uppercase ${changed.includes("reseller") ? "border-warning" : ""}`} />
+                        <Input list="ls-customers" value={r.billTo} onChange={(e) => setRow(r.key, { billTo: e.target.value })} onBlur={(e) => { const f = fixName(e.target.value); if (f) setRow(r.key, { billTo: f }); }} placeholder="—" className={`h-8 text-sm uppercase ${changed.includes("reseller") ? "border-warning" : ""}`} />
                       </td>
                       <td className="px-1 py-1 align-top">
                         <div className="flex items-center gap-1">

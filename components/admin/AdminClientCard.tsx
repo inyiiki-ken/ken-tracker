@@ -15,6 +15,8 @@ import { getOptions } from '@/lib/optionsConfig';
 import { getPhpRate, setPhpRate, setSilverSellRate, setSilverBrandedSellRate, hasRatesSnapshotForDate } from '@/lib/ratesStore';
 import StatusBadge from '@/components/StatusBadge';
 import AdminItemRow from './AdminItemRow';
+import RememberedTag from '@/components/RememberedTag';
+import { rememberedFieldsOf } from '@/lib/customerMemory';
 import PhpRateDialog from './PhpRateDialog';
 import InvoiceModal from '@/components/InvoiceModal';
 import GroupDownpaymentSection from './GroupDownpaymentSection';
@@ -46,6 +48,15 @@ function isPinasRecord(r: DatabaseRowType) {
 }
 
 function AdminClientCard({ minerName, records, allRecords, onUpdate, onBulkUpdate, userEmail, onRefresh }: Props) {
+  // An item whose name was a remembered misspelling, fixed on upload.
+  const nameFixedFrom = useMemo(() => {
+    for (const r of records) {
+      if (!rememberedFieldsOf(r.auditTrail).has('minerName')) continue;
+      const m = /\(name was ([^)]*)\)/.exec(String(r.auditTrail ?? ''));
+      return m ? m[1].trim() : '';
+    }
+    return null;
+  }, [records]);
   const [expanded, setExpanded] = useState(false);
   const [showInvoice, setShowInvoice] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
@@ -306,6 +317,7 @@ function AdminClientCard({ minerName, records, allRecords, onUpdate, onBulkUpdat
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 mb-1 min-w-0">
             <span className="font-cinzel text-[13px] truncate text-primary min-w-0">{minerName}</span>
+            <RememberedTag show={nameFixedFrom !== null} title={nameFixedFrom ? `Name spelling fixed automatically (was ${nameFixedFrom}). Please double-check.` : undefined} />
             {/* Copy name button */}
             <button
               type="button"

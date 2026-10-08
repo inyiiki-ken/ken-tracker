@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState, type ReactNode } from 'react';
-import { ChevronDown, Layout, Plus, Calendar, Clock, ShieldCheck, BarChart2, Merge, AlertTriangle, Package, Download, ListChecks } from 'lucide-react';
+import { ChevronDown, Layout, Plus, Calendar, Clock, ShieldCheck, BarChart2, Merge, AlertTriangle, Package, Download, ListChecks, Users } from 'lucide-react';
 import { TabProps, DatabaseRowType } from '@/types';
 import { applySearch, groupByMiner, groupByMinerName, formatDate } from '@/lib/formatters';
 import { isOverdue } from '@/lib/calculations';
@@ -14,6 +14,7 @@ import ReviewChasingCard from './ReviewChasingCard';
 import AddClientModal from '@/components/accounts/AddClientModal';
 import DailyRatesEditor from '@/components/admin/DailyRatesEditor';
 import MergeClientsModal from '@/components/admin/MergeClientsModal';
+import CustomersModal from '@/components/admin/CustomersModal';
 import { Button } from '@/components/ui/button';
 import { toast } from 'sonner';
 import { isFieldHidden } from '@/lib/appConfig';
@@ -83,6 +84,7 @@ export default function AdminPipeline({ records, searchQuery, onSearchChange, on
   const [open, setOpen] = useState<Record<string, boolean>>({});
   const [showAddModal, setShowAddModal] = useState(false);
   const [showMergeModal, setShowMergeModal] = useState(false);
+  const [showCustomers, setShowCustomers] = useState(false);
   const [needsActionOnly, setNeedsActionOnly] = useState(false);
   const [showItemHold, setShowItemHold] = useState(false);
 
@@ -373,9 +375,12 @@ export default function AdminPipeline({ records, searchQuery, onSearchChange, on
             </button>
           )}
           <div className="flex-1" />
-          <div className="grid grid-cols-3 sm:flex gap-2 w-full sm:w-auto">
+          <div className="grid grid-cols-2 sm:flex gap-2 w-full sm:w-auto">
             <Button variant="outline" onClick={handleExportMasterlist} disabled={exporting} className="border-border text-xs h-9 px-2 sm:px-4">
               <Download className="h-4 w-4 mr-1 sm:mr-1.5 shrink-0" /> <span className="truncate">{exporting ? 'Exporting…' : <>Export<span className="hidden sm:inline"> Masterlist</span></>}</span>
+            </Button>
+            <Button variant="outline" onClick={() => setShowCustomers(true)} className="border-border text-xs h-9 px-2 sm:px-4">
+              <Users className="h-4 w-4 mr-1 sm:mr-1.5 shrink-0" /> <span className="truncate">Customers</span>
             </Button>
             <Button variant="outline" onClick={() => setShowMergeModal(true)} className="border-border text-xs h-9 px-2 sm:px-4">
               <Merge className="h-4 w-4 mr-1 sm:mr-1.5 shrink-0" /> <span className="truncate">Merge<span className="hidden sm:inline"> Clients</span></span>
@@ -408,6 +413,7 @@ export default function AdminPipeline({ records, searchQuery, onSearchChange, on
           )}
       </div>
       {showAddModal && <AddClientModal onClose={() => setShowAddModal(false)} userFirstName={userFirstName} userEmail={userEmail} onRefresh={onRefresh} existingRecords={records} />}
+      {showCustomers && <CustomersModal onClose={() => setShowCustomers(false)} records={records} />}
       {showMergeModal && <MergeClientsModal onClose={() => setShowMergeModal(false)} onRefresh={onRefresh} records={records} />}
     </div>
   );
