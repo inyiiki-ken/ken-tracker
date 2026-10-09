@@ -690,6 +690,7 @@ export async function importRows(params: {
   const MATCH_FILL_FIELDS = [
     "orderId", "page", "liverName", "source", "category", "tog", "mc", "goldRate",
     "clientRate", "grams", "qty", "currency", "clientAddress", "clientNumber", "liverAdminRemarks",
+    "modeOfPayment", "tabbyIncluded",
   ] as const;
   const matchWrites: { rowNumber: number; rowKey?: string; patch: Record<string, unknown> }[] = [];
   const findManual = (raw: Record<string, string>): DatabaseRowType | undefined => {
