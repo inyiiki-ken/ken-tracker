@@ -4,11 +4,12 @@ import {
   cleanTitle,
   categoryForMc,
   suggestMcCategories,
+  TABBY_MC_CATEGORY,
   type MasterlistMapping,
   type ResolvedMasterlistMapping,
 } from "./masterlistMapping";
 import { usesGold, getRatesForDate } from "./ratesStore";
-import { getMakingCharge } from "./pricingConfig";
+import { getMakingCharge, getPricing } from "./pricingConfig";
 import { parseDateRobust } from "./calculations";
 
 /**
@@ -57,6 +58,10 @@ export interface ParsedMasterlistRow {
   reviewChasing: string;
   clientAddress: string;
   clientNumber: string;
+  /** "Tabby" when the MC map marks this MC as a Tabby price. */
+  modeOfPayment?: string;
+  /** "Yes" = the rate already includes Tabby's increase (don't add it again). */
+  tabbyIncluded?: string;
   /** Something to double-check before importing (shown highlighted in the preview). */
   warning?: string;
 }
@@ -282,6 +287,20 @@ function parseSheetGrid(data: unknown[][], m: ResolvedMasterlistMapping, raw?: u
       if (Math.abs(calc - fileAmount) > 1) warnings.push(`AMOUNT in file ${Math.round(fileAmount)} ≠ ${calc}`);
     }
 
+    // MC mapped to "Tabby": the rate already includes Tabby's increase. Mark the
+    // row as Tabby (included, so it's never added twice) and file it under the
+    // category of its base MC, e.g. (384 + 82) / 1.15 = 405 -> MC 21.
+    let tabby = false;
+    if (category.trim().toLowerCase() === TABBY_MC_CATEGORY.toLowerCase()) {
+      tabby = true;
+      const pct = getPricing().tabbySurchargePct || 15;
+      const base = clientRate - mc;
+      const baseMc = Math.round(clientRate / (1 + pct / 100) - base);
+      const baseCat = baseMc > 0 ? catFor(baseMc, itemDescription) : "";
+      category = baseCat && baseCat.toLowerCase() !== TABBY_MC_CATEGORY.toLowerCase() ? baseCat : m.defaultCategory;
+      warnings.push(`Tabby price (MC ${mc} includes Tabby${baseMc > 0 ? `, base MC ${baseMc}` : ""})`);
+    }
+
     const remarks = cell(row, m.col.remarks);
     // Address + Number are the client's delivery details — NOT "Review Chasing".
     const clientAddress = cell(row, m.col.clientAddress);
@@ -308,6 +327,7 @@ function parseSheetGrid(data: unknown[][], m: ResolvedMasterlistMapping, raw?: u
       reviewChasing: "", // set inside the app, not from the masterlist
       clientAddress,
       clientNumber,
+      ...(tabby ? { modeOfPayment: "Tabby", tabbyIncluded: "Yes" } : {}),
       ...(warnings.length ? { warning: warnings.join("; ") } : {}),
     });
   }

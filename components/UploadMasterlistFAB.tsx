@@ -11,7 +11,7 @@ import { toast } from 'sonner';
 import { createUpload, importRows, recordLastImport, getLastImport, undoLastImport, checkDatabaseColumns, fixDatabaseColumns, type LastImportInfo } from '@/lib/api';
 import { parseMasterlistFile, type ParsedMasterlistRow, type ParsedSheetSummary } from '@/lib/masterlistImport';
 import { parseMasterlistImage, isImageFile } from '@/lib/masterlistOcr';
-import { getMasterlistMapping, categoryForMc } from '@/lib/masterlistMapping';
+import { getMasterlistMapping, categoryForMc, TABBY_MC_CATEGORY } from '@/lib/masterlistMapping';
 import { Input } from '@/components/ui/input';
 import { useDataOptions } from '@/lib/dataOptions';
 import { orderBox, outsourceName } from '@/lib/fulfilment';
@@ -203,7 +203,13 @@ export default function UploadMasterlistFAB({ onRefresh, records = [] }: Props) 
           const mc = parseFloat(patch.mc) || 0;
           if (m.priceMode === 'rate_plus_mc') next.clientRate = String((parseFloat(next.goldRate) || 0) + mc);
           const cat = categoryForMc(m.mcCategories, mc);
-          if (cat) next.category = cat;
+          if (cat.toLowerCase() === TABBY_MC_CATEGORY.toLowerCase()) {
+            next.modeOfPayment = 'Tabby';
+            next.tabbyIncluded = 'Yes';
+          } else {
+            if (cat) next.category = cat;
+            if (r.tabbyIncluded) { next.modeOfPayment = undefined; next.tabbyIncluded = undefined; }
+          }
         }
         return next;
       });

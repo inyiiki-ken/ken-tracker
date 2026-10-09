@@ -15,6 +15,7 @@ import {
   DEFAULT_MASTERLIST_MAPPING,
   colToIndex,
   suggestMcCategories,
+  TABBY_MC_CATEGORY,
   type MasterlistMapping,
   type MasterlistFieldKey,
 } from "@/lib/masterlistMapping";
@@ -239,15 +240,15 @@ export default function MasterlistImportSetup({ activeName }: { activeName?: str
               {mcEntries.map(([mc, cat], i) => (
                 <div key={i} className="flex items-center gap-2 text-[11px]">
                   <span className="text-muted-foreground w-8">MC</span>
-                  <Input value={mc} onChange={(e) => setMcEntry(mc, e.target.value, cat)} className="h-6 w-16 text-[11px] px-1.5" />
+                  <Input value={mc} onChange={(e) => setMcEntry(mc, e.target.value, cat)} className="h-6 w-16 text-[11px] px-1.5" placeholder="15-21" />
                   <span className="text-muted-foreground">→</span>
                   <Input value={cat} list="mc-cat-choices" onChange={(e) => setMcEntry(mc, mc, e.target.value)} className="h-6 flex-1 text-[11px] px-1.5" />
                   <button type="button" className="text-muted-foreground hover:text-destructive px-1" onClick={() => setMcEntry(mc, "", "")}>✕</button>
                 </div>
               ))}
-              <datalist id="mc-cat-choices">{categoryChoices.map((c) => <option key={c} value={c} />)}</datalist>
+              <datalist id="mc-cat-choices">{[...categoryChoices, TABBY_MC_CATEGORY].map((c) => <option key={c} value={c} />)}</datalist>
               <Button size="sm" variant="ghost" className="h-6 text-[11px]" onClick={() => setMcEntry("__new", "", "Gold Normal")}>+ Add MC</Button>
-              <p className="text-[10px] text-muted-foreground">Any other MC uses “Category if file has none”.</p>
+              <p className="text-[10px] text-muted-foreground">MC can be one number (55) or a range (15-21). “Tabby” = that MC already includes Tabby: the item is marked Tabby and filed under its base MC. Any other MC uses “Category if file has none”.</p>
             </div>
           )}
 

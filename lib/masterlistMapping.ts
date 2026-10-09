@@ -59,7 +59,9 @@ export interface MasterlistMapping {
   /** Category to use when the file has no Category column (e.g. "Gold Normal"). */
   defaultCategory: string;
   /** When the file has no Category column: MC value -> category
-   *  (e.g. Crown: {"21":"Gold Normal","28":"Special Price","55":"Special Price EF"}).
+   *  (e.g. {"15-21":"Gold Normal","22-54":"Special Price","55":"Special Price EF","82":"Tabby"}).
+   *  Keys are one MC or a range. "Tabby" = the rate already includes Tabby's
+   *  increase: the row gets Mode of Payment Tabby and the category of its base MC.
    *  An MC not listed falls back to defaultCategory. */
   mcCategories: Record<string, string>;
   /** Round the rate UP to a whole number before adding MC (426.25 -> 427), the way the liver prices it. */
@@ -215,22 +217,49 @@ function normalize(p: Partial<MasterlistMapping> | null | undefined): Masterlist
   };
 }
 
-/** Keys are MC numbers as plain strings ("21", "28.5"); blank entries dropped. */
+/** "15-21" / "15 to 21" -> [15, 21]; a single number -> [n, n]; else null. */
+export function parseMcKey(key: string): [number, number] | null {
+  const k = String(key ?? "").replace(/[,\s]/g, "").replace(/to|–|—/gi, "-");
+  const range = /^(\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)$/.exec(k);
+  if (range) {
+    const a = parseFloat(range[1]);
+    const b = parseFloat(range[2]);
+    return a <= b ? [a, b] : [b, a];
+  }
+  const n = parseFloat(k);
+  return /^\d+(?:\.\d+)?$/.test(k) && Number.isFinite(n) ? [n, n] : null;
+}
+
+/** Keys are MC numbers ("21", "28.5") or ranges ("15-21"); blank entries dropped. */
 function normalizeMcCategories(raw: unknown): Record<string, string> {
   const out: Record<string, string> = {};
   if (!raw || typeof raw !== "object") return out;
   for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
-    const n = parseFloat(String(k).replace(/[,\s]/g, ""));
+    const r = parseMcKey(k);
     const cat = String(v ?? "").trim();
-    if (Number.isFinite(n) && cat) out[String(n)] = cat;
+    if (r && cat) out[r[0] === r[1] ? String(r[0]) : `${r[0]}-${r[1]}`] = cat;
   }
   return out;
 }
 
-/** Category for an MC value from the map ("" if not mapped). */
+/** Map value meaning "this MC is a Tabby price" (rate already includes Tabby's increase). */
+export const TABBY_MC_CATEGORY = "Tabby";
+
+/** Category for an MC value from the map ("" if not mapped). An exact MC wins
+ *  over a range ("15-21"); among ranges the narrowest wins. */
 export function categoryForMc(map: Record<string, string>, mc: number): string {
   if (!mc || !map) return "";
-  return map[String(mc)] || "";
+  if (map[String(mc)]) return map[String(mc)];
+  let best = "";
+  let width = Infinity;
+  for (const [k, cat] of Object.entries(map)) {
+    const r = parseMcKey(k);
+    if (r && mc >= r[0] && mc <= r[1] && r[1] - r[0] < width) {
+      best = cat;
+      width = r[1] - r[0];
+    }
+  }
+  return best;
 }
 
 /**
