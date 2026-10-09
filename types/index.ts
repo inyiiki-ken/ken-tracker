@@ -51,6 +51,8 @@ export type DatabaseRowType = {
   zohoContactId?: string;
   /** Why the item was cancelled (free note, typed by Dispatch when cancelling). */
   cancelReason?: string;
+  /** "Yes" when the rate already includes Tabby's increase, so the app adds none. */
+  tabbyIncluded?: string;
   /**
    * Not a sheet column. Sent only to liver-only users (who get just their own
    * rows): the customer's newest purchase across every liver, as the raw sheet

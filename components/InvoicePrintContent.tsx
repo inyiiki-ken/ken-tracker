@@ -1,8 +1,8 @@
 "use client";
 
 import { DatabaseRowType } from '@/types';
-import { roundPrice, calcItemPriceAED, calcShippingFee, isPcItem, getQty, clientRateAED, isFreeSf, isPromoSf, calcTotalPaid, getEffectiveCurrency, getPaymentCurrency, calcGroupBalance, groupShippingFee } from '@/lib/calculations';
-import { getUsdToAed, getCcSurchargeRate, paymentPriceMultiplier } from '@/lib/pricingConfig';
+import { roundPrice, calcItemPriceAED, tabbyMultiplier, calcShippingFee, isPcItem, getQty, clientRateAED, isFreeSf, isPromoSf, calcTotalPaid, getEffectiveCurrency, getPaymentCurrency, calcGroupBalance, groupShippingFee } from '@/lib/calculations';
+import { getUsdToAed, getCcSurchargeRate } from '@/lib/pricingConfig';
 import { getRatesForDate } from '@/lib/ratesStore';
 import { numberToWords } from '@/lib/numberToWords';
 import { formatDate } from '@/lib/formatters';
@@ -56,8 +56,8 @@ const rnd = (v: number) => roundPrice(v);
  */
 function calcPhpItemAmount(r: DatabaseRowType): number {
   const rRates = getRatesForDate(r.dateOfLive || '');
-  if (paymentPriceMultiplier(r.modeOfPayment) !== 1) return rnd(calcItemPriceAED(r) * rRates.phpRate);
-  const rateAED = clientRateAED(r) * paymentPriceMultiplier(r.modeOfPayment);
+  if (tabbyMultiplier(r) !== 1) return rnd(calcItemPriceAED(r) * rRates.phpRate);
+  const rateAED = clientRateAED(r) * tabbyMultiplier(r);
   const cat = (r.category || '').toLowerCase().trim();
   const isScrewType = cat.includes('screw type');
   const isPerPc = cat.includes('per pc');
@@ -133,13 +133,13 @@ export default function InvoicePrintContent({ records, currency, ccIncludeShippi
     const baseRate = (currency === effectiveCurr && n(r.clientRate) > 0)
       ? n(r.clientRate)
       : convertFromAEDForRecord(clientRateAED(r));
-    const rawRate = baseRate * paymentPriceMultiplier(r.modeOfPayment);
+    const rawRate = baseRate * tabbyMultiplier(r);
     const displayRate = rnd(rawRate);
 
     // Amount: rate × grams/qty — always consistent with the displayed Rate column
     // Diamonds are per-piece (rate × qty), matching calcItemPriceAED logic.
     let amount: number;
-    if (paymentPriceMultiplier(r.modeOfPayment) !== 1) {
+    if (tabbyMultiplier(r) !== 1) {
       amount = rnd(convertFromAEDForRecord(calcItemPriceAED(r)));
     } else if (isScrewType || isPerPc || isDiamond) {
       amount = rnd(rawRate * qtyValue);

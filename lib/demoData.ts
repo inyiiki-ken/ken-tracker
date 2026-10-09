@@ -246,7 +246,9 @@ export function buildDemoRecords(today: Date = new Date(), firstRow = 2): Partia
     }
     if (currency === "PHP") clientRate = Math.round(clientRate * 17.5);
     const qty = piece.perPc ? (rand() < 0.5 ? 2 : 1) : 1;
-    const price = piece.perPc ? clientRate * qty : Math.round(grams * clientRate);
+    // Tabby demo orders are priced +15% per item, as the demo pricing says.
+    const tabby = /tabby/i.test(plan.mop ?? "") ? 1.15 : 1;
+    const price = piece.perPc ? Math.round(clientRate * qty * tabby) : Math.round(grams * clientRate * tabby);
 
     const rec: Partial<DatabaseRowType> = {
       orderId: `DM-${orderSeq++}`,
@@ -454,7 +456,7 @@ export function buildDemoSettings(today: Date = new Date()): Record<string, stri
     __APP_CONFIG__: JSON.stringify(app),
     __OPTIONS_CONFIG__: JSON.stringify(options),
     __BUSINESS_CONFIG__: JSON.stringify({ mode: "weight", preset: "jewellery", timezoneOffsetHours: 4 }),
-    __PRICING_CONFIG__: JSON.stringify({ tabbySurchargePct: 15, shippingPerShipment: true, shippingFeeDefault: 30, shippingFeeInternational: 450, shippingFees: { western: 45 } }),
+    __PRICING_CONFIG__: JSON.stringify({ tabbySurchargePct: 15, shippingPerShipment: true, newRulesFrom: "", leftoverShipping: "charge", shippingFeeDefault: 30, shippingFeeInternational: 450, shippingFees: { western: 45, "western region": 45 } }),
     __RESELLER_CONFIG__: JSON.stringify(resellers),
     __LIVE_PRICELIST__: JSON.stringify(livePrices),
   };

@@ -10,6 +10,8 @@ import { DATABASE_HEADERS } from "./sheet-config";
 import { readDatabase, writeRowsByCells, appendAudit, setAndSaveCells } from "./recordStore";
 import type { DatabaseRowType } from "@/types";
 import { autoStageDates, fulfilmentStage } from "@/lib/fulfilment";
+import { shipmentIdentityFor } from "@/lib/calculations";
+import { serverShipRules } from "./pricingStore";
 import { isRealItemKey, itemLine, itemSummary, liverKey } from "@/lib/pulloutRequests";
 import {
   DELIVERED_STATUS, deliveryKindOf, isConfirmStatus, isOpenReport, parseCash,
@@ -331,6 +333,7 @@ export async function confirmDeliveryReport(params: {
     if (!isOpenReport(q)) throw new Error(CHANGED);
     const to = q.kind === "Picked up" ? picked || DELIVERED_STATUS : DELIVERED_STATUS;
     const db = await readDatabase();
+    const rules = await serverShipRules();
     const byKey = rowsByKey(db.records);
     const statusCol = statusHeader(db.headers, db.aliases);
     const now = new Date().toISOString();
@@ -350,7 +353,13 @@ export async function confirmDeliveryReport(params: {
         skipped.push({ summary: itemLine(r), reason: r.status || "no status" });
         continue;
       }
-      const stamps = autoStageDates(r, to, now);
+      const stamps: Partial<DatabaseRowType> = autoStageDates(r, to, now);
+      // Same parcel as an earlier report / Dispatch mark today: same Shipment ID,
+      // so it pays one shipping fee (written only once the sheet has the column).
+      if (stamps.shipmentId) {
+        if (db.headers?.has(DATABASE_HEADERS.shipmentId)) stamps.shipmentId = shipmentIdentityFor(r, db.records, now, rules);
+        else delete stamps.shipmentId;
+      }
       const fields = ["status", ...Object.keys(stamps)].join(", ");
       writes.push({
         rowNumber: r.id,

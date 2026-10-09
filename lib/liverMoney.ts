@@ -8,7 +8,7 @@
  */
 
 import type { DatabaseRowType } from '@/types';
-import { calcCCFee, calcGroupBalance, calcItemPriceAED, calcShippingFee, calcTotalPaid, customerKey, groupShippingFee, netChargeAED, roundPrice, shippingFeeRow, shippingGroups } from '@/lib/calculations';
+import { calcCCFee, calcGroupBalance, calcItemPriceAED, calcShippingFee, calcTotalPaid, customerKey, netChargeAED, roundPrice, shippingFeeRow, shippingGroups, type ShipRules } from '@/lib/calculations';
 import { boxFromStatus, fulfilmentStage, isCancelledOrReturned } from '@/lib/fulfilment';
 import { itemKey, liverKey } from '@/lib/pulloutRequests';
 import type { DeliveryReport } from '@/lib/deliveryReports';
@@ -99,7 +99,7 @@ const SHIPPING_FEE_FIELDS = ['modeOfSale', 'freeSf', 'dateOfLive', 'modeOfPaymen
  * the fee's fields; none when the fee is free or a COD delivery already
  * collected it (codShippingAED).
  */
-export function sharedShippingCarriers(all: DatabaseRowType[], shared: Set<string>, serverConfig?: { perShipment: boolean; timezoneOffsetMs: number }): Map<number, Partial<DatabaseRowType>> {
+export function sharedShippingCarriers(all: DatabaseRowType[], shared: Set<string>, serverRules?: ShipRules): Map<number, Partial<DatabaseRowType>> {
   const out = new Map<number, Partial<DatabaseRowType>>();
   if (shared.size === 0) return out;
   const byCustomer = new Map<string, DatabaseRowType[]>();
@@ -110,9 +110,7 @@ export function sharedShippingCarriers(all: DatabaseRowType[], shared: Set<strin
     if (list) list.push(r); else byCustomer.set(k, [r]);
   }
   for (const customerRows of byCustomer.values()) {
-    const shipments = serverConfig
-      ? shippingGroups(moneyRows(customerRows), serverConfig.perShipment, serverConfig.timezoneOffsetMs)
-      : shippingGroups(moneyRows(customerRows));
+    const shipments = shippingGroups(moneyRows(customerRows), serverRules);
     for (const rows of shipments) {
     const carrier = shippingCarrier(rows);
     if (!carrier || rows.some(r => isCodItem(r) && fulfilmentStage(r.status) === 'delivered')) continue;
@@ -154,7 +152,13 @@ export function collectAED(r: DatabaseRowType): number {
  */
 function codShippingAED(customerRows: DatabaseRowType[]): number {
   return shippingGroups(moneyRows(customerRows)).reduce((sum, rows) =>
-    sum + (rows.some(r => isCodItem(r) && fulfilmentStage(r.status) === 'delivered') ? 0 : groupShippingFee(rows)), 0);
+    sum + (rows.some(r => isCodItem(r) && fulfilmentStage(r.status) === 'delivered') ? 0 : parcelFee(rows)), 0);
+}
+
+/** The fee one parcel group pays (promo wins, any free SF means none). */
+function parcelFee(rows: DatabaseRowType[]): number {
+  const from = shippingFeeRow(rows);
+  return from ? calcShippingFee(from) : 0;
 }
 
 /**
@@ -190,7 +194,7 @@ export function collectForAED(items: DatabaseRowType[], customerRows: DatabaseRo
   if (sharedCustomer(customerRows)) return roundPrice(items.reduce((s, r) => s + collectAED(r) + sharedShippingAED(r), 0));
   const sf = shippingGroups(moneyRows(customerRows)).reduce((sum, rows) => {
     const carrier = shippingCarrier(rows);
-    return sum + (carrier && items.some(r => r.id === carrier.id) ? codShippingAED(rows) : 0);
+    return sum + (carrier && items.some(r => r.id === carrier.id) && !rows.some(r => isCodItem(r) && fulfilmentStage(r.status) === 'delivered') ? parcelFee(rows) : 0);
   }, 0);
   const own = items.reduce((s, r) => s + collectAED(r), 0) + sf;
   return own > 0 ? Math.min(roundPrice(own), customerCollectAED(customerRows)) : 0;

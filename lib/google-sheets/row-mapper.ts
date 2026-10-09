@@ -91,6 +91,7 @@ export function rowToDatabaseRecord(
     zohoContactId: get("zohoContactId") ?? "",
     cancelReason: get("cancelReason") ?? "",
     shipmentId: get("shipmentId") ?? "",
+    tabbyIncluded: get("tabbyIncluded") ?? "",
   };
 }
 

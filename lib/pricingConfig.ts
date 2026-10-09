@@ -19,9 +19,19 @@
  */
 
 export interface PricingConfig {
+  /** Tabby increase in percent, added to each item before rounding (0 = off). */
   tabbySurchargePct: number;
+  /** One shipping fee per parcel instead of one per customer. */
   shippingPerShipment: boolean;
+  /** YYYY-MM-DD (business clock). Items bought before it keep the old rules:
+   * no Tabby increase and one shipping fee per customer. '' = no start date. */
+  newRulesFrom: string;
+  /** Item bought before a parcel left but sent later in its own parcel:
+   * 'charge' = that parcel pays its own fee, 'free' = covered by the first. */
+  leftoverShipping: 'charge' | 'free';
   crownDeliveryRulesVersion?: number;
+  /** Tenant the Crown rules were applied for (recorded, never used to match). */
+  crownTenantId?: string;
   usdToAed: number;
   /** MC added on top of the gold rate, keyed by category label. */
   makingCharges: Record<string, number>;
@@ -48,6 +58,8 @@ export interface PricingConfig {
 export const DEFAULT_PRICING: PricingConfig = {
   tabbySurchargePct: 0,
   shippingPerShipment: false,
+  newRulesFrom: "",
+  leftoverShipping: "charge",
   usdToAed: 3.67,
   makingCharges: {
     "Gold Normal": 16,
@@ -110,7 +122,10 @@ function mergeConfig(partial: Partial<PricingConfig> | null | undefined): Pricin
   return {
     tabbySurchargePct: typeof p.tabbySurchargePct === "number" && p.tabbySurchargePct >= 0 ? p.tabbySurchargePct : 0,
     shippingPerShipment: p.shippingPerShipment === true,
+    newRulesFrom: typeof p.newRulesFrom === "string" && /^\d{4}-\d{2}-\d{2}$/.test(p.newRulesFrom) ? p.newRulesFrom : "",
+    leftoverShipping: p.leftoverShipping === "free" ? "free" : "charge",
     crownDeliveryRulesVersion: p.crownDeliveryRulesVersion,
+    crownTenantId: typeof p.crownTenantId === "string" ? p.crownTenantId : undefined,
     usdToAed: typeof p.usdToAed === "number" && p.usdToAed > 0 ? p.usdToAed : DEFAULT_PRICING.usdToAed,
     // Saved list wins exactly, so a removed entry stays removed.
     makingCharges: p.makingCharges && typeof p.makingCharges === "object" ? { ...p.makingCharges } : { ...DEFAULT_PRICING.makingCharges },
@@ -147,12 +162,23 @@ export function setPricing(config: PricingConfig): void {
   } catch { /* ignore */ }
 }
 
-/** Apply a JSON blob loaded from the tenant sheet at app start. */
-export function applyPricingConfig(configJson: string): void {
-  if (!configJson) { setPricing({ ...DEFAULT_PRICING }); return; }
+/** Apply a JSON blob loaded from the tenant sheet at app start. Only call it
+ * after a SUCCESSFUL read: '' then means nothing is saved yet (defaults). A
+ * failed read must not call this, so the last loaded settings stay. */
+export function applyPricingConfig(configJson: string): boolean {
+  if (!configJson) { setPricing({ ...DEFAULT_PRICING }); return true; }
   try {
     setPricing(mergeConfig(JSON.parse(configJson)));
-  } catch { /* ignore malformed */ }
+    return true;
+  } catch {
+    return false; // malformed: keep what's loaded
+  }
+}
+
+/** Whether this device holds settings loaded earlier for the current tenant
+ * (the cache is wiped on a workspace switch, see tenantStorage). */
+export function hasCachedPricing(): boolean {
+  try { return typeof localStorage !== "undefined" && !!localStorage.getItem(STORAGE_KEY); } catch { return false; }
 }
 
 export function serializePricingConfig(): string {
@@ -203,18 +229,16 @@ export function getCcIncludeShipping(): boolean {
   return !!_pricing.ccIncludeShipping;
 }
 
-/** Apply Tabby's increase to each item before whole-AED rounding. */
-export function paymentPriceMultiplier(payment?: string): number {
-  return /\btabby\b/i.test(payment || '') ? 1 + getPricing().tabbySurchargePct / 100 : 1;
-}
-
 /** Shipping fee for a region label (case-insensitive contains match). */
 export function getShippingFeeForRegion(regionLabel: string): number {
   const cfg = getPricing();
   const hay = String(regionLabel ?? "").toLowerCase();
   if (!hay) return cfg.shippingFeeDefault;
-  // Longest key first so "ras al khaimah" wins over a shorter partial.
-  const keys = Object.keys(cfg.shippingFees).sort((a, b) => b.length - a.length);
+  // Longest key first so "ras al khaimah" wins over a shorter partial. The
+  // Western Region (Al Dhafra) is part of Abu Dhabi, so its keys are checked
+  // first: "Abu Dhabi - Western" is the Western fee, not Abu Dhabi's.
+  const subRegion = (k: string) => /western|dhafra/i.test(k) ? 1 : 0;
+  const keys = Object.keys(cfg.shippingFees).sort((a, b) => subRegion(b) - subRegion(a) || b.length - a.length);
   for (const k of keys) {
     if (hay.includes(k)) return cfg.shippingFees[k];
   }
