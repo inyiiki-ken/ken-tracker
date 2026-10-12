@@ -708,7 +708,8 @@ function boughtBefore(r: DatabaseRowType, s: Shipment, tz: number): boolean {
  * - Per-shipment off (every tenant by default): one group, the old rule.
  * - Items bought before the start date keep the old rule: together they pay one
  *   fee, and so does any parcel that carries one of them (a parcel mixing old
- *   and new purchases pays once).
+ *   and new purchases pays once). While an old item is still waiting, new items
+ *   waiting with it are that same next parcel.
  * - New items: each parcel that left pays one fee; items still waiting form the
  *   next parcel. With leftover = 'free', a waiting item bought before an earlier
  *   parcel left counts as part of that parcel.
@@ -728,16 +729,20 @@ export function shippingGroups(records: DatabaseRowType[], rules: ShipRules = cu
   };
   const legacy: DatabaseRowType[] = [];
   const oldParcels = new Set<string>();
+  // An old item still waiting to ship goes out in the next parcel, so new items
+  // waiting with it share that parcel and the old fee (cancelled ones don't count).
+  let oldWaiting = false;
   for (const r of records) {
     if (usesNewRules(r, rules.from, tz)) continue;
     legacy.push(r);
     if (shippedDay(r, tz)) oldParcels.add(shipmentKey(r, tz));
+    else if (!/cancel|return/i.test(String(r.status ?? ''))) oldWaiting = true;
   }
   const groups = new Map<string, DatabaseRowType[]>();
   for (const r of records) {
     if (!usesNewRules(r, rules.from, tz)) continue;
     const key = keyOf(r);
-    if (key !== 'open' && oldParcels.has(key)) { legacy.push(r); continue; }
+    if (key === 'open' ? oldWaiting : oldParcels.has(key)) { legacy.push(r); continue; }
     const g = groups.get(key);
     if (g) g.push(r); else groups.set(key, [r]);
   }
