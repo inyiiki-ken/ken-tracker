@@ -162,6 +162,21 @@ check('old parcels keep one fee', () => {
   assert.deepEqual(C.calcInvoiceLedger([[twoOld[0]], [twoOld[1]]]), [{ balance: 953 }, { balance: 503 }]);
 });
 
+check('old and new items waiting together: one fee', () => {
+  useCrown();
+  // Arian, 13 Oct: items from 26 Sep to 10 Oct, none sent yet, one parcel.
+  const waiting = [row(1, { dateOfLive: '2026-09-26', status: 'Reseller' }), row(2, { dateOfLive: '2026-10-08', status: 'Reseller' }),
+    row(3, { dateOfLive: '2026-10-10', status: 'Reseller' }), row(4, { dateOfLive: '2026-10-10', status: 'Reseller' })];
+  assert.equal(C.groupShippingFee(waiting), 450);
+  // Sent together later: still one fee, whichever is marked first.
+  const sent = waiting.map(r => ({ ...r, status: 'Dispatched', dispatchDate: '2026-10-14T08:00:00Z', shipmentId: 'p' }));
+  assert.equal(C.groupShippingFee(sent), 450);
+  // An old cancelled item doesn't pull a new order into the old fee.
+  const oldDone = [row(5, { dateOfLive: '2026-10-01', status: 'Delivered', dispatchDate: '2026-10-03T08:00:00Z' }),
+    row(6, { dateOfLive: '2026-10-02', status: 'Cancelled' }), row(7, { dateOfLive: '2026-10-11' })];
+  assert.equal(C.groupShippingFee(oldDone), 900);
+});
+
 check('new parcels: one fee each', () => {
   useCrown();
   const sent = [row(1, { dateOfLive: '2026-10-11', status: 'Delivered', dispatchDate: '2026-10-14T08:00:00Z', shipmentId: 'a' }),
