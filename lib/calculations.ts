@@ -443,9 +443,16 @@ export function calcProfit(record: DatabaseRowType): number {
   return calcProfitAED(record);
 }
 
+/** Customer collects the order (Pick Up Dubai, Pick Up Sharjah, Pick Up Shop, any "pick up" spelling): no shipping. */
+export function isPickUpPayment(record: DatabaseRowType): boolean {
+  return /\bpick[\s-]*up\b/i.test(record.modeOfPayment || '');
+}
+
 export function calcShippingFee(record: DatabaseRowType): number {
   const mos = (record.modeOfSale || '').toLowerCase().trim();
   if (mos === 'in-store' || mos === 'walk-in' || mos === 'walk in') return 0;
+  // Pick up is always free, even if an SF or promo SF was left on the item.
+  if (isPickUpPayment(record)) return 0;
   if (isFreeSf(record)) return 0;
 
   // Promo SF: custom amount (convert PHP to AED if needed)
@@ -460,7 +467,6 @@ export function calcShippingFee(record: DatabaseRowType): number {
     }
     return promoSf.amount;
   }
-  if (record.modeOfPayment === 'Pick Up Shop') return 0;
   if (record.modeOfPayment === 'Meet Up') return getShippingFeeMeetUp();
 
   const loc = normCurrency(record.locationOfMiner);

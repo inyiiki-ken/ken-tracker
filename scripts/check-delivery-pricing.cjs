@@ -207,6 +207,16 @@ check('free / promo SF scoped to its parcel', () => {
   assert.equal(C.groupShippingFee([...a, ...b]), 450);
 });
 
+check('pick up orders never pay shipping', () => {
+  useCrown();
+  for (const mop of ['Pick Up Dubai', 'PICK UP SHARJAH', 'Pickup Dubai', 'Pick-up Shop']) {
+    const r = row(1, { dateOfLive: '2026-10-12', modeOfPayment: mop, locationOfMiner: 'Local', regions: 'Dubai', freeSf: 'PROMO:AED:30' });
+    assert.equal(C.calcShippingFee(r), 0, mop);
+    assert.equal(C.groupShippingFee([r]), 0, mop);
+  }
+  assert.ok(C.calcShippingFee(row(2, { dateOfLive: '2026-10-12', modeOfPayment: 'COD', locationOfMiner: 'Local', regions: 'Dubai' })) > 0);
+});
+
 // ── Shipment identity across workflows ──────────────────────────────────────
 check('one-by-one and bulk dispatch agree', () => {
   useCrown();
