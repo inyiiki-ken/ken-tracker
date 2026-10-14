@@ -1,7 +1,7 @@
 "use client";
 
 import { DatabaseRowType } from '@/types';
-import { roundPrice, calcItemPriceAED, tabbyMultiplier, calcShippingFee, isPcItem, getQty, clientRateAED, isFreeSf, isPromoSf, calcTotalPaid, getEffectiveCurrency, getPaymentCurrency, calcGroupBalance, groupShippingFee } from '@/lib/calculations';
+import { roundPrice, calcItemPriceAED, tabbyMultiplier, calcShippingFee, isPcItem, getQty, clientRateAED, isFreeSf, isPromoSf, calcTotalPaid, getEffectiveCurrency, getPaymentCurrency, calcGroupBalance, groupShippingFee, isPickUpPayment } from '@/lib/calculations';
 import { getUsdToAed, getCcSurchargeRate } from '@/lib/pricingConfig';
 import { getRatesForDate } from '@/lib/ratesStore';
 import { numberToWords } from '@/lib/numberToWords';
@@ -187,7 +187,7 @@ export default function InvoicePrintContent({ records, currency, ccIncludeShippi
   // ── Billing Modifiers: parse charges, discounts, and shipping overrides ──
   // Collect all billing modifiers across records
   const allModifiers = records.map(r => parseBillingModifiers(r.additionalCharges));
-  const shipFeeOverride = allModifiers.find(m => m.shipFeeOverride)?.shipFeeOverride;
+  const shipFeeOverride = records.every(isPickUpPayment) ? undefined : allModifiers.find(m => m.shipFeeOverride)?.shipFeeOverride;
 
   let shippingDisplay: number;
   if (shipFeeOverride) {
