@@ -141,6 +141,15 @@ check('invoice print agrees', () => {
   const html = renderToStaticMarkup(React.createElement(Invoice, { records: [tabby, { ...tabby, id: 2 }], currency: 'AED' }));
   assert.match(html, /1,158/);
   assert.match(html, /579/);
+  // A decimal rate must remain visible: 9.5 × 387.5 rounds to 3,681,
+  // whereas an actual rate of 388 produces 3,686.
+  for (const [rate, amount] of [[387.5, '3,681'], [388, '3,686']]) {
+    const record = row(1, { clientRate: rate, grams: 9.5, modeOfPayment: 'Pick Up Shop' });
+    const printed = renderToStaticMarkup(React.createElement(Invoice, { records: [record], currency: 'AED' }));
+    assert.ok(printed.includes(`>${rate}</td>`));
+    assert.ok(printed.includes(`>AED ${amount}</td>`));
+    assert.equal(C.calcItemPriceAED(record), Number(amount.replace(',', '')));
+  }
 });
 
 // ── Shipping: start date keeps the old calculation ──────────────────────────

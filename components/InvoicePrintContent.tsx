@@ -128,13 +128,13 @@ export default function InvoicePrintContent({ records, currency, ccIncludeShippi
     // use the raw clientRate directly to avoid AED round-trip snap inflation.
     // Otherwise convert via AED for cross-currency invoices.
     const effectiveCurr = getEffectiveCurrency(r);
-    // Multiply with the UNROUNDED rate (like the Admin row and Accounts do);
-    // only the rate shown on the invoice is rounded.
+    // Preserve the rate's decimals in the invoice so the visible rate explains
+    // the amount calculated by the Admin row and Accounts.
     const baseRate = (currency === effectiveCurr && n(r.clientRate) > 0)
       ? n(r.clientRate)
       : convertFromAEDForRecord(clientRateAED(r));
     const rawRate = baseRate * tabbyMultiplier(r);
-    const displayRate = rnd(rawRate);
+    const displayRate = rawRate;
 
     // Amount: rate × grams/qty — always consistent with the displayed Rate column
     // Diamonds are per-piece (rate × qty), matching calcItemPriceAED logic.
@@ -455,7 +455,7 @@ export default function InvoicePrintContent({ records, currency, ccIncludeShippi
                 <td style={{ border: '1px solid #999', padding: '5px 8px', textAlign: 'center', fontSize: 11, color: item.isPc ? 'red' : '#111', fontWeight: item.isPc ? 700 : 400 }}>
                   {item.gramsDisplay}
                 </td>
-                <td style={{ border: '1px solid #999', padding: '5px 8px', textAlign: 'center', fontSize: 11 }}>{item.rate.toLocaleString('en-US')}</td>
+                <td style={{ border: '1px solid #999', padding: '5px 8px', textAlign: 'center', fontSize: 11 }}>{item.rate.toLocaleString('en-US', { maximumFractionDigits: 6 })}</td>
                 <td style={{ border: '1px solid #999', padding: '5px 8px', textAlign: 'right', fontSize: 11 }}>{fmtAmt(item.amount)}</td>
               </tr>
             ))}
