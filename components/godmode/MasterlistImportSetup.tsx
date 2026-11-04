@@ -15,12 +15,16 @@ import {
   DEFAULT_MASTERLIST_MAPPING,
   colToIndex,
   suggestMcCategories,
+  categoryForMc,
+  RATE_PLUS_MC_CATEGORIES,
   TABBY_MC_CATEGORY,
   type MasterlistMapping,
   type MasterlistFieldKey,
 } from "@/lib/masterlistMapping";
 import { parseMasterlistFile, type ParsedMasterlistRow } from "@/lib/masterlistImport";
 import { getPricing } from "@/lib/pricingConfig";
+import { getMyContext } from "@/lib/tenancy";
+import { isCrownTenant } from "@/lib/crownDeliveryRules";
 
 /** Round half-up to a whole number: .0–.4 stays, .5–.9 goes up. */
 const round0 = (v: number) => roundPrice(v);
@@ -35,6 +39,7 @@ const round0 = (v: number) => roundPrice(v);
  */
 export default function MasterlistImportSetup({ activeName }: { activeName?: string | null }) {
   const [busy, setBusy] = useState(false);
+  const [crown, setCrown] = useState(false);
   const [saving, setSaving] = useState(false);
   const [mapping, setMapping] = useState<MasterlistMapping | null>(null);
   const [headerRow, setHeaderRow] = useState<string[]>([]);
@@ -66,6 +71,8 @@ export default function MasterlistImportSetup({ activeName }: { activeName?: str
     setPreview(null);
     setFile(f);
     try {
+      const crownTenant = isCrownTenant((await getMyContext()).activeTenant);
+      setCrown(crownTenant);
       const XLSX = await import("xlsx");
       const wb = XLSX.read(await f.arrayBuffer(), { type: "array", raw: false });
       let grid: unknown[][] | null = null;
@@ -85,7 +92,10 @@ export default function MasterlistImportSetup({ activeName }: { activeName?: str
       // tiers from the MC values in the file. Editable below before saving.
       if (m.columns.mc && !m.columns.category) {
         const first = await parseMasterlistFile(f, m);
-        m = { ...m, mcCategories: suggestMcCategories(first.rows.map((r) => parseFloat(r.mc) || 0)) };
+        const mcs = first.rows.map((r) => parseFloat(r.mc) || 0);
+        m = { ...m, mcCategories: crownTenant && m.priceMode === "rate_plus_mc"
+          ? { ...suggestMcCategories(mcs.filter(mc => !categoryForMc(getPricing().crownMcCategories ?? RATE_PLUS_MC_CATEGORIES, mc))), ...(getPricing().crownMcCategories ?? RATE_PLUS_MC_CATEGORIES) }
+          : suggestMcCategories(mcs) };
       }
       setMapping(m);
       setHeaderRow(det.headerRow);
@@ -249,6 +259,9 @@ export default function MasterlistImportSetup({ activeName }: { activeName?: str
               <datalist id="mc-cat-choices">{[...categoryChoices, TABBY_MC_CATEGORY].map((c) => <option key={c} value={c} />)}</datalist>
               <Button size="sm" variant="ghost" className="h-6 text-[11px]" onClick={() => setMcEntry("__new", "", "Gold Normal")}>+ Add MC</Button>
               <p className="text-[10px] text-muted-foreground">MC can be one number (55) or a range (15-21). “Tabby” = that MC already includes Tabby: the item is marked Tabby and filed under its base MC. Any other MC uses “Category if file has none”.</p>
+              {crown && mapping.priceMode === "rate_plus_mc" && (
+                <p className="text-[10px] text-muted-foreground">Crown Rate + MC imports use the category rules saved in Settings → Pricing & Rates. Those rules take priority over the entries above. A Category column in the file takes priority over MC rules.</p>
+              )}
             </div>
           )}
 

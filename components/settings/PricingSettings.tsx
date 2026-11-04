@@ -8,6 +8,9 @@ import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
 import { getPricingConfig, savePricingConfig } from "@/lib/api";
 import { useSectionSaver } from "@/lib/settingsSave";
+import { getMyContext } from "@/lib/tenancy";
+import { isCrownTenant } from "@/lib/crownDeliveryRules";
+import { RATE_PLUS_MC_CATEGORIES, parseMcKey } from "@/lib/masterlistMapping";
 import {
   DEFAULT_PRICING,
   getPricing,
@@ -23,6 +26,8 @@ import {
  * rates are edited separately in the Daily Rates editor.
  */
 export default function PricingSettings() {
+  const [crown, setCrown] = useState(false);
+  useEffect(() => { getMyContext().then(ctx => setCrown(isCrownTenant(ctx.activeTenant))).catch(() => setCrown(false)); }, []);
   const [cfg, setCfg] = useState<PricingConfig>(getPricing());
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -61,6 +66,7 @@ export default function PricingSettings() {
     setCfg((c) => ({ ...c, perPcRates: { ...c.perPcRates, [tog]: num(v) } }));
 
   const persist = async () => {
+    if (cfg.crownMcCategories && Object.keys(cfg.crownMcCategories).some(key => !parseMcKey(key))) throw new Error("Use a valid MC number or range, such as 15-25.");
     if (version === null) throw new Error("Pricing didn't load, so it can't be saved. Reload and try again.");
     // Saved to the sheet first; the app only uses the new numbers once that worked.
     const res = await savePricingConfig({ config: JSON.stringify(cfg), baseVersion: version });
@@ -184,6 +190,27 @@ export default function PricingSettings() {
       </div>
 
       {/* Shipping fees by region */}
+      {crown && <div className="space-y-2">
+        <Label>Crown masterlist category ranges</Label>
+        <p className="text-xs text-muted-foreground">These ranges classify future Rate + MC imports. Making charges above set default costs; these ranges select categories. Existing items keep their saved values. A Category column in the uploaded file takes priority.</p>
+        {Object.entries(cfg.crownMcCategories ?? RATE_PLUS_MC_CATEGORIES).map(([range, category], index) => (
+          <div key={index} className="flex gap-2">
+            <select aria-label="Fixed or range" value={range.includes('-') ? 'range' : 'fixed'} onChange={e => {
+              const entries = Object.entries(cfg.crownMcCategories ?? RATE_PLUS_MC_CATEGORIES);
+              const start = range.split('-')[0];
+              entries[index] = [e.target.value === 'range' ? `${start}-${start}` : start, category];
+              setCfg(c => ({ ...c, crownMcCategories: Object.fromEntries(entries) }));
+            }} className="rounded border bg-background px-2"><option value="fixed">Fixed</option><option value="range">Range</option></select>
+            <Input aria-label={range.includes('-') ? 'MC range (from-to)' : 'Fixed MC'} placeholder={range.includes('-') ? '15-25' : '55'} value={range} onChange={e => {
+              const entries = Object.entries(cfg.crownMcCategories ?? RATE_PLUS_MC_CATEGORIES);
+              entries[index] = [e.target.value.trim(), category];
+              setCfg(c => ({ ...c, crownMcCategories: Object.fromEntries(entries) }));
+            }} />
+            <Input aria-label="Category" value={category} onChange={e => setCfg(c => ({ ...c, crownMcCategories: { ...(c.crownMcCategories ?? RATE_PLUS_MC_CATEGORIES), [range]: e.target.value } }))} />
+          </div>
+        ))}
+      </div>}
+
       <div>
         <Label className="text-xs text-muted-foreground mb-2 block">
           Shipping fee by region (match is case-insensitive; add any spelling your data uses)

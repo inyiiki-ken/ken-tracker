@@ -3,6 +3,7 @@ import {
   resolveMasterlistMapping,
   cleanTitle,
   categoryForMc,
+  RATE_PLUS_MC_CATEGORIES,
   suggestMcCategories,
   TABBY_MC_CATEGORY,
   type MasterlistMapping,
@@ -11,6 +12,8 @@ import {
 import { usesGold, getRatesForDate } from "./ratesStore";
 import { getMakingCharge, getPricing } from "./pricingConfig";
 import { parseDateRobust } from "./calculations";
+import { getMyContext } from "./tenancy";
+import { isCrownTenant } from "./crownDeliveryRules";
 
 /**
  * Replaces the old Apps Script processUpload() entirely. Instead of
@@ -131,7 +134,7 @@ const HEADER_WORDS = /^(code|order id|item description|description|customer name
 
 /** Parse a single already-extracted sheet grid into masterlist rows + metadata,
  * using the customer's configured column mapping. */
-function parseSheetGrid(data: unknown[][], m: ResolvedMasterlistMapping, raw?: unknown[][]): {
+function parseSheetGrid(data: unknown[][], m: ResolvedMasterlistMapping, raw?: unknown[][], crown = false): {
   rows: ParsedMasterlistRow[];
   liverName: string;
   pageName: string;
@@ -204,6 +207,11 @@ function parseSheetGrid(data: unknown[][], m: ResolvedMasterlistMapping, raw?: u
   }
   const mcTiers = suggestMcCategories(fileMcs);
   const catFor = (mc: number, desc: string) => {
+    // Fixed bands beat older saved mappings and file-relative tier guesses.
+    if (crown && m.priceMode === "rate_plus_mc") {
+      const fixed = categoryForMc(getPricing().crownMcCategories ?? RATE_PLUS_MC_CATEGORIES, mc);
+      if (fixed) return fixed;
+    }
     const saved = categoryForMc(m.mcCategories, mc);
     if (saved) return saved;
     if (/\(?\bEF\b\)?\s*$/.test(desc)) return "Special Price EF";
@@ -368,6 +376,9 @@ export async function parseMasterlistFile(file: File, mappingOverride?: Masterli
 
   // Resolve the customer's configured column layout once for this file.
   const resolved = resolveMasterlistMapping(mappingOverride ?? getMasterlistMapping());
+  // Resolve the active workspace from the server; never infer Crown from rates
+  // or a cached pricing config that could belong to a different tenant.
+  const crown = isCrownTenant((await getMyContext()).activeTenant);
 
   const rows: ParsedMasterlistRow[] = [];
   const sheets: ParsedSheetSummary[] = [];
@@ -383,7 +394,7 @@ export async function parseMasterlistFile(file: File, mappingOverride?: Masterli
     const rawData: unknown[][] = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: "" });
     if (data.length <= resolved.dataStartIndex) continue; // no data rows for this layout
 
-    const parsed = parseSheetGrid(data, resolved, rawData);
+    const parsed = parseSheetGrid(data, resolved, rawData, crown);
     skipped.push(...parsed.skipped.map((x) => `${sheetName}: ${x}`));
     if (parsed.rows.length === 0) continue;
 

@@ -245,6 +245,13 @@ function normalizeMcCategories(raw: unknown): Record<string, string> {
 /** Map value meaning "this MC is a Tabby price" (rate already includes Tabby's increase). */
 export const TABBY_MC_CATEGORY = "Tabby";
 
+/** Fixed category bands for Crown's Rate + MC masterlists only. */
+export const RATE_PLUS_MC_CATEGORIES: Record<string, string> = {
+  "15-25": "Gold Normal",
+  "26-30": "Special Price",
+  "55": "Special Price EF",
+};
+
 /** Category for an MC value from the map ("" if not mapped). An exact MC wins
  *  over a range ("15-21"); among ranges the narrowest wins. */
 export function categoryForMc(map: Record<string, string>, mc: number): string {
