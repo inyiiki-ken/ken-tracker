@@ -208,8 +208,9 @@ function parseSheetGrid(data: unknown[][], m: ResolvedMasterlistMapping, raw?: u
   const mcTiers = suggestMcCategories(fileMcs);
   const catFor = (mc: number, desc: string) => {
     // Fixed bands beat older saved mappings and file-relative tier guesses.
-    if (crown && m.priceMode === "rate_plus_mc") {
-      const fixed = categoryForMc(getPricing().crownMcCategories ?? RATE_PLUS_MC_CATEGORIES, mc);
+    if (m.priceMode === "rate_plus_mc") {
+      const rules = getPricing().mcCategoryRules ?? (crown ? getPricing().crownMcCategories ?? RATE_PLUS_MC_CATEGORIES : {});
+      const fixed = categoryForMc(rules, mc);
       if (fixed) return fixed;
     }
     const saved = categoryForMc(m.mcCategories, mc);

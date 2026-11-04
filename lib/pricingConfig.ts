@@ -20,6 +20,7 @@
 
 export interface PricingConfig {
   crownMcCategories?: Record<string, string>;
+  mcCategoryRules?: Record<string, string>;
   /** Tabby increase in percent, added to each item before rounding (0 = off). */
   tabbySurchargePct: number;
   /** One shipping fee per parcel instead of one per customer. */
@@ -122,6 +123,7 @@ function mergeConfig(partial: Partial<PricingConfig> | null | undefined): Pricin
   const p = partial ?? {};
   return {
     crownMcCategories: p.crownMcCategories && typeof p.crownMcCategories === "object" ? { ...p.crownMcCategories } : undefined,
+    mcCategoryRules: p.mcCategoryRules && typeof p.mcCategoryRules === "object" ? { ...p.mcCategoryRules } : undefined,
     tabbySurchargePct: typeof p.tabbySurchargePct === "number" && p.tabbySurchargePct >= 0 ? p.tabbySurchargePct : 0,
     shippingPerShipment: p.shippingPerShipment === true,
     newRulesFrom: typeof p.newRulesFrom === "string" && /^\d{4}-\d{2}-\d{2}$/.test(p.newRulesFrom) ? p.newRulesFrom : "",

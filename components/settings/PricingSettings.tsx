@@ -66,7 +66,8 @@ export default function PricingSettings() {
     setCfg((c) => ({ ...c, perPcRates: { ...c.perPcRates, [tog]: num(v) } }));
 
   const persist = async () => {
-    if (cfg.crownMcCategories && Object.keys(cfg.crownMcCategories).some(key => !parseMcKey(key))) throw new Error("Use a valid MC number or range, such as 15-25.");
+    if (cfg.mcCategoryRules && Object.keys(cfg.mcCategoryRules).some(key => !parseMcKey(key))) throw new Error("Use a valid MC number or range, such as 15-25.");
+    if (cfg.mcCategoryRules && Object.values(cfg.mcCategoryRules).some(value => !value.trim())) throw new Error("Every MC rule needs a category name.");
     if (version === null) throw new Error("Pricing didn't load, so it can't be saved. Reload and try again.");
     // Saved to the sheet first; the app only uses the new numbers once that worked.
     const res = await savePricingConfig({ config: JSON.stringify(cfg), baseVersion: version });
@@ -190,23 +191,37 @@ export default function PricingSettings() {
       </div>
 
       {/* Shipping fees by region */}
-      {crown && <div className="space-y-2">
-        <Label>Crown masterlist category ranges</Label>
+      {<div className="space-y-2">
+        <Label>Masterlist category rules</Label>
+        <Button size="sm" variant="outline" onClick={() => setCfg(c => {
+          const rules = { ...(c.mcCategoryRules ?? (crown ? RATE_PLUS_MC_CATEGORIES : {})) };
+          let value = 1;
+          while (String(value) in rules) value++;
+          return { ...c, mcCategoryRules: { ...rules, [String(value)]: 'New category' } };
+        })}>Add category rule</Button>
         <p className="text-xs text-muted-foreground">These ranges classify future Rate + MC imports. Making charges above set default costs; these ranges select categories. Existing items keep their saved values. A Category column in the uploaded file takes priority.</p>
-        {Object.entries(cfg.crownMcCategories ?? RATE_PLUS_MC_CATEGORIES).map(([range, category], index) => (
+        {Object.entries(cfg.mcCategoryRules ?? (crown ? RATE_PLUS_MC_CATEGORIES : {})).map(([range, category], index) => (
           <div key={index} className="flex gap-2">
             <select aria-label="Fixed or range" value={range.includes('-') ? 'range' : 'fixed'} onChange={e => {
-              const entries = Object.entries(cfg.crownMcCategories ?? RATE_PLUS_MC_CATEGORIES);
+              const entries = Object.entries(cfg.mcCategoryRules ?? (crown ? RATE_PLUS_MC_CATEGORIES : {}));
               const start = range.split('-')[0];
-              entries[index] = [e.target.value === 'range' ? `${start}-${start}` : start, category];
-              setCfg(c => ({ ...c, crownMcCategories: Object.fromEntries(entries) }));
+              const key = e.target.value === 'range' ? `${start}-${start}` : start;
+              if (entries.some(([existing], i) => i !== index && existing === key)) { toast.error("That MC rule already exists."); return; }
+              entries[index] = [key, category];
+              setCfg(c => ({ ...c, mcCategoryRules: Object.fromEntries(entries) }));
             }} className="rounded border bg-background px-2"><option value="fixed">Fixed</option><option value="range">Range</option></select>
             <Input aria-label={range.includes('-') ? 'MC range (from-to)' : 'Fixed MC'} placeholder={range.includes('-') ? '15-25' : '55'} value={range} onChange={e => {
-              const entries = Object.entries(cfg.crownMcCategories ?? RATE_PLUS_MC_CATEGORIES);
+              const entries = Object.entries(cfg.mcCategoryRules ?? (crown ? RATE_PLUS_MC_CATEGORIES : {}));
+              if (entries.some(([existing], i) => i !== index && existing === e.target.value.trim())) { toast.error("That MC rule already exists."); return; }
               entries[index] = [e.target.value.trim(), category];
-              setCfg(c => ({ ...c, crownMcCategories: Object.fromEntries(entries) }));
+              setCfg(c => ({ ...c, mcCategoryRules: Object.fromEntries(entries) }));
             }} />
-            <Input aria-label="Category" value={category} onChange={e => setCfg(c => ({ ...c, crownMcCategories: { ...(c.crownMcCategories ?? RATE_PLUS_MC_CATEGORIES), [range]: e.target.value } }))} />
+            <Input aria-label="Category" value={category} onChange={e => setCfg(c => ({ ...c, mcCategoryRules: { ...(c.mcCategoryRules ?? (crown ? RATE_PLUS_MC_CATEGORIES : {})), [range]: e.target.value } }))} />
+            <Button variant="ghost" aria-label="Remove category rule" onClick={() => setCfg(c => {
+              const rules = { ...(c.mcCategoryRules ?? (crown ? RATE_PLUS_MC_CATEGORIES : {})) };
+              delete rules[range];
+              return { ...c, mcCategoryRules: rules };
+            })}>×</Button>
           </div>
         ))}
       </div>}

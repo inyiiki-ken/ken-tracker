@@ -20,6 +20,7 @@ require.extensions['.ts'] = (module, filename) => module._compile(ts.transpileMo
 }).outputText, filename);
 const { DEFAULT_MASTERLIST_MAPPING } = require('../lib/masterlistMapping.ts');
 const { parseMasterlistFile } = require('../lib/masterlistImport.ts');
+const { getPricing, setPricing, applyPricingConfig } = require('../lib/pricingConfig.ts');
 async function run() {
   const columns = Object.fromEntries(Object.keys(DEFAULT_MASTERLIST_MAPPING.columns).map(k => [k, '']));
   Object.assign(columns, { orderId: 'A', minerName: 'B', itemDescription: 'C', mc: 'D', grams: 'E', clientRate: 'F' });
@@ -47,6 +48,13 @@ async function run() {
   tenant = { tenantId: 'crown-jewellery', displayName: 'Another shop' };
   await check([25], ['Special Price']);
   tenant = null;
+  await check([25], ['Special Price']);
+  tenant = { tenantId: 'other-shop', displayName: 'Other shop' };
+  const saved = JSON.stringify({ ...getPricing(), mcCategoryRules: { '15-25': 'Custom normal', '55': 'Custom fixed' } });
+  assert.equal(applyPricingConfig(saved), true);
+  await check([25, 55], ['Custom normal', 'Custom fixed']);
+  assert.deepEqual(getPricing().mcCategoryRules, JSON.parse(saved).mcCategoryRules);
+  setPricing({ ...getPricing(), mcCategoryRules: undefined });
   await check([25], ['Special Price']);
   console.log('Masterlist category checks passed.');
 }
