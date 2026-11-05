@@ -280,6 +280,26 @@ check('COD collect, balance, credit and shared livers agree', () => {
   assert.equal(C.calcGroupBalance([oldSent, oldOpen]), 503);
 });
 
+check('separate pending invoices each retain local shipping', () => {
+  useCrown();
+  const earlier = local(1, { dateOfLive: '2026-10-20', pureWeight: 'earlier' });
+  const current = local(2, { dateOfLive: '2026-10-29', pureWeight: '102926-10292026-449', clientRate: 396, grams: 1.13 });
+  assert.equal(C.groupShippingFee([earlier, current]) - C.groupShippingFee([earlier]), 30);
+  assert.equal(C.calcInvoiceLedger([[earlier], [current]])[1].balance, 477);
+  const React = require('react');
+  const { renderToStaticMarkup } = require('react-dom/server');
+  const Invoice = require('../components/InvoicePrintContent.tsx').default;
+  const printed = renderToStaticMarkup(React.createElement(Invoice, { records: [current], priorRecords: [earlier], currency: 'AED' }));
+  assert.match(printed, /AED 30/);
+  assert.match(printed, /AED 477/);
+  assert.doesNotMatch(printed, /NO ADDITIONAL SHIPPING|CHARGED ON EARLIER INVOICE/);
+  assert.equal(C.groupShippingFee([current, { ...current, id: 3 }]), 30, 'one fee within the same invoice');
+  const legacy = { ...earlier, dateOfLive: '2026-10-01' };
+  assert.equal(C.groupShippingFee([legacy, current]) - C.groupShippingFee([legacy]), 30, 'old pending invoice cannot absorb new shipping');
+  const shipped = [earlier, current].map(r => ({ ...r, dispatchDate: '2026-10-30T08:00:00Z', shipmentId: 'combined' }));
+  assert.equal(C.groupShippingFee(shipped), 30, 'confirmed shared parcel still pays once');
+});
+
 check('tenants without the feature keep one fee per customer', () => {
   P.setPricing({ ...P.DEFAULT_PRICING });
   const r = [row(1, { status: 'Delivered', dispatchDate: '2026-10-12T08:00:00Z' }), row(2, { dateOfLive: '2026-10-20' })];

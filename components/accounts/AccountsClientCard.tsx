@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, memo, useMemo, useCallback, useRef } from 'react';
-import { ChevronDown, FileText, History, Pencil, Copy, Check, Clock, AlertTriangle } from 'lucide-react';
+import { ChevronDown, Copy, Check, Clock, AlertTriangle } from 'lucide-react';
 
 function LayawayAgingBadge({ dateStr }: { dateStr?: string }) {
   if (!dateStr) return null;
@@ -23,13 +23,12 @@ function LayawayAgingBadge({ dateStr }: { dateStr?: string }) {
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { DatabaseRowType } from '@/types';
-import { calcGroupBalance, calcRemainingBalance, calcShippingFee, calcCCFee, calcItemPrice, calcDueDate, getQty, parseDateRobust } from '@/lib/calculations';
+import { calcTotalPaid, calcItemPriceAED, getQty, parseDateRobust } from '@/lib/calculations';
 import { getEffectiveStatuses } from '@/lib/statusRegistry';
-import { formatDateObj, formatDate } from '@/lib/formatters';
+import { formatDate } from '@/lib/formatters';
 import StatusBadge from '@/components/StatusBadge';
-import InvoiceModal from '@/components/InvoiceModal';
 import FinancialsForm from './FinancialsForm';
-import CustomerHistoryModal from '@/components/CustomerHistoryModal';
+import type { AccountBatch } from '@/lib/accountsLedger';
 import { toast } from 'sonner';
 import { useCompactMode } from '@/lib/compactMode';
 import { fulfilmentStage } from '@/lib/fulfilment';
@@ -39,14 +38,13 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 interface Props {
   minerName: string;
   records: DatabaseRowType[];
-  allRecords: DatabaseRowType[];
+  batch: AccountBatch;
+  title: string;
   onUpdate: (rowId: number, fields: Partial<DatabaseRowType>) => Promise<void>;
 }
 
-function AccountsClientCard({ minerName, records, allRecords, onUpdate }: Props) {
+function AccountsClientCard({ minerName, records, batch, title, onUpdate }: Props) {
   const [expanded, setExpanded] = useState(false);
-  const [showInvoice, setShowInvoice] = useState(false);
-  const [showHistory, setShowHistory] = useState(false);
   const [expandedItem, setExpandedItem] = useState<number | null>(null);
   const [copiedId, setCopiedId] = useState<number | null>(null);
   const [statusResetKeys, setStatusResetKeys] = useState<Record<number, number>>({});
@@ -85,24 +83,18 @@ function AccountsClientCard({ minerName, records, allRecords, onUpdate }: Props)
   }, [applyStatus]);
 
   const copyRecord = useCallback((record: DatabaseRowType) => {
-    const bal = calcRemainingBalance(record);
     const text = [
       record.itemDescription,
       record.grams ? `${record.grams}g` : '',
-      `AED ${calcItemPrice(record).toFixed(2)}`,
-      bal > 0 ? `Bal: AED ${bal.toFixed(2)}` : 'Paid',
+      `Item price: AED ${calcItemPriceAED(record).toFixed(2)}`,
+      `Payment recorded here: AED ${calcTotalPaid(record).toFixed(2)}`,
     ].filter(Boolean).join(' · ');
     navigator.clipboard.writeText(text).catch(() => {});
     setCopiedId(record.id);
     setTimeout(() => setCopiedId(null), 1500);
   }, []);
 
-  const first = records[0];
-  const dueDate = formatDateObj(calcDueDate(first?.dateOfLive));
   const { isCompact } = useCompactMode();
-  // Same way the invoice adds it up (shipping once, card fee on the total).
-  const totalRemaining = Math.max(0, calcGroupBalance(records.filter(r => !/^(cancelled|returned item)$/i.test(String(r.status || '').trim()))));
-
   // Group records by Date → Liver → Status
   const grouped = useMemo(() => {
     const byDate: Record<string, Record<string, Record<string, DatabaseRowType[]>>> = {};
@@ -120,45 +112,27 @@ function AccountsClientCard({ minerName, records, allRecords, onUpdate }: Props)
 
   return (
     <div className="mb-3 rounded-xl border border-border bg-card overflow-hidden">
-      <button className="w-full text-left px-4 py-3 flex items-center justify-between" onClick={() => setExpanded(e => !e)}>
+
+      <button type="button" aria-expanded={expanded} className="w-full text-left px-4 py-3 flex items-center justify-between" onClick={() => setExpanded(e => !e)}>
         <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2">
-            <span className="font-cinzel text-[13px] text-primary">{minerName}</span>
-            {first?.customerId && (
-              <button
-                className="text-muted-foreground hover:text-primary transition-colors"
-                title="View Lifetime History"
-                onClick={e => { e.stopPropagation(); setShowHistory(true); }}
-              >
-                <History className="h-3.5 w-3.5" />
-              </button>
-            )}
+          <p className="text-sm font-semibold">{title}</p>
+          <p className="text-xs text-muted-foreground mt-1">{records.length} items · {Array.from(new Set(records.map(r => r.status))).join(' / ')}</p>
+          <div className="flex flex-wrap gap-x-4 gap-y-1 mt-2 text-xs">
+            <span>Charges: AED {batch.charges.toFixed(2)}</span>
+            <span>Payments: AED {batch.paid.toFixed(2)}</span>
+            {batch.creditUsed > 0 && <span className="text-success">Credit applied: AED {batch.creditUsed.toFixed(2)}</span>}
+            {batch.creditAdded > 0 && <span className="text-success">Credit carried forward: AED {batch.creditAdded.toFixed(2)}</span>}
+            <span className={batch.due > 0 ? 'text-destructive font-semibold' : 'text-success'}>{batch.due > 0 ? 'Remaining: AED ' + batch.due.toFixed(2) : 'Paid / covered'}</span>
           </div>
-          <div className="flex gap-3 text-xs text-muted-foreground mt-0.5">
-            <span>{records.length} item{records.length !== 1 ? 's' : ''}</span>
-            {!isCompact && <span>Due: {dueDate}</span>}
-          </div>
-          {totalRemaining > 0 && (
-            <span className="text-xs font-medium text-destructive">Balance: AED {totalRemaining.toFixed(2)}</span>
-          )}
+          {batch.uncertain && <p className="text-xs text-warning mt-2">Legacy shipment: original dispatch details are incomplete. Check item history if this batch needs separating.</p>}
         </div>
-        <ChevronDown className={`h-4 w-4 text-muted-foreground shrink-0 ml-2 transition-transform ${expanded ? 'rotate-180' : ''}`} />
+        <ChevronDown className={'h-4 w-4 text-muted-foreground shrink-0 ml-2 transition-transform ' + (expanded ? 'rotate-180' : '')} />
       </button>
 
       {expanded && (
         <div className="px-3 pb-3 border-t border-border pt-3">
-          {/* Generate Invoice at the TOP */}
-          <Button
-            variant="outline"
-            size="sm"
-            className="w-full mb-3 border-primary/40 text-primary text-xs"
-            onClick={() => setShowInvoice(true)}
-          >
-            <FileText className="h-3.5 w-3.5 mr-1.5" /> Generate Invoice
-          </Button>
-
           {/* Grouped by Date → Liver → Status */}
-          {Object.entries(grouped).sort().map(([date, livers]) => (
+          {Object.entries(grouped).sort(([a], [b]) => (parseDateRobust(a)?.getTime() || 0) - (parseDateRobust(b)?.getTime() || 0)).map(([date, livers]) => (
             <div key={date} className="mb-3">
               <div className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2 px-1">
                 📅 {formatDate(date)}
@@ -189,43 +163,27 @@ function AccountsClientCard({ minerName, records, allRecords, onUpdate }: Props)
                                   <LayawayAgingBadge dateStr={record.dateOfLive} />
                                 </div>
                               )}
-                              {!isCompact && (
-                                <div className="flex gap-3 text-xs mt-1">
-                                  <span className="text-muted-foreground">Price: <span className="text-foreground">{record.currency || 'AED'} {calcItemPrice(record).toFixed(2)}</span></span>
-                                  <span className="text-muted-foreground">SF: <span className="text-foreground">AED {calcShippingFee(record).toFixed(2)}</span></span>
-                                  {calcCCFee(record) > 0 && <span className="text-muted-foreground">CC: <span className="text-foreground">AED {calcCCFee(record).toFixed(2)}</span></span>}
-                                </div>
-                              )}
-                              <div className="text-xs mt-0.5">
-                                <span className={`font-medium ${calcRemainingBalance(record) > 0 ? 'text-destructive' : 'text-success'}`}>
-                                  Balance: AED {calcRemainingBalance(record).toFixed(2)}
-                                </span>
+
+                              <div className="text-xs mt-1 text-muted-foreground">
+                                <p>Item price: AED {calcItemPriceAED(record).toFixed(2)}</p>
+                                <p className="text-foreground">Payment recorded here: AED {calcTotalPaid(record).toFixed(2)}</p>
+                                {!isCompact && <p>{record.page} · {record.liverName} · Live {formatDate(record.dateOfLive)}</p>}
                               </div>
                             </div>
                             <div className="flex items-center gap-1 ml-2 mt-0.5 shrink-0">
-                              {/* Quick actions — visible on hover */}
-                              <button
-                                title="Copy item summary"
-                                onClick={e => { e.stopPropagation(); copyRecord(record); }}
-                                className="opacity-0 group-hover/item:opacity-100 transition-opacity p-1 rounded hover:bg-secondary text-muted-foreground hover:text-foreground"
-                              >
-                                {copiedId === record.id
-                                  ? <Check className="h-3 w-3 text-success" />
-                                  : <Copy className="h-3 w-3" />}
-                              </button>
-                              <button
-                                title="Edit financials"
-                                onClick={e => { e.stopPropagation(); setExpandedItem(expandedItem === record.id ? null : record.id); }}
-                                className="opacity-0 group-hover/item:opacity-100 transition-opacity p-1 rounded hover:bg-primary/10 text-muted-foreground hover:text-primary"
-                              >
-                                <Pencil className="h-3 w-3" />
-                              </button>
                               <ChevronDown className={`h-3.5 w-3.5 text-muted-foreground transition-transform ${expandedItem === record.id ? 'rotate-180' : ''}`} />
                             </div>
                           </button>
 
                           {expandedItem === record.id && (
+
                             <div className="px-3 pb-3 animate-in fade-in slide-in-from-top-2 duration-200">
+                              <Button type="button" size="sm" variant="ghost" className="mb-2" onClick={() => copyRecord(record)}>
+                                {copiedId === record.id ? <Check className="h-3 w-3 mr-1" /> : <Copy className="h-3 w-3 mr-1" />} Copy item summary
+                              </Button>
+                              <p className="text-xs text-muted-foreground mb-3">A payment entered on this item covers the batch above. Do not enter the same money again on another item.</p>
+                              {record.auditTrail && <details className="text-xs mb-3"><summary className="cursor-pointer text-primary">Item audit trail</summary><p className="whitespace-pre-wrap break-words mt-2 text-muted-foreground">{record.auditTrail}</p></details>}
+
                               <div className="mb-2">
                                 <p className="text-[10px] text-muted-foreground uppercase tracking-wide mb-1">Change Status</p>
                                 <Select
@@ -263,16 +221,6 @@ function AccountsClientCard({ minerName, records, allRecords, onUpdate }: Props)
         </div>
       )}
 
-      {showInvoice && <InvoiceModal records={records} onClose={() => setShowInvoice(false)} />}
-      {showHistory && first?.customerId && (
-        <CustomerHistoryModal
-          customerId={first.customerId}
-          minerName={minerName}
-          allRecords={allRecords}
-          onClose={() => setShowHistory(false)}
-        />
-      )}
-
       <AlertDialog open={!!pendingCancel} onOpenChange={open => { if (!open) setPendingCancel(null); }}>
         <AlertDialogContent className="bg-card border-border">
           <AlertDialogHeader>
@@ -299,12 +247,4 @@ function AccountsClientCard({ minerName, records, allRecords, onUpdate }: Props)
   );
 }
 
-export default memo(AccountsClientCard, (prev, next) => {
-  if (prev.minerName !== next.minerName) return false;
-  if (prev.records.length !== next.records.length) return false;
-  for (let i = 0; i < prev.records.length; i++) {
-    if (prev.records[i] !== next.records[i]) return false;
-  }
-  if (prev.allRecords !== next.allRecords) return false;
-  return true;
-});
+export default memo(AccountsClientCard);

@@ -715,9 +715,9 @@ function boughtBefore(r: DatabaseRowType, s: Shipment, tz: number): boolean {
  * - Items bought before the start date keep the old rule: together they pay one
  *   fee, and so does any parcel that carries one of them (a parcel mixing old
  *   and new purchases pays once). While an old item is still waiting, new items
- *   waiting with it are that same next parcel.
+ *   waiting on the same invoice are that same next parcel.
  * - New items: each parcel that left pays one fee; items still waiting form the
- *   next parcel. With leftover = 'free', a waiting item bought before an earlier
+ *   next parcel per invoice (unnumbered items stay together). With leftover = 'free', a waiting item bought before an earlier
  *   parcel left counts as part of that parcel.
  */
 export function shippingGroups(records: DatabaseRowType[], rules: ShipRules = currentShipRules()): DatabaseRowType[][] {
@@ -731,24 +731,27 @@ export function shippingGroups(records: DatabaseRowType[], rules: ShipRules = cu
       const earlier = shipments.find(s => boughtBefore(r, s, tz));
       if (earlier) return earlier.key;
     }
-    return 'open';
+    // Separate issued invoices are separate pending deliveries. An older
+    // invoice must not absorb the next invoice's shipping while both wait.
+    const invoice = String(r.pureWeight ?? '').trim();
+    return invoice ? `open:invoice:${invoice}` : 'open';
   };
   const legacy: DatabaseRowType[] = [];
   const oldParcels = new Set<string>();
-  // An old item still waiting to ship goes out in the next parcel, so new items
-  // waiting with it share that parcel and the old fee (cancelled ones don't count).
-  let oldWaiting = false;
+  // An old item still waiting shares its fee with new items on the same
+  // pending invoice (cancelled ones don't count).
+  const oldWaiting = new Set<string>();
   for (const r of records) {
     if (usesNewRules(r, rules.from, tz)) continue;
     legacy.push(r);
     if (shippedDay(r, tz)) oldParcels.add(shipmentKey(r, tz));
-    else if (!/cancel|return/i.test(String(r.status ?? ''))) oldWaiting = true;
+    else if (!/cancel|return/i.test(String(r.status ?? ''))) oldWaiting.add(keyOf(r));
   }
   const groups = new Map<string, DatabaseRowType[]>();
   for (const r of records) {
     if (!usesNewRules(r, rules.from, tz)) continue;
     const key = keyOf(r);
-    if (key === 'open' ? oldWaiting : oldParcels.has(key)) { legacy.push(r); continue; }
+    if (key === 'open' || key.startsWith('open:invoice:') ? oldWaiting.has(key) : oldParcels.has(key)) { legacy.push(r); continue; }
     const g = groups.get(key);
     if (g) g.push(r); else groups.set(key, [r]);
   }

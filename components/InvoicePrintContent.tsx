@@ -181,7 +181,9 @@ export default function InvoicePrintContent({ records, currency, ccIncludeShippi
   // earlier invoices, worked out the same way as the account balance.
   const priorShippingAED = groupShippingFee(priorRecords);
   const shippingAED = Math.max(0, groupShippingFee([...priorRecords, ...records]) - priorShippingAED);
-  const shippingAlreadyCharged = !anyFreeSf && shippingAED === 0 && priorShippingAED > 0;
+  // Earlier records only establish the account's calculated shipping; they do
+  // not prove that another invoice was issued or that shipping was paid.
+  const shippingNotAdded = !anyFreeSf && shippingAED === 0 && priorShippingAED > 0;
   // Store credit left over from the earlier invoices, used against this one.
   const priorCreditAED = priorRecords.length ? Math.max(0, -calcGroupBalance(priorRecords)) : 0;
   // ── Billing Modifiers: parse charges, discounts, and shipping overrides ──
@@ -335,7 +337,7 @@ export default function InvoicePrintContent({ records, currency, ccIncludeShippi
 
   const summaryRows: { label: string; value: string; red?: boolean; green?: boolean }[] = [
     { label: 'TOTAL GRAMS', value: totalGrams > 0 ? totalGrams.toFixed(2) : '—' },
-    { label: 'SHIPPING', value: shipping > 0 ? fmtAmt(shipping) : shippingAlreadyCharged ? 'CHARGED ON EARLIER INVOICE' : 'FREE' },
+    { label: 'SHIPPING', value: shipping > 0 ? fmtAmt(shipping) : shippingNotAdded ? 'NO ADDITIONAL SHIPPING' : 'FREE' },
     // Itemized charge descriptions
     ...chargeDescriptions.map(c => ({ label: c.label.toUpperCase(), value: fmtAmt(c.amount) })),
     // Itemized discount descriptions
