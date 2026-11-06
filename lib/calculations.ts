@@ -542,7 +542,7 @@ export function calcTotalPaid(record: DatabaseRowType): number {
   const otherRaw = layawayRaw + n(record.amountReceived);
   const manuallyPaid = dpAED + toAED(otherRaw, record);
 
-  return manuallyPaid;
+  return manuallyPaid + n(record.shipmentPaymentAED);
 }
 
 export function calcRemainingBalance(record: DatabaseRowType): number {

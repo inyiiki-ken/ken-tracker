@@ -1,4 +1,6 @@
 export type DatabaseRowType = {
+  /** Read-only allocation from the separate shipment payment ledger, in AED. Never a sheet column. */
+  shipmentPaymentAED?: number;
   orderId?: string;
   dateOfLive?: string;
   page?: string;

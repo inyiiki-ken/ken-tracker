@@ -1,6 +1,6 @@
 import type { DatabaseRowType } from '@/types';
 import { getAppConfig, isSaleStatus } from '@/lib/appConfig';
-import { businessDay, calcGroupBalance, calcTotalPaid, customerKey, parseDateRobust } from '@/lib/calculations';
+import { businessDay, calcGroupBalance, calcShippingFee, calcTotalPaid, customerKey, parseDateRobust, shippingFeeRow } from '@/lib/calculations';
 import { fulfilmentStage } from '@/lib/fulfilment';
 
 const normalize = (s?: string) => String(s || '').trim().replace(/\s+/g, ' ').toUpperCase();
@@ -37,6 +37,7 @@ export interface AccountBatch {
   uncertain: boolean;
   records: DatabaseRowType[];
   charges: number;
+  shipping: number;
   paid: number;
   creditUsed: number;
   creditAdded: number;
@@ -56,7 +57,7 @@ export interface CustomerAccount {
   verification: boolean;
 }
 
-function batchIdentity(r: DatabaseRowType): { key: string; date?: string; pending: boolean; uncertain: boolean } {
+export function accountBatchIdentity(r: DatabaseRowType): { key: string; date?: string; pending: boolean; uncertain: boolean } {
   const stage = fulfilmentStage(r.status);
   const shipped = stage === 'dispatched' || stage === 'delivered';
   if (!shipped) return { key: 'pending', pending: true, uncertain: false };
@@ -69,13 +70,13 @@ function batchIdentity(r: DatabaseRowType): { key: string; date?: string; pendin
 }
 
 export function buildAccount(key: string, source: DatabaseRowType[]): CustomerAccount {
-  const records = source.filter(isAccountsRelevant);
+  const records = source.some(isAccountsRelevant) ? source.filter(r => fulfilmentStage(r.status) !== 'excluded') : [];
   const groups = new Map<string, AccountBatch>();
   for (const r of records) {
-    const identity = batchIdentity(r);
+    const identity = accountBatchIdentity(r);
     let group = groups.get(identity.key);
     if (!group) {
-      group = { ...identity, records: [], charges: 0, paid: 0, creditUsed: 0, creditAdded: 0, due: 0 };
+      group = { ...identity, records: [], charges: 0, shipping: 0, paid: 0, creditUsed: 0, creditAdded: 0, due: 0 };
       groups.set(identity.key, group);
     }
     group.records.push(r);
@@ -85,19 +86,21 @@ export function buildAccount(key: string, source: DatabaseRowType[]): CustomerAc
     || (parseDateRobust(a.date)?.getTime() || 0) - (parseDateRobust(b.date)?.getTime() || 0)
     || a.key.localeCompare(b.key));
 
-  // Use the existing invoice pricing rules on the cumulative account so a
-  // shared shipping fee/card surcharge isn't charged again for every batch.
-  // Zero payments only in these in-memory copies: payment precision is kept
-  // separately and no stored downpayment is redistributed or rewritten.
-  let accumulated: DatabaseRowType[] = [];
-  let previousCharges = 0;
+  // Accounts is a shipment ledger: every batch carries its own shipping fee.
+  // Do not subtract cumulative account invoices here. Their legacy/live-date
+  // grouping can let an earlier parcel's free-SF flag or promo suppress fees
+  // on later parcels and incorrectly turn delivery payments into credit.
+  // Keep existing regional rates and batch-local free/promo/pickup exceptions.
+  // Unshipped items form one provisional next shipment, with its estimated fee.
+  let totalCharges = 0;
   let credit = 0;
   for (const batch of batches) {
-    accumulated = accumulated.concat(batch.records.map(r => ({ ...r, downpayment: '', amountReceived: '',
-      la1MonthPayment: '', la2MonthPayment: '', la3MonthPayment: '', la4MonthPayment: '' })));
-    const charges = calcGroupBalance(accumulated);
-    batch.charges = cents(charges - previousCharges);
-    previousCharges = charges;
+    const feeRow = shippingFeeRow(batch.records);
+    batch.shipping = feeRow ? calcShippingFee(feeRow) : 0;
+    const unpaidWithoutShipping = batch.records.map(r => ({ ...r, shipmentPaymentAED: 0, freeSf: 'TRUE', downpayment: '', amountReceived: '',
+      la1MonthPayment: '', la2MonthPayment: '', la3MonthPayment: '', la4MonthPayment: '' }));
+    batch.charges = cents(calcGroupBalance(unpaidWithoutShipping) + batch.shipping);
+    totalCharges = cents(totalCharges + batch.charges);
     batch.paid = cents(batch.records.reduce((total, r) => total + calcTotalPaid(r), 0));
     const remaining = cents(batch.charges - batch.paid);
     batch.creditUsed = Math.min(credit, Math.max(0, remaining));
@@ -108,7 +111,7 @@ export function buildAccount(key: string, source: DatabaseRowType[]): CustomerAc
   return {
     key, name: source.find(r => r.minerName?.trim())?.minerName?.trim() || 'Unknown customer', records, batches,
     excludedPayments: source.filter(r => fulfilmentStage(r.status) === 'excluded' && calcTotalPaid(r) !== 0),
-    paid: cents(batches.reduce((s, b) => s + b.paid, 0)), charges: previousCharges,
+    paid: cents(batches.reduce((s, b) => s + b.paid, 0)), charges: totalCharges,
     due: cents(batches.reduce((s, b) => s + b.due, 0)), credit,
     verification: records.some(r => /payment for verification/i.test(r.status || '')),
   };

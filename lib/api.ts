@@ -5,6 +5,7 @@
  * server actions under those same names so nothing else in the ported UI
  * code needs to change.
  */
+export { getShipmentPayments, addShipmentPayment } from './google-sheets/shipmentPayments';
 export {
   getRecords,
   createRecord,

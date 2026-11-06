@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Button } from '@/components/ui/button';
@@ -13,6 +13,8 @@ import TabHeader from '@/components/TabHeader';
 import AccountsCustomerCard from './AccountsCustomerCard';
 import AddClientModal from './AddClientModal';
 import { Plus } from 'lucide-react';
+import { getShipmentPayments } from '@/lib/api';
+import { attachShipmentPayments, type ShipmentPayment } from '@/lib/shipmentPayments';
 
 export default function AccountsTracking({ records, searchQuery, onSearchChange, onUpdate, userFirstName, userEmail, onRefresh }: TabProps) {
   const [showAddModal, setShowAddModal] = useState(false);
@@ -20,7 +22,21 @@ export default function AccountsTracking({ records, searchQuery, onSearchChange,
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
   const [sort, setSort] = useState('balance');
-  const accounts = useMemo(() => buildAccounts(records), [records]);
+  const [payments, setPayments] = useState<ShipmentPayment[] | null>(null);
+  const [paymentError, setPaymentError] = useState('');
+  const paymentRead = useRef(0);
+  async function loadPayments() {
+    const request = ++paymentRead.current;
+    try { const result = await getShipmentPayments(); if (request === paymentRead.current) { setPayments(result); setPaymentError(''); } }
+    catch { if (request === paymentRead.current) setPaymentError('Payment history could not be loaded. Retry before adding a payment.'); }
+  }
+  useEffect(() => { void loadPayments(); }, [records]);
+  const accounts = useMemo(() => buildAccounts(payments ? attachShipmentPayments(records, payments) : records), [records, payments]);
+  function paymentSaved(payment: ShipmentPayment) {
+    paymentRead.current++;
+    setPayments(prev => [...(prev || []).filter(p => p.id !== payment.id), payment]);
+    onRefresh?.();
+  }
   const liverNames = useMemo(() => [...new Set(records.map(r => r.liverName?.trim().toUpperCase()).filter(Boolean))] as string[], [records]);
   const invalidRange = !!from && !!to && from > to;
   const visible = useMemo(() => accounts.filter(account => !invalidRange && account.records.concat(account.excludedPayments).some(r => {
@@ -40,6 +56,7 @@ export default function AccountsTracking({ records, searchQuery, onSearchChange,
     <div className="min-h-screen bg-background pb-24">
       <TabHeader title="Accounts" subtitle="Customer balances, shipments and store credit" searchQuery={searchQuery} onSearchChange={onSearchChange} />
       <div className="px-4 pt-4 space-y-4">
+        {paymentError && <div role="alert" className="text-sm text-destructive">{paymentError} <Button variant="outline" size="sm" onClick={() => void loadPayments()}>Retry</Button></div>}
         <div className="flex flex-wrap items-end gap-2">
           <Select value={liverFilter} onValueChange={setLiverFilter}>
             <SelectTrigger className="h-9 w-40 text-xs"><SelectValue /></SelectTrigger>
@@ -74,7 +91,7 @@ export default function AccountsTracking({ records, searchQuery, onSearchChange,
           {([['all', visible], ['outstanding', outstanding], ['settled', settled], ['review', review]] as const).map(([key, list]) => (
             <TabsContent key={key} value={key} className="space-y-3">
               {!list.length && <p className="rounded-xl border border-dashed border-border p-10 text-center text-sm text-muted-foreground">No customers match this view.</p>}
-              {list.map(account => <AccountsCustomerCard key={account.key} account={account} onUpdate={onUpdate} />)}
+              {list.map(account => <AccountsCustomerCard key={account.key} account={account} onUpdate={onUpdate} payments={payments || []} paymentsReady={payments !== null && !paymentError} onPaymentSaved={paymentSaved} onPaymentClose={() => { void loadPayments(); onRefresh?.(); }} />)}
             </TabsContent>
           ))}
         </Tabs>

@@ -119,6 +119,7 @@ function AccountsClientCard({ minerName, records, batch, title, onUpdate }: Prop
           <p className="text-xs text-muted-foreground mt-1">{records.length} items · {Array.from(new Set(records.map(r => r.status))).join(' / ')}</p>
           <div className="flex flex-wrap gap-x-4 gap-y-1 mt-2 text-xs">
             <span>Charges: AED {batch.charges.toFixed(2)}</span>
+            <span>{batch.pending ? 'Estimated shipping included' : 'Shipping included'}: AED {batch.shipping.toFixed(2)}</span>
             <span>Payments: AED {batch.paid.toFixed(2)}</span>
             {batch.creditUsed > 0 && <span className="text-success">Credit applied: AED {batch.creditUsed.toFixed(2)}</span>}
             {batch.creditAdded > 0 && <span className="text-success">Credit carried forward: AED {batch.creditAdded.toFixed(2)}</span>}
@@ -166,7 +167,8 @@ function AccountsClientCard({ minerName, records, batch, title, onUpdate }: Prop
 
                               <div className="text-xs mt-1 text-muted-foreground">
                                 <p>Item price: AED {calcItemPriceAED(record).toFixed(2)}</p>
-                                <p className="text-foreground">Payment recorded here: AED {calcTotalPaid(record).toFixed(2)}</p>
+                                <p className="text-foreground">Item payment recorded here: AED {calcTotalPaid({ ...record, shipmentPaymentAED: 0 }).toFixed(2)}</p>
+                                {!!record.shipmentPaymentAED && <p className="text-success">Share of shipment payments: AED {record.shipmentPaymentAED.toFixed(2)}</p>}
                                 {!isCompact && <p>{record.page} · {record.liverName} · Live {formatDate(record.dateOfLive)}</p>}
                               </div>
                             </div>

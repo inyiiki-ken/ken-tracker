@@ -250,7 +250,7 @@ export default function InvoicePrintContent({ records, currency, ccIncludeShippi
   const totalPaidConverted_rounded = rnd(totalPaidConverted);
 
   // ─── PHP CANONICAL BALANCE CHECK ────────────────────────────────────────────
-  const allPhpPayments = totalPaidConverted_rounded > 0 &&
+  const allPhpPayments = totalPaidConverted_rounded > 0 && !records.some(r => (r.shipmentPaymentAED || 0) > 0) &&
     records.every(r => {
       const mop = (r.modeOfPayment || '').toLowerCase().trim();
       return mop === 'gcash' || mop === 'bank transfer php';

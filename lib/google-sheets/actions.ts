@@ -22,6 +22,8 @@ import { keepPaymentsOnOriginal, MONEY_KEYS, type MoneyKey, type SplitPayments }
 import { customersEverWithOtherLivers, customersWithOtherLivers, sharedShippingCarriers } from "@/lib/liverMoney";
 import { buildCustomerMemory, fillFromMemory, isSpellingFix, rememberedNote, UPLOAD_FILL_FIELDS, type CustomerMemory } from "@/lib/customerMemory";
 import { readStoredCustomers, rememberAliases } from "./customerMemoryStore";
+import { readShipmentPayments } from './shipmentPaymentStore';
+import { attachShipmentPayments } from '@/lib/shipmentPayments';
 
 
 /**
@@ -236,7 +238,7 @@ export async function getRecords(_params?: { tailOnly?: boolean }): Promise<{ re
   const readAt = new Date().toISOString();
   const rows = await sheet.getRows();
   const aliases = await getTenantColumnAliases();
-  const all = rows.map((r) => rowToDatabaseRecord(r, aliases));
+  const all = attachShipmentPayments(rows.map((r) => rowToDatabaseRecord(r, aliases)), await readShipmentPayments());
   if (access.all || !isLiverOnly(access.roles)) return { records: all, readAt };
 
   // A liver only ever gets her own items (her "name" in the Roles tab). No

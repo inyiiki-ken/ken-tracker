@@ -46,6 +46,9 @@ export function keepPaymentsOnOriginal(rec: Partial<Record<keyof DatabaseRowType
  *   paid in PHP/USD): nothing moves, so no money is ever lost or invented.
  */
 export function planSplitPayments(record: DatabaseRowType, splitGrams: number, newStage: FulfilmentStage): SplitPayments {
+  // This routine redistributes only the editable item payment fields. A
+  // separate shipment payment stays linked to the original row key.
+  record = { ...record, shipmentPaymentAED: 0 };
   const origGrams = Number(record.grams) || 0;
   const keep = keepPaymentsOnOriginal(record, newStage !== "excluded");
   const paid = calcTotalPaid(record);

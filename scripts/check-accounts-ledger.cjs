@@ -86,4 +86,49 @@ check('shipment charges reconcile with current invoice shipping rules', () => {
   assert.equal(a.due - a.credit, a.charges - a.paid);
   assert.equal(a.paid, rows.reduce((s, r) => s + calcTotalPaid(r), 0));
 });
+check('Arian: old free shipment cannot turn later AED 450 fees into credit', () => {
+  applyPricingConfig(JSON.stringify({ shippingPerShipment: true, newRulesFrom: '2026-10-10',
+    leftoverShipping: 'charge', shippingFeeInternational: 450 }));
+  const a = one([
+    row(1, { clientRate: 12082, downpayment: '12082', dispatchDate: '2026-10-07' }),
+    row(2, { clientRate: 37119, downpayment: '37568.92', freeSf: '', regions: 'International',
+      shipmentId: 's2', dispatchDate: '2026-10-20', dateOfLive: '2026-09-26' }),
+    row(3, { clientRate: 50683, downpayment: '51132.31', freeSf: '', regions: 'International',
+      shipmentId: 's3', dispatchDate: '2026-10-31', dateOfLive: '2026-09-30' }),
+  ]);
+  assert.deepEqual(a.batches.map(b => b.shipping), [0, 450, 450]);
+  assert.deepEqual(a.batches.map(b => b.due), [0, 0.08, 0.69]);
+  assert.equal(a.credit, 0); assert.equal(a.due, 0.77);
+});
+check('each local shipment includes its regional 30 or 45 fee', () => {
+  applyPricingConfig(JSON.stringify({ shippingPerShipment: false, newRulesFrom: '2026-10-10',
+    shippingFees: { dubai: 30, western: 45 }, shippingFeeDefault: 30 }));
+  const a = one([
+    row(1, { freeSf: '', locationOfMiner: 'Local', regions: 'Dubai', downpayment: '130' }),
+    row(2, { freeSf: '', locationOfMiner: 'Local', regions: 'Abu Dhabi - Western', downpayment: '145',
+      shipmentId: 's2', dispatchDate: '2026-11-01' }),
+  ]);
+  assert.deepEqual(a.batches.map(b => b.shipping), [30, 45]);
+  assert.equal(a.due, 0); assert.equal(a.credit, 0);
+});
+check('promo applies once within its batch and never carries into the next', () => {
+  applyPricingConfig(JSON.stringify({ shippingFeeInternational: 450 }));
+  const a = one([
+    row(1, { freeSf: 'PROMO:AED:200', regions: 'International', downpayment: '400' }),
+    row(2, { freeSf: 'PROMO:AED:200', regions: 'International' }),
+    row(3, { freeSf: '', regions: 'International', shipmentId: 's2', dispatchDate: '2026-11-01', downpayment: '550' }),
+  ]);
+  assert.deepEqual(a.batches.map(b => b.shipping), [200, 450]);
+  assert.equal(a.due, 0); assert.equal(a.credit, 0);
+});
+check('pickup remains free and pending shipping is included once', () => {
+  applyPricingConfig(JSON.stringify({ shippingFeeInternational: 450 }));
+  const a = one([
+    row(1, { freeSf: '', modeOfPayment: 'Pick Up Shop', downpayment: '100' }),
+    row(2, { freeSf: '', regions: 'International', status: 'Reseller', dispatchDate: '', shipmentId: '', downpayment: '76' }),
+    row(3, { freeSf: '', regions: 'International', status: 'Reseller', dispatchDate: '', shipmentId: '' }),
+  ]);
+  assert.deepEqual(a.batches.map(b => b.shipping), [0, 450]);
+  assert.equal(a.batches[1].due, 574);
+});
 console.log(`${count} accounts ledger checks passed.`);
