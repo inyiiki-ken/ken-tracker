@@ -13,7 +13,7 @@ import { getCcIncludeShipping } from '@/lib/pricingConfig';
 import InvoicePrintContent from '@/components/InvoicePrintContent';
 import { parseDateRobust } from '@/lib/calculations';
 import { toast } from 'sonner';
-import { ORDER_BOXES, OrderBox, orderBox, boxLabel, shipmentDay } from '@/lib/fulfilment';
+import { ORDER_BOXES, OrderBox, isStillWithAdmin, orderBox, shipmentDay } from '@/lib/fulfilment';
 import { formatDate } from '@/lib/formatters';
 
 interface Props {
@@ -36,8 +36,11 @@ function sortByDate(list: DatabaseRowType[]) {
 }
 
 /** Statement tabs = Crown's boxes (lib/fulfilment); cancelled / returned items are never invoiced. */
-type InvoiceTab = Exclude<OrderBox, 'cancelled'>;
-const INVOICE_TABS = ORDER_BOXES.filter(b => b.key !== 'cancelled') as { key: InvoiceTab; label: string }[];
+type InvoiceTab = Exclude<OrderBox, 'cancelled'> | 'pending';
+const INVOICE_TABS: { key: InvoiceTab; label: string }[] = [
+  ...ORDER_BOXES.flatMap(({ key, label }) => key === 'cancelled' ? [] : [{ key, label }]),
+  { key: 'pending', label: 'Pending Admin' },
+];
 
 /** Shipment days present in a list, newest first. */
 function shipmentDays(list: DatabaseRowType[]): string[] {
@@ -59,12 +62,11 @@ export default function InvoiceModal({ records, onClose, initialBox, priorRecord
     }
   }, []);
 
-  // Each item goes to the tab of its box: For International Shipment, For COD,
-  // For Pick Up, Reseller, Dispatched or Delivered.
+  // Keep Admin items separate from the dispatch boxes until they are ready to go out.
   const byTab = useMemo(() => {
     const out = new Map<InvoiceTab, DatabaseRowType[]>(INVOICE_TABS.map(t => [t.key, []]));
     for (const r of records) {
-      const box = orderBox(r);
+      const box = isStillWithAdmin(r.status) ? 'pending' : orderBox(r);
       if (box !== 'cancelled') out.get(box)!.push(r);
     }
     for (const [k, list] of out) out.set(k, sortByDate(list));
@@ -328,7 +330,7 @@ export default function InvoiceModal({ records, onClose, initialBox, priorRecord
             <AlertCircle className="h-8 w-8 text-warning mb-2" />
             <p className="font-semibold text-warning">No Items</p>
             <p className="text-xs">
-              {`Nothing in ${boxLabel(tab)}.`}
+              {`Nothing in ${INVOICE_TABS.find(t => t.key === tab)?.label}.`}
             </p>
           </div>
         )}
