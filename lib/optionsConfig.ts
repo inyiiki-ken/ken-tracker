@@ -60,7 +60,7 @@ export const OPTION_LISTS: OptionListDef[] = [
     field: "regions",
     defaults: ["Dubai", "Abu Dhabi", "Sharjah", "Ajman", "RAK", "Fujairah", "UAQ", "Al Ain", "Pinas", "International"],
   },
-  { key: "tog", label: "T.O.G", field: "tog", defaults: ["S-925", "18K", "21K", "22K", "24K", "VCA"] },
+  { key: "tog", label: "T.O.G", field: "tog", defaults: ["S-925", "18K", "21K", "22K", "24K", "VCA", "Other"] },
   {
     key: "category",
     label: "Category",
