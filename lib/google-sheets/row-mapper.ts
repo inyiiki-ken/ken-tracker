@@ -93,6 +93,7 @@ export function rowToDatabaseRecord(
     shipmentId: get("shipmentId") ?? "",
     tabbyIncluded: get("tabbyIncluded") ?? "",
     storeCreditOverride: get("storeCreditOverride") ?? "",
+    reminderSnooze: get("reminderSnooze") ?? "",
   };
 }
 

@@ -434,7 +434,8 @@ export default function DispatchBoard({ records, searchQuery, onSearchChange, on
 
       {/* Courier & Pullout Reminders Dialog */}
       {showReminders && (
-        <RemindersDialog records={records} exclude={reportedIds} title="Courier & Pullout Reminders" onClose={() => setShowReminders(false)} />
+        <RemindersDialog records={records} exclude={reportedIds} title="Courier & Pullout Reminders" onClose={() => setShowReminders(false)}
+          onBulkUpdate={async (updates) => { if (onBulkUpdate) await onBulkUpdate(updates); else for (const u of updates) await onUpdate(u.rowId, u.fields); }} />
       )}
     </div>
   );

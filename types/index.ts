@@ -2,6 +2,8 @@ export type DatabaseRowType = {
   /** Read-only allocation from the separate shipment payment ledger, in AED. Never a sheet column. */
   shipmentPaymentAED?: number;
   storeCreditOverride?: string;
+  /** Reminder snoozed by Dispatch: "YYYY-MM-DD|status|note" (hidden through that day while the status is unchanged). */
+  reminderSnooze?: string;
   orderId?: string;
   dateOfLive?: string;
   page?: string;

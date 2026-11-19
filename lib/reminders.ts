@@ -2,7 +2,7 @@
 
 import type { DatabaseRowType } from "@/types";
 import { getAppConfig, type StatusDeadline } from "@/lib/appConfig";
-import { parseDateRobust, customerKey } from "@/lib/calculations";
+import { parseDateRobust, customerKey, businessDay } from "@/lib/calculations";
 import { lineDate, newestPurchaseByCustomer } from "@/lib/purchaseDates";
 import { fulfilmentStage } from "@/lib/fulfilment";
 
@@ -182,6 +182,25 @@ export interface OverdueSection {
  * `all` = every record, so a customer's newer purchase is seen even when
  * `records` is only part of the list (e.g. one liver's items).
  */
+// ── Snooze: Dispatch hides a reminder for a few days, with a note ──
+
+export interface ReminderSnooze { until: string; status: string; note: string }
+
+export function parseSnooze(v?: string): ReminderSnooze | null {
+  const [until, status, ...note] = String(v ?? "").split("|");
+  return /^\d{4}-\d{2}-\d{2}$/.test(until ?? "") ? { until, status: status ?? "", note: note.join("|") } : null;
+}
+
+export function snoozeValue(until: string, status: string, note: string): string {
+  return [until, status.replace(/\|/g, "/"), note.replace(/[|\r\n]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 300)].join("|");
+}
+
+/** Snoozed through `until` (inclusive) while the item keeps the status it was snoozed in. */
+export function isSnoozed(r: DatabaseRowType, today = businessDay(new Date().toISOString())): boolean {
+  const s = parseSnooze(r.reminderSnooze);
+  return !!s && s.until >= today && s.status.trim().toLowerCase() === String(r.status ?? "").trim().toLowerCase();
+}
+
 export function computeOverdue(records: DatabaseRowType[], rules = getReminderRules(), all: DatabaseRowType[] = records): OverdueSection[] {
   const now = Date.now();
   const last = lastPurchases(all);
@@ -190,6 +209,7 @@ export function computeOverdue(records: DatabaseRowType[], rules = getReminderRu
       const info = new Map<number, DueInfo>();
       const items = records.filter((r) => {
         if (!matches(rule, String(r.status ?? ""))) return false;
+        if (isSnoozed(r)) return false;
         const d = dueInfo(r, rule, last);
         if (!d || now < d.due.getTime()) return false;
         info.set(r.id, d);

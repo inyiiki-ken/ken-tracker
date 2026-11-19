@@ -83,11 +83,12 @@ export const DATABASE_HEADERS: Record<string, string> = {
   /** "Yes" = the rate already includes Tabby's increase. Optional column. */
   tabbyIncluded: "Tabby Included",
   storeCreditOverride: "Store Credit Override",
+  reminderSnooze: "Reminder Snooze",
 };
 
 /** Columns the app adds by itself when first needed, so a sheet without them
  * is not reported as broken. */
-export const OPTIONAL_DATABASE_KEYS = new Set<string>(["cancelReason", "shipmentId", "tabbyIncluded", "storeCreditOverride"]);
+export const OPTIONAL_DATABASE_KEYS = new Set<string>(["cancelReason", "shipmentId", "tabbyIncluded", "storeCreditOverride", "reminderSnooze"]);
 
 /**
  * Alternate header names some customers use for the same field. The app reads
