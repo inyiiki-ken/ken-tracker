@@ -300,6 +300,24 @@ check('separate pending invoices each retain local shipping', () => {
   assert.equal(C.groupShippingFee(shipped), 30, 'confirmed shared parcel still pays once');
 });
 
+check('new COD parcel after delivered parcels pays shipping again (per-parcel on)', () => {
+  // Carinna, Nov 2026: three COD parcels delivered, then a new COD order.
+  const React = require('react');
+  const { renderToStaticMarkup } = require('react-dom/server');
+  const Invoice = require('../components/InvoicePrintContent.tsx').default;
+  const sent = (id, live, day) => local(id, { dateOfLive: live, regions: 'RAK', status: 'Delivered', deliveredDate: day + 'T22:00:00Z', dispatchDate: day + 'T08:00:00Z', shipmentId: 'shipment:' + day, pureWeight: 'inv' + id });
+  const earlier = [sent(264, '2026-10-15', '2026-10-21'), sent(373, '2026-10-23', '2026-10-29'), sent(449, '2026-10-29', '2026-11-03')];
+  const current = local(721, { dateOfLive: '2026-11-19', regions: 'RAK', clientRate: 372, grams: 1.82, pureWeight: '111926-11192026-721' });
+  const shipping = (html) => html.match(/SHIPPING<\/span><span[^>]*>([^<]*)</)[1];
+  useCrown({ shippingPerShipment: true, newRulesFrom: '2026-10-10', leftoverShipping: 'free' });
+  const html = renderToStaticMarkup(React.createElement(Invoice, { records: [current], priorRecords: earlier, currency: 'AED' }));
+  assert.equal(shipping(html), 'AED 30');
+  assert.match(html, /TOTAL INVOICE AMOUNT<\/span><span[^>]*>AED 707/);
+  // Today's setting (off): one fee per customer, so the new parcel prints none.
+  useCrown({ shippingPerShipment: false, newRulesFrom: '2026-10-10', leftoverShipping: 'free' });
+  assert.equal(shipping(renderToStaticMarkup(React.createElement(Invoice, { records: [current], priorRecords: earlier, currency: 'AED' }))), 'NO ADDITIONAL SHIPPING');
+});
+
 check('tenants without the feature keep one fee per customer', () => {
   P.setPricing({ ...P.DEFAULT_PRICING });
   const r = [row(1, { status: 'Delivered', dispatchDate: '2026-10-12T08:00:00Z' }), row(2, { dateOfLive: '2026-10-20' })];
