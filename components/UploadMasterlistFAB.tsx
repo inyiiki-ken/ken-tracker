@@ -262,7 +262,10 @@ export default function UploadMasterlistFAB({ onRefresh, records = [] }: Props) 
     const group = parsed!.sheets[gi];
     const note = parsed!.notes.get(`${row.orderId}@${gi}`);
     const check = reviewImportRow(row);
-    const reasons = [row.warning, note, check.mismatch ? 'Calculated amount differs from the source amount.' : '',
+    // reasons = real problems: the row needs a fix or a "Checked" tick before Import.
+    // info = notes only (an auto-correction that adds up, "compare with the photo").
+    const info = [note, group?.isPhoto ? 'Compare with the photo before importing.' : ''].filter(Boolean) as string[];
+    const reasons = [row.warning, check.mismatch ? 'Calculated amount differs from the source amount.' : '',
       parsed!.flagged.has(`${row.orderId}@${gi}`) ? 'Photo reading needs verification.' : '',
       ...check.errors].filter(Boolean) as string[];
     if (categoryList.length && !categoryList.some(c => c.toLowerCase() === row.category.toLowerCase())) reasons.push('Category is not in your configured category list.');
@@ -270,12 +273,14 @@ export default function UploadMasterlistFAB({ onRefresh, records = [] }: Props) 
       Math.abs(Number(row.goldRate) + Number(row.mc) - Number(row.clientRate)) > 0.01) {
       reasons.push('Selling rate differs from gold rate + MC. Check or confirm the override.');
     }
-    if (group?.isPhoto) reasons.push('Check these values against the original photo.');
-    const key = importReviewKey(row, [i, reasons, group?.warnings, group?.liveDate, group?.liverName]);
-    const required = reasons.length > 0 || !!group?.warnings.length;
-    return { ...check, reasons, key, required, confirmed: reviewed.has(key) };
+    const key = importReviewKey(row, [i, reasons, group?.liveDate, group?.liverName]);
+    const required = reasons.length > 0;
+    return { ...check, reasons, info, key, required, confirmed: reviewed.has(key) };
   });
   const unresolved = reviewRows.filter(r => r.errors.length || (r.required && !r.confirmed)).length;
+  // Which rows hold Import back, and why, for the message beside the button.
+  const blockers = reviewRows.map((r, i) => ({ r, code: parsed?.rows[i]?.orderId || `row ${i + 1}` }))
+    .filter(({ r }) => r.errors.length || (r.required && !r.confirmed));
   const confirmReview = (key: string, checked: boolean) => setReviewed(previous => {
     const next = new Set(previous); if (checked) next.add(key); else next.delete(key); return next;
   });
@@ -604,10 +609,12 @@ export default function UploadMasterlistFAB({ onRefresh, records = [] }: Props) 
                           {r.sourceAmount !== undefined && <p>Source amount: {r.sourceAmount.toFixed(2)}</p>}
                           <p className="text-muted-foreground">Item totals use the same pricing rules as orders, including whole-unit rounding and applicable payment adjustments.</p>
                           <label className="block mt-1">Date of Live{cellIn('dateOfLive', 'w-36')}</label>
+                          {review.info.map((line, n) => <p key={`i${n}`} className="text-muted-foreground">{line}</p>)}
                           {review.reasons.map((reason, n) => <p key={n} className="text-warning">{reason}</p>)}
-                          {review.required && <label className="flex items-center gap-2 mt-2">
-                            <input type="checkbox" disabled={review.errors.length > 0 || importing} checked={review.confirmed} onChange={e => confirmReview(review.key, e.target.checked)} />
-                            Checked against original, including sheet warnings
+                          {review.errors.length > 0 && <p className="text-destructive font-medium mt-1">Fix the value above to import this row.</p>}
+                          {review.required && review.errors.length === 0 && <label className="flex items-center gap-2 mt-2 font-medium">
+                            <input type="checkbox" disabled={importing} checked={review.confirmed} onChange={e => confirmReview(review.key, e.target.checked)} />
+                            I checked this row against the photo — it&apos;s correct
                           </label>}
                           {!review.required && <span className="text-success">Ready</span>}
                         </td>
@@ -636,6 +643,21 @@ export default function UploadMasterlistFAB({ onRefresh, records = [] }: Props) 
             )}
 
             {importing && <ProgressBar value={pct} label={progress || 'Importing…'} className="mb-1" />}
+
+            {/* Why Import is locked, in plain words, right above the button. */}
+            {!importing && (blockers.length > 0 || missingCols.length > 0) && (
+              <div className="rounded-lg border border-warning/50 bg-warning/10 p-3 text-xs space-y-1">
+                <p className="font-semibold text-warning flex items-center gap-1.5"><AlertTriangle className="h-3.5 w-3.5" /> Import is locked until these are done:</p>
+                {missingCols.length > 0 && <p>• Press <b>Fix sheet format</b> above (the sheet is missing {missingCols.length} column{missingCols.length !== 1 ? 's' : ''}).</p>}
+                {blockers.slice(0, 8).map(({ r, code }) => (
+                  <p key={code}>• <b>{code}</b>: {r.errors.length ? `fix it — ${r.errors[0]}` : `${r.reasons[0] ?? 'needs a check'} Compare with the photo, fix it if needed, then tick "I checked this row".`}</p>
+                ))}
+                {blockers.length > 8 && <p>• …and {blockers.length - 8} more row(s) marked in orange.</p>}
+              </div>
+            )}
+            {!importing && parsed.rows.length > 0 && blockers.length === 0 && missingCols.length === 0 && (
+              <p className="text-xs text-success">All rows are ready. Compare names and items with the photo, then press Import.</p>
+            )}
 
             <div className="flex gap-2">
               <Button variant="outline" onClick={() => setParsed(null)} disabled={importing} className="flex-1">
