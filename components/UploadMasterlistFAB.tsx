@@ -82,6 +82,8 @@ export default function UploadMasterlistFAB({ onRefresh, records = [] }: Props) 
   const selectedFile = selectedFiles[0] ?? null;
   const [parsed, setParsed] = useState<Parsed | null>(null);
   const [reviewed, setReviewed] = useState<Set<string>>(new Set());
+  // Rows whose category was picked by hand: an MC edit no longer replaces it.
+  const [manualCategory, setManualCategory] = useState<Set<number>>(new Set());
   const [sources, setSources] = useState<{ name: string; url: string; image: boolean }[]>([]);
   useEffect(() => {
     const files = selectedFiles.map(file => ({ name: file.name, url: URL.createObjectURL(file), image: isImageFile(file) }));
@@ -147,6 +149,7 @@ export default function UploadMasterlistFAB({ onRefresh, records = [] }: Props) 
   const doParse = async () => {
     if (!selectedFiles.length) { toast.error('Please select a file'); return; }
     setReviewed(new Set());
+    setManualCategory(new Set());
     setParsing(true);
     try {
       // Excel/CSV files and screenshots can be mixed; each photo = one sheet.
@@ -178,6 +181,8 @@ export default function UploadMasterlistFAB({ onRefresh, records = [] }: Props) 
       // Gold bars (24K): this customer's own gold bar category, if DATA'S has one.
       const barCat = dataOpts.categories.find((c) => /gold\s*-?\s*bar|24\s*k/i.test(c));
       if (barCat) rows.forEach((r) => { if (/24K/i.test(r.tog)) r.category = barCat; });
+      // Same spelling as the category list ("GOLD NORMAL" → "Gold Normal"), so the dropdown shows it.
+      rows.forEach((r) => { const hit = dataOpts.categories.find((c) => c.toLowerCase() === String(r.category ?? '').toLowerCase()); if (hit) r.category = hit; });
       const title = sheets[0]?.page || sheets[0]?.liverName || '';
       const match = matchOutsource(knownOutsources, title, rows.map((r) => r.orderId));
       setOutsource({ on: !!match, name: match || upper(title), toBox: true });
@@ -218,7 +223,7 @@ export default function UploadMasterlistFAB({ onRefresh, records = [] }: Props) 
             next.modeOfPayment = 'Tabby';
             next.tabbyIncluded = 'Yes';
           } else {
-            if (cat) next.category = cat;
+            if (cat && !manualCategory.has(i)) next.category = cat;
             if (r.tabbyIncluded) { next.modeOfPayment = undefined; next.tabbyIncluded = undefined; }
           }
         }
@@ -569,7 +574,20 @@ export default function UploadMasterlistFAB({ onRefresh, records = [] }: Props) 
                         {hasPhotos && <td className="px-2 py-1 whitespace-nowrap">{photo ? cellIn('orderId', 'w-16') : r.orderId}</td>}
                         <td className="px-2 py-1 truncate max-w-[130px]">{photo ? cellIn('minerName', 'w-28') : r.minerName}</td>
                         <td className="px-2 py-1 truncate max-w-[160px]">{photo ? cellIn('itemDescription', 'w-36') : r.itemDescription}</td>
-                        <td className="px-2 py-1">{cellIn('category', 'w-32')}</td>
+                        <td className="px-2 py-1">
+                          {dataOpts.categories.length ? (
+                            <select
+                              aria-label={`${r.orderId || `Row ${i + 1}`} category`}
+                              disabled={importing}
+                              value={r.category}
+                              onChange={(e) => { setManualCategory((s) => new Set(s).add(i)); editRow(i, { category: e.target.value }); }}
+                              className={`h-6 w-36 rounded-md border bg-background px-1 text-[11px] ${dataOpts.categories.some((c) => c.toLowerCase() === r.category.toLowerCase()) ? 'border-input' : 'border-warning'}`}
+                            >
+                              {!dataOpts.categories.some((c) => c === r.category) && <option value={r.category}>{r.category || '— choose —'}</option>}
+                              {dataOpts.categories.map((c) => <option key={c} value={c}>{c}</option>)}
+                            </select>
+                          ) : cellIn('category', 'w-32')}
+                        </td>
                         <td className="px-2 py-1 text-right">{cellIn('qty', 'w-12')}</td>
                         <td className="px-2 py-1 text-right">{photo ? cellIn('grams', 'w-14 text-right') : r.grams}</td>
                         <td className="px-2 py-1 text-right">{cellIn('goldRate', 'w-20')}</td>

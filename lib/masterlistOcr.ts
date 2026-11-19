@@ -273,6 +273,22 @@ async function ocrRegionWithWorker(worker: any, src: HTMLCanvasElement, box: { x
 const clean = (t: string) => t.toUpperCase().replace(/[^A-Z0-9./,:-]/g, "");
 const isNumeric = (t: string) => /^[~'"(|]*[0-9OoSl.,]*[0-9][0-9OoSl.,]*[)|'".,]*$/.test(t) && /\d/.test(t);
 
+/**
+ * Sizes in a description: the S of "CHAIN S18" / "RING S7.5" is read as 5
+ * ("518", "57.5"). A 5 in front of a chain length (14–30) or a ring size
+ * (3–13, optionally .5) after another word is that S. "5X PAPERCLIP" stays.
+ */
+export function fixSizes(desc: string): string {
+  return desc.split(" ").map((t, i) => {
+    const m = i > 0 ? t.match(/^5(\d{1,2}(?:\.5)?)$/) : null;
+    if (!m) return t;
+    const n = parseFloat(m[1]);
+    const chain = Number.isInteger(n) && n >= 14 && n <= 30;
+    const ring = n >= 3 && n <= 13 && (Number.isInteger(n) || n % 1 === 0.5);
+    return chain || ring ? `S${m[1]}` : t;
+  }).join(" ");
+}
+
 /** "400.50" -> 400.5, "40050" -> 400.5 (dot lost), "1905.18" -> 1905.18. */
 function readNumber(t: string): number {
   let s = t.replace(/[Oo]/g, "0").replace(/[Sl]/g, (c) => (c === "S" ? "5" : "1")).replace(/[^0-9.]/g, "");
@@ -390,11 +406,27 @@ function pastFor(history: DatabaseRowType[], title: string, codes: string[]) {
 }
 
 const MONTHS = ["JANUARY", "FEBRUARY", "MARCH", "APRIL", "MAY", "JUNE", "JULY", "AUGUST", "SEPTEMBER", "OCTOBER", "NOVEMBER", "DECEMBER"];
-function findDate(text: string): string {
-  const m = text.match(/(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)[A-Z]*\.?\s+(\d{1,2})\s*,?\s*(20\d{2})/i);
-  if (!m) return "";
-  const month = MONTHS.find((x) => x.startsWith(m[1].toUpperCase())) || m[1];
-  return `${month.charAt(0)}${month.slice(1).toLowerCase()} ${parseInt(m[2], 10)}, ${m[3]}`;
+const WEEKDAYS = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
+export function findDate(text: string): string {
+  const mon = "(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)[A-Z]*\\.?";
+  // "October 8, 2026" or "8 October 2026".
+  const a = text.match(new RegExp(`${mon}\\s+(\\d{1,2})\\s*,?\\s*(20\\d{2})`, "i"));
+  const b = a ? null : text.match(new RegExp(`(\\d{1,2})\\s+${mon}\\s*,?\\s*(20\\d{2})`, "i"));
+  if (!a && !b) return "";
+  const [monTxt, dayTxt, yearTxt] = a ? [a[1], a[2], a[3]] : [b![2], b![1], b![3]];
+  const mi = MONTHS.findIndex((x) => x.startsWith(monTxt.toUpperCase()));
+  const day = parseInt(dayTxt, 10);
+  let year = parseInt(yearTxt, 10);
+  // The weekday printed before the date settles a misread year digit
+  // ("Thursday, October 8, 2025" — 8 Oct is a Thursday in 2026, not 2025).
+  const wd = text.slice(0, (a ?? b)!.index).match(/(SUN|MON|TUE|WED|THU|FRI|SAT)[A-Z]*\W*$/i);
+  if (wd && mi >= 0) {
+    const want = WEEKDAYS.indexOf(wd[1].toUpperCase());
+    const fits = (y: number) => new Date(y, mi, day).getDay() === want;
+    if (!fits(year)) year = [year + 1, year - 1, year + 10, year - 10].find(fits) ?? year;
+  }
+  const month = MONTHS[mi] || monTxt;
+  return `${month.charAt(0)}${month.slice(1).toLowerCase()} ${day}, ${year}`;
 }
 
 const LABELS = /^(TOTAL|GRAMS?|PULL?OU?T|BALANCE|RATE|GOLD|BAR|SILVER|\d+K\w*|MASTERLIST)$/;
@@ -471,6 +503,8 @@ export async function parseMasterlistImage(file: File, mapping?: MasterlistMappi
   }
   if (headerIdx < 0) throw new Error("Couldn't find the header row (CODE / CUSTOMER NAME / …) in the picture. Try a clearer, uncropped screenshot.");
   const header = lines[headerIdx];
+  // Test hook for scripts/bench-masterlist-photo.cjs (OCR_DEBUG); unset in the app.
+  (globalThis as any).__OCR_DEBUG?.(lines, headerIdx, colLines);
 
   // Name / description border: the grid line between the two header words, or
   // (no grid) the midpoint between them.
@@ -492,7 +526,10 @@ export async function parseMasterlistImage(file: File, mapping?: MasterlistMappi
   let numBorder = NaN;
   if (gramsHead) {
     const gc = (gramsHead.x0 + gramsHead.x1) / 2;
-    const left = colLines.filter((x) => x < gc && x > (descW ? descW.x1 : 0));
+    // From the START of the description header: OCR sometimes stretches that
+    // word's box over the next columns (TEAM BESHY), and measuring from its end
+    // then missed the grid line and cut "PENDANT" off "GUCCI HEART PENDANT".
+    const left = colLines.filter((x) => x < gc && x > (descW ? descW.x0 : 0));
     numBorder = left.length ? left[left.length - 1] : gramsHead.x0 - (gramsHead.x1 - gramsHead.x0) * 0.5;
   }
 
@@ -526,7 +563,9 @@ export async function parseMasterlistImage(file: File, mapping?: MasterlistMappi
   type Row = { code: string; name: string; desc: string; nums: number[]; y0: number; y1: number; nx: number; side?: Side };
   const raw: Row[] = [];
   for (const l of lines.slice(headerIdx + 1)) {
-    const words = l.words.filter((w) => !/^[|~_\-—'"()]+$/.test(w.text));
+    // Specks of the grid read as "©", "~~", "|": no letter or digit, not a word.
+    // Left in, a speck in front of AMB01 was taken as the code and the row shifted.
+    const words = l.words.filter((w) => /[A-Za-z0-9$£]/.test(w.text));
     if (words.length < 3) continue;
     let firstNum = Number.isFinite(numBorder)
       ? words.findIndex((w, i) => i > 0 && (w.x0 + w.x1) / 2 >= numBorder)
@@ -555,18 +594,26 @@ export async function parseMasterlistImage(file: File, mapping?: MasterlistMappi
     const join = (ws: OcrWord[]) => ws.map((w) => w.text.replace(/[^A-Za-z0-9&'.\-/ ]/g, "")).join(" ").replace(/\s+/g, " ").trim().toUpperCase();
     // A code split in two ("BE" + "SH21") leaves its second half in front of the name.
     while (name.length > 1 && /^[A-Z]{0,5}\d{1,4}[A-Z]?$/.test(clean(name[0].text))) name = name.slice(1);
-    const nameTxt = join(name), descTxt = join(desc);
+    const nameTxt = join(name), descTxt = fixSizes(join(desc.map((w) => ({ ...w, text: w.text.replace(/\$/g, "S") }))));
     // Code with no customer and no item (BESH41 at the end) = blank row.
     if (!nameTxt && !descTxt) continue;
     const numWords = words.slice(firstNum).filter((w) => isNumeric(w.text) && Number.isFinite(readNumber(w.text)));
     const first = numWords[0];
-    const noGrams = !!first && !!gramsHead && !!rateHead && Math.abs(cx(first) - cx(rateHead)) < Math.abs(cx(first) - gc);
-    const mcHead = header.words.find(w => /^MC$/.test(clean(w.text)));
+    // Something unreadable under WT/GRAMS (3.91 read as "IN") is still a weight:
+    // the row is not a gold bar, and its weight is worked out from the amount.
+    const gramsCellInk = !!gramsHead && !!rateHead && words.slice(firstNum).some((w) => cx(w) < (gc + cx(rateHead)) / 2);
+    const noGrams = !gramsCellInk && !!first && !!gramsHead && !!rateHead && Math.abs(cx(first) - cx(rateHead)) < Math.abs(cx(first) - gc);
+    // MC header misread as "KC"/"NC": the header word between RATE and AMOUNT.
+    const mcHead = header.words.find(w => /^MC$/.test(clean(w.text)))
+      ?? (rateHead && amountHead ? header.words.find(w => w.x0 > rateHead.x1 && w.x1 < amountHead.x0 && /^[A-Z]{2}$/.test(clean(w.text))) : undefined);
     if (!noGrams && !GOLD_BAR.test(descTxt) && gramsHead && rateHead && mcHead && amountHead) {
       // Keep each numeric cell in its printed column. Dropping an unreadable
       // AMOUNT (e.g. 543.40 read as £43.40) must never shift MC into AMOUNT.
       const heads = [gramsHead, rateHead, mcHead, amountHead];
-      nums = heads.map((head, index) => {
+      const inMain = numWords.filter((w) => !(Number.isFinite(amountRight) && cx(w) >= amountRight));
+      // One number per column, left to right: take them in order. A misshapen
+      // box (MC "28.00" stretched over AMOUNT) otherwise lands in the wrong column.
+      nums = inMain.length === heads.length ? inMain.map((w) => readNumber(w.text)) : heads.map((head, index) => {
         const cell = numWords.find(w => {
           if (Number.isFinite(amountRight) && cx(w) >= amountRight) return false;
           const nearest = heads.reduce((best, h, k) => Math.abs(cx(w) - cx(h)) < Math.abs(cx(w) - cx(heads[best])) ? k : best, 0);
@@ -606,6 +653,13 @@ export async function parseMasterlistImage(file: File, mapping?: MasterlistMappi
   if (!raw.length) throw new Error("Found the header but no item rows. Try a clearer screenshot.");
 
   const codes = fixCodes(raw.map((r) => r.code));
+  // A code that slid into the name column (Excel row numbers in the screenshot
+  // took the first slot): "AMBOS ARIANE" for AMB08 → "ARIANE".
+  const codePrefix = (codes.find((c) => /^[A-Z]{2,6}\d/.test(c)) ?? "").replace(/\d+$/, "");
+  if (codePrefix) {
+    const codeLike = new RegExp(`^${codePrefix}[0-9OSILBZ]{1,4}\\s+`);
+    raw.forEach((r) => { r.name = r.name.replace(codeLike, ""); });
+  }
   const flagged: number[] = [];
 
   // A gold/silver rate shown without decimals ("390") gets a decimal point
@@ -643,9 +697,17 @@ export async function parseMasterlistImage(file: File, mapping?: MasterlistMappi
    * the grams (3.34 for 3.31), or with one misread digit in the amount
    * (672.36 for 572.36). Anything else doesn't add up.
    */
+  // To the cent: a weight or MC worked out from the amount must land exactly.
+  const cent = (a: number, b: number) => Math.abs(a - b) <= 0.011;
   const checkMc = (r: Nums, rate: number, mc: number): { grams: number; amount: number; mc: number; exact: boolean } | null => {
     const per = rate + mc;
-    if (!(per > 0 && r.amount > 0 && r.grams > 0)) return null;
+    if (!(per > 0 && r.amount > 0)) return null;
+    if (!(r.grams > 0)) {
+      // Weight unreadable ("IN" for 3.91): amount ÷ (rate + MC), if it comes out
+      // as an exact two-decimal weight.
+      const g = round2(r.amount / per);
+      return g >= 0.01 && g <= 200 && cent(g * per, r.amount) ? { grams: g, amount: r.amount, mc, exact: false } : null;
+    }
     if (near(r.grams * per, r.amount)) return { grams: r.grams, amount: r.amount, mc, exact: true };
     // Amount first: grams × rate matching the amount to the cent except one
     // digit is firmer than grams worked back from the amount, which only lands
@@ -654,6 +716,12 @@ export async function parseMasterlistImage(file: File, mapping?: MasterlistMappi
     if (oneDigitApart(r.amount, a2)) return { grams: r.grams, amount: a2, mc, exact: false };
     const g2 = round2(r.amount / per);
     if (near(g2 * per, r.amount) && oneDigitApart(r.grams, g2)) return { grams: g2, amount: r.amount, mc, exact: false };
+    // MC misread (28 read as 26, 55 as 56, or missing): weight and amount agree
+    // to the cent on a whole-number MC one digit away from the reading.
+    const mcI = Math.round(r.amount / r.grams - rate);
+    if (mcI >= 0 && mcI <= 150 && mcI !== mc && cent(r.grams * (rate + mcI), r.amount) && (!mc || oneDigitApart(mc, mcI))) {
+      return { grams: r.grams, amount: r.amount, mc: mcI, exact: false };
+    }
     return null;
   };
   // The snapped MC first; the MC as read when only that adds up (a real one-off
@@ -764,6 +832,7 @@ export async function parseMasterlistImage(file: File, mapping?: MasterlistMappi
     if (c) {
       if (c.grams !== grams) corrected.push(`${codes[i]} weight ${grams} → ${c.grams} g`);
       if (c.amount !== amount) corrected.push(`${codes[i]} amount ${amount} → ${c.amount}`);
+      if (c.mc !== (r.mcRaw ?? mc)) corrected.push(`${codes[i]} MC ${r.mcRaw ?? mc} → ${c.mc}`);
       grams = c.grams; amount = c.amount; mc = c.mc;
     } else if (rate + mc > 0 && amount > 0) flagged.push(i);
     return { code: codes[i], name: raw[i].name, desc: raw[i].desc, grams, rate, mc, amount, side: undefined as Side | undefined };
