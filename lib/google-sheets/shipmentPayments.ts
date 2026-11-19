@@ -1,22 +1,72 @@
 "use server";
 
 import { requireRole } from './authz';
+import { readConfigStrict } from './config-store';
 import { getAppTab } from './appTabs';
-import { readDatabase, newRowKey, writeRowsByCells, ensureOptionalColumns } from './recordStore';
+import { readDatabase, newRowKey, writeRowsByCells, ensureOptionalColumns, auditHeader } from './recordStore';
 import { databaseRecordToRow } from './row-mapper';
 import { DATABASE_HEADERS } from './sheet-config';
+import { invalidateActiveRows } from './tenant-context';
 import { createHash } from 'crypto';
 import { readShipmentPayments, PAYMENT_HEADERS, PAYMENT_TAB } from './shipmentPaymentStore';
-import { groupAccounts, accountBatchIdentity } from '@/lib/accountsLedger';
+import { groupAccounts, accountBatchIdentity, creditOverridePrefix } from '@/lib/accountsLedger';
 import { fulfilmentStage } from '@/lib/fulfilment';
 import { allocatePayment, paymentFingerprint, type ShipmentPayment, type ShipmentPaymentInput } from '@/lib/shipmentPayments';
 
 const ROLES = ['super_admin', 'admin', 'accounts'];
 let chain: Promise<unknown> = Promise.resolve();
 
+async function paymentTimezoneOffset(): Promise<number> {
+  const config = JSON.parse((await readConfigStrict('__BUSINESS_CONFIG__')) || '{}');
+  const hours = config.timezoneOffsetHours;
+  return (typeof hours === 'number' && Number.isFinite(hours) ? hours : 4) * 60 * 60 * 1000;
+}
+
 export async function getShipmentPayments(): Promise<ShipmentPayment[]> {
   await requireRole([...ROLES, 'dispatch', 'bossing']);
   return readShipmentPayments();
+}
+
+export async function setShipmentStoreCredit(input: {
+  accountKey: string; batchKey: string; amount: number | null; previous: number | null;
+}): Promise<void> {
+  const email = await requireRole(ROLES);
+  const { accountKey, batchKey, amount, previous } = input;
+  if (batchKey === 'pending' || (amount !== null && (!Number.isSafeInteger(amount) || amount < 0 || amount > 100000000))) {
+    throw new Error('Enter a whole AED amount for a shipped batch.');
+  }
+  const db = await readDatabase();
+  const timezoneOffsetMs = await paymentTimezoneOffset();
+  const batch = groupAccounts(db.records).get(accountKey)?.filter(r =>
+    fulfilmentStage(r.status) !== 'excluded' && accountBatchIdentity(r, timezoneOffsetMs).key === batchKey);
+  if (!batch?.length) throw new Error('Shipment changed. Refresh and try again.');
+  const prefix = creditOverridePrefix(accountKey, batchKey);
+  const saved = batch.find(r => r.storeCreditOverride?.startsWith(prefix));
+  if ((saved ? Number(saved.storeCreditOverride!.slice(prefix.length)) : null) !== previous) {
+    throw new Error('Store credit changed. Refresh and try again.');
+  }
+  if (!saved && amount === null) return;
+  const anchor = saved ?? batch[0];
+  const value = amount === null ? '' : prefix + amount;
+  await ensureOptionalColumns(db.sheet, [{ storeCreditOverride: value }]);
+  const patch = { [DATABASE_HEADERS.storeCreditOverride]: value };
+  const expect = {
+    ...databaseRecordToRow({
+      minerName: anchor.minerName, itemDescription: anchor.itemDescription, orderId: anchor.orderId,
+      dateOfLive: anchor.dateOfLive, dispatchDate: anchor.dispatchDate, deliveredDate: anchor.deliveredDate,
+      status: anchor.status,
+    }, db.headers, db.aliases),
+    [DATABASE_HEADERS.storeCreditOverride]: anchor.storeCreditOverride ?? '',
+  };
+  const from = previous === null ? 'automatic' : `AED ${previous}`;
+  const to = amount === null ? 'automatic' : `AED ${amount}`;
+  const entry = `${new Date().toISOString()} | ${email || 'Staff'} | Store credit: ${from} → ${to}`;
+  const written = await writeRowsByCells(db.sheet, [{
+    rowNumber: anchor.id, rowKey: anchor.rowKey, patch, expect,
+    audit: { header: auditHeader(db.headers, db.aliases), lines: [entry] },
+  }]);
+  if (!written) throw new Error('Shipment changed. Refresh and try again.');
+  invalidateActiveRows();
 }
 
 export async function addShipmentPayment(input: ShipmentPaymentInput): Promise<ShipmentPayment> {
@@ -39,7 +89,8 @@ export async function addShipmentPayment(input: ShipmentPaymentInput): Promise<S
     const db = await readDatabase();
     const customer = groupAccounts(db.records).get(input.accountKey);
     if (!customer) throw new Error('Customer changed. Refresh and try again.');
-    const currentBatch = customer.filter(r => fulfilmentStage(r.status) !== 'excluded' && accountBatchIdentity(r).key === input.batchKey);
+    const timezoneOffsetMs = await paymentTimezoneOffset();
+    const currentBatch = customer.filter(r => fulfilmentStage(r.status) !== 'excluded' && accountBatchIdentity(r, timezoneOffsetMs).key === input.batchKey);
     const selected = input.items.map(ref => {
       const matches = db.records.filter(r => ref.rowKey ? r.rowKey === ref.rowKey : r.id === ref.id);
       const r = matches[0];
@@ -77,4 +128,18 @@ export async function addShipmentPayment(input: ShipmentPaymentInput): Promise<S
   const result = chain.then(run, run);
   chain = result.catch(() => undefined);
   return result;
+}
+
+/** Expected errors must be returned, not thrown across the production server-action boundary. */
+export async function tryAddShipmentPayment(input: ShipmentPaymentInput): Promise<
+  { ok: true; payment: ShipmentPayment } | { ok: false; message: string }
+> {
+  try { return { ok: true, payment: await addShipmentPayment(input) }; }
+  catch (error) {
+    const message = error instanceof Error ? error.message : '';
+    const expected = /^(Check the payment|This payment was already saved|Customer changed|Selected items changed|An item was selected twice|The shipment items changed|Could not identify every item|Too many item details|Some items changed)/;
+    if (expected.test(message)) return { ok: false, message };
+    console.error('Shipment payment save failed', error);
+    return { ok: false, message: 'The payment could not be confirmed. Retry this same payment. If it persists, contact the administrator; do not create another payment for the same money.' };
+  }
 }

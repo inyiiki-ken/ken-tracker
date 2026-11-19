@@ -3,7 +3,7 @@ import { useState } from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { addShipmentPayment } from '@/lib/api';
+import { tryAddShipmentPayment } from '@/lib/google-sheets/shipmentPayments';
 import { businessDay } from '@/lib/calculations';
 import { paymentFingerprint, type ShipmentPayment } from '@/lib/shipmentPayments';
 import type { AccountBatch, CustomerAccount } from '@/lib/accountsLedger';
@@ -27,13 +27,14 @@ export default function AddShipmentPaymentDialog({ account, batch, onClose, onSa
     if (!valid || saving) return;
     setSaving(true); setSubmitted(true); setError('');
     try {
-      const payment = await addShipmentPayment({ id, accountKey: account.key, batchKey: batch.key, scope,
+      const result = await tryAddShipmentPayment({ id, accountKey: account.key, batchKey: batch.key, scope,
         amountAED: Number(amount), date, method, reference,
         items: rows.map(r => ({ id: r.id, rowKey: r.rowKey || '', fingerprint: paymentFingerprint(r) })),
       });
-      onSaved(payment);
+      if (result.ok) onSaved(result.payment);
+      else setError(result.message);
     } catch (e) {
-      setError((e instanceof Error ? e.message : 'Could not save the payment.') + ' Retry keeps the same payment ID to prevent counting it twice.');
+      setError('The connection was interrupted. Retry this same payment to check or complete the save without recording it twice.');
     } finally { setSaving(false); }
   }
   return <Dialog open onOpenChange={open => { if (!open && !saving) onClose(); }}>

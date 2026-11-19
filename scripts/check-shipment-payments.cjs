@@ -12,6 +12,7 @@ let stored=[],writes=0,authorized=true,loseAcknowledgement=false,keyWrites=0;
 const load=Module._load;
 Module._load=function(name,...args){
  if(name==='server-only')return {};
+ if(name==='./config-store')return {readConfigStrict:async()=>JSON.stringify({timezoneOffsetHours:4})};
  if(name==='./authz')return {requireRole:async()=>{if(!authorized)throw Error('Forbidden');return 'staff@example.test'}};
  if(name==='./recordStore')return {
    readDatabase:async()=>({records:records.map(r=>({...r})),headers:new Set(),aliases:{}}),
@@ -29,6 +30,15 @@ const make=(id,extra={})=>({id,accountKey:'customer:C1',batchKey:'s1',scope:'shi
 (async()=>{
  const input=make('11111111-1111-4111-8111-111111111111');
  const p=await addShipmentPayment(input);
+ const business=require('../lib/businessConfig.ts');
+ const originalTimezone=business.getTimezoneOffsetMs;
+ business.getTimezoneOffsetMs=()=>{throw Error('Browser-only timezone called on server');};
+ records.push({...base,id:4,rowKey:'legacy',shipmentId:'',dispatchDate:'2026-10-01T22:00:00Z'});
+ try {
+   const legacyInput=make('99999999-9999-4999-8999-999999999999',{batchKey:'legacy:2026-10-02',scope:'items',items:[{id:4,rowKey:'legacy',fingerprint:paymentFingerprint(records[2])}]});
+   const legacyPayment=await addShipmentPayment(legacyInput);
+   assert.equal(legacyPayment.allocations[0].rowKey,'legacy','server uses saved timezone across midnight');
+ } finally {business.getTimezoneOffsetMs=originalTimezone;records.pop();stored=stored.filter(p=>p.id!=='99999999-9999-4999-8999-999999999999');writes--;}
  assert.equal(writes,1);assert.equal(p.allocations.reduce((s,a)=>s+Math.round(a.amountAED*100),0),20001);
  assert.equal(records[0].downpayment,undefined);
  await addShipmentPayment(input);assert.equal(writes,1,'retry cannot append another payment');

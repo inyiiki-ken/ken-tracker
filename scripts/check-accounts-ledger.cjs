@@ -16,7 +16,7 @@ Module._resolveFilename = function(name, ...args) { return resolve.call(this, na
 require.extensions['.ts'] = (module, filename) => module._compile(ts.transpileModule(fs.readFileSync(filename, 'utf8'), {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020, esModuleInterop: true },
 }).outputText, filename);
-const { buildAccounts } = require('../lib/accountsLedger.ts');
+const { buildAccounts, creditOverridePrefix } = require('../lib/accountsLedger.ts');
 const { calcGroupBalance, calcTotalPaid } = require('../lib/calculations.ts');
 const { applyPricingConfig } = require('../lib/pricingConfig.ts');
 const row = (id, extra = {}) => ({ id, minerName: 'Customer', customerId: 'C1', grams: 1, clientRate: 100,
@@ -25,6 +25,22 @@ const row = (id, extra = {}) => ({ id, minerName: 'Customer', customerId: 'C1', 
 const one = rows => { const accounts = buildAccounts(rows); assert.equal(accounts.length, 1); return accounts[0]; };
 let count = 0;
 const check = (name, fn) => { fn(); count++; console.log('PASS ' + name); };
+check('manual credit overrides the amount carried forward while preserving payment fils', () => {
+  const rows = [
+    row(1, { clientRate: 10106, downpayment: '10500.28' }),
+    row(2, { clientRate: 13606, status: 'Reseller', shipmentId: '', dispatchDate: '' }),
+  ];
+  const automatic = one(rows);
+  assert.equal(automatic.batches[0].creditAdded, 394.28);
+  rows[0].storeCreditOverride = creditOverridePrefix(automatic.key, 's1') + '393';
+  const manual = one(rows);
+  assert.equal(manual.batches[0].paid, 10500.28);
+  assert.equal(manual.batches[0].creditAdded, 393);
+  assert.equal(manual.batches[1].creditUsed, 393);
+  assert.equal(manual.batches[1].due, 13213);
+  rows[0].storeCreditOverride = creditOverridePrefix(automatic.key, 's1') + '0';
+  assert.equal(one(rows).batches[1].creditUsed, 0);
+});
 check('one payment settles different live dates in one shipment', () => {
   const a = one([row(1, { downpayment: '200' }), row(2, { dateOfLive: '2026-09-28' })]);
   assert.equal(a.batches.length, 1); assert.equal(a.due, 0); assert.equal(a.credit, 0); assert.equal(a.paid, 200);

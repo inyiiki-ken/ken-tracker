@@ -92,6 +92,7 @@ export function rowToDatabaseRecord(
     cancelReason: get("cancelReason") ?? "",
     shipmentId: get("shipmentId") ?? "",
     tabbyIncluded: get("tabbyIncluded") ?? "",
+    storeCreditOverride: get("storeCreditOverride") ?? "",
   };
 }
 

@@ -41,6 +41,8 @@ export interface AccountBatch {
   paid: number;
   creditUsed: number;
   creditAdded: number;
+  calculatedCredit?: number;
+  creditOverride?: number;
   due: number;
 }
 
@@ -57,13 +59,17 @@ export interface CustomerAccount {
   verification: boolean;
 }
 
-export function accountBatchIdentity(r: DatabaseRowType): { key: string; date?: string; pending: boolean; uncertain: boolean } {
+export function creditOverridePrefix(accountKey: string, batchKey: string): string {
+  return JSON.stringify([accountKey, batchKey]) + '|';
+}
+
+export function accountBatchIdentity(r: DatabaseRowType, timezoneOffsetMs?: number): { key: string; date?: string; pending: boolean; uncertain: boolean } {
   const stage = fulfilmentStage(r.status);
   const shipped = stage === 'dispatched' || stage === 'delivered';
   if (!shipped) return { key: 'pending', pending: true, uncertain: false };
   const date = r.dispatchDate || r.deliveredDate || undefined;
   if (r.shipmentId?.trim()) return { key: r.shipmentId.trim(), date, pending: false, uncertain: !r.dispatchDate };
-  const day = businessDay(date);
+  const day = businessDay(date, timezoneOffsetMs);
   // Legacy shipments share a business day, never a live-sale date.
   if (day) return { key: `legacy:${day}`, date, pending: false, uncertain: true };
   return { key: 'unknown-shipment', pending: false, uncertain: true };
@@ -105,7 +111,12 @@ export function buildAccount(key: string, source: DatabaseRowType[]): CustomerAc
     const remaining = cents(batch.charges - batch.paid);
     batch.creditUsed = Math.min(credit, Math.max(0, remaining));
     batch.due = cents(Math.max(0, remaining - batch.creditUsed));
-    batch.creditAdded = cents(Math.max(0, -remaining));
+    batch.calculatedCredit = cents(Math.max(0, -remaining));
+    const prefix = creditOverridePrefix(key, batch.key);
+    const saved = batch.records.find(r => r.storeCreditOverride?.startsWith(prefix))?.storeCreditOverride;
+    const override = saved?.slice(prefix.length);
+    if (override && /^\d+$/.test(override) && Number(override) <= 100000000) batch.creditOverride = Number(override);
+    batch.creditAdded = batch.creditOverride ?? batch.calculatedCredit;
     credit = cents(credit - batch.creditUsed + batch.creditAdded);
   }
   return {

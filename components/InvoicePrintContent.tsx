@@ -9,6 +9,7 @@ import { formatDate } from '@/lib/formatters';
 import { parseBillingModifiers, getTotalChargesAED, getTotalDiscountsAED } from '@/lib/billingModifiers';
 import { brandInitials } from '@/lib/brandSettings';
 import { useBrand } from '@/components/BrandThemeLoader';
+import type { AccountBatch } from '@/lib/accountsLedger';
 
 interface Props {
   records: DatabaseRowType[];
@@ -16,6 +17,7 @@ interface Props {
   ccIncludeShipping?: boolean;
   /** The customer's earlier invoices (same account): shipping already charged there, and their store credit. */
   priorRecords?: DatabaseRowType[];
+  accountBatch?: AccountBatch;
 }
 
 /**
@@ -75,7 +77,7 @@ function calcPhpItemAmount(r: DatabaseRowType): number {
   return rnd(totalAED * rRates.phpRate);
 }
 
-export default function InvoicePrintContent({ records, currency, ccIncludeShipping = false, priorRecords = [] }: Props) {
+export default function InvoicePrintContent({ records, currency, ccIncludeShipping = false, priorRecords = [], accountBatch }: Props) {
   const { settings, invoiceLogo, headerLogo, pageLogos } = useBrand();
   const BRAND_NAME = `${settings.companyName.toUpperCase()} ${settings.legalSuffix || ''}`.trim();
   // Each customer's own policy notes (Settings → Company Details); blank = built-in list.
@@ -104,8 +106,9 @@ export default function InvoicePrintContent({ records, currency, ccIncludeShippi
     return aedValue;
   };
 
-  const fmtAmt = (v: number) =>
-    `${currency} ${rnd(v).toLocaleString('en-US')}`;
+  const fmtAmt = (v: number) => accountBatch
+    ? `AED ${v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+    : `${currency} ${v.toLocaleString('en-US', { maximumFractionDigits: 2 })}`;
 
   const items = records.map(r => {
     const category = (r.category || '').toLowerCase().trim();
@@ -139,7 +142,9 @@ export default function InvoicePrintContent({ records, currency, ccIncludeShippi
     // Amount: rate × grams/qty — always consistent with the displayed Rate column
     // Diamonds are per-piece (rate × qty), matching calcItemPriceAED logic.
     let amount: number;
-    if (tabbyMultiplier(r) !== 1) {
+    if (accountBatch) {
+      amount = calcItemPriceAED(r);
+    } else if (tabbyMultiplier(r) !== 1) {
       amount = rnd(convertFromAEDForRecord(calcItemPriceAED(r)));
     } else if (isScrewType || isPerPc || isDiamond) {
       amount = rnd(rawRate * qtyValue);
@@ -245,9 +250,11 @@ export default function InvoicePrintContent({ records, currency, ccIncludeShippi
     if (currency === 'PHP') converted = paidAED * snap.phpRate;
     else if (currency === 'USD') converted = paidAED / getUsdToAed();
     else converted = paidAED;
-    return s + rnd(converted);
+    // Payment allocations are money, not rounded selling prices. Rounding each
+    // of six 811.50 shares would invent AED 3 (4,872 instead of 4,869).
+    return s + converted;
   }, 0);
-  const totalPaidConverted_rounded = rnd(totalPaidConverted);
+  const totalPaidConverted_rounded = Math.round((totalPaidConverted + Number.EPSILON) * 100) / 100;
 
   // ─── PHP CANONICAL BALANCE CHECK ────────────────────────────────────────────
   const allPhpPayments = totalPaidConverted_rounded > 0 && !records.some(r => (r.shipmentPaymentAED || 0) > 0) &&
@@ -280,8 +287,8 @@ export default function InvoicePrintContent({ records, currency, ccIncludeShippi
   const displayedPaid = isCanonicallyPaid ? total : totalPaidConverted_rounded;
   const balanceBeforeCredit = isCanonicallyPaid ? 0 : total - totalPaidConverted_rounded;
   // Earlier credit only brings this invoice down to zero; any rest stays with the earlier invoice.
-  const creditApplied = balanceBeforeCredit > 0 ? Math.min(balanceBeforeCredit, rnd(convertFromAED(priorCreditAED))) : 0;
-  const balanceDue = balanceBeforeCredit - creditApplied;
+  const creditApplied = balanceBeforeCredit > 0 ? Math.min(balanceBeforeCredit, Math.round(convertFromAED(priorCreditAED) * 100) / 100) : 0;
+  const balanceDue = Math.round((balanceBeforeCredit - creditApplied) * 100) / 100;
 
   const totalGrams = records.reduce((s, r) => {
     const cat = (r.category || '').toLowerCase();
@@ -308,13 +315,13 @@ export default function InvoicePrintContent({ records, currency, ccIncludeShippi
     if (dpCurr === 'PHP') dpAED = dpRaw / snap.phpRate;
     else if (dpCurr === 'USD') dpAED = dpRaw * getUsdToAed();
     else dpAED = dpRaw;
-    if (currency === 'PHP') return s + rnd(dpAED * snap.phpRate);
-    if (currency === 'USD') return s + rnd(dpAED / getUsdToAed());
-    return s + rnd(dpAED);
+    if (currency === 'PHP') return s + dpAED * snap.phpRate;
+    if (currency === 'USD') return s + dpAED / getUsdToAed();
+    return s + dpAED;
   }, 0) : 0;
 
   // TOTAL INVOICE AMOUNT = full total (subtotal + shipping + fees), always
-  const totalInvoiceDisplay = total;
+  const totalInvoiceDisplay = accountBatch?.charges ?? total;
   // Amount in words = TOTAL INVOICE AMOUNT (the full invoice total)
   const amountForWords = totalInvoiceDisplay;
   const amountInWords = numberToWords(amountForWords, currency);
@@ -335,7 +342,21 @@ export default function InvoicePrintContent({ records, currency, ccIncludeShippi
   const brandName = BRAND_NAME;
   const watermarkText = WATERMARK_TEXT;
 
-  const summaryRows: { label: string; value: string; red?: boolean; green?: boolean }[] = [
+  const netAdjustments = accountBatch ? Math.round((accountBatch.charges - accountBatch.shipping - subtotal - ccFee) * 100) / 100 : 0;
+  const summaryRows: { label: string; value: string; red?: boolean; green?: boolean }[] = accountBatch ? [
+    { label: 'TOTAL GRAMS', value: totalGrams > 0 ? totalGrams.toFixed(2) : '-' },
+    { label: 'SUBTOTAL', value: fmtAmt(subtotal) },
+    { label: accountBatch.pending ? 'ESTIMATED SHIPPING' : 'SHIPPING', value: fmtAmt(accountBatch.shipping) },
+    ...(ccFee > 0 ? [{ label: 'CC SURCHARGE', value: fmtAmt(ccFee) }] : []),
+    ...(netAdjustments !== 0 ? [{ label: netAdjustments < 0 ? 'NET DISCOUNTS' : 'NET ADDITIONAL CHARGES', value: `${netAdjustments < 0 ? '- ' : ''}${fmtAmt(Math.abs(netAdjustments))}` }] : []),
+    { label: 'TOTAL INVOICE AMOUNT', value: fmtAmt(accountBatch.charges) },
+    ...(accountBatch.paid > 0 ? [{ label: 'TOTAL PAID', value: `- ${fmtAmt(accountBatch.paid)}`, red: true }] : []),
+    ...(accountBatch.creditUsed > 0 ? [{ label: 'STORE CREDIT APPLIED', value: `- ${fmtAmt(accountBatch.creditUsed)}`, green: true }] : []),
+    ...(accountBatch.creditOverride !== undefined && accountBatch.creditOverride !== accountBatch.calculatedCredit
+      ? [{ label: 'STORE CREDIT ADJUSTMENT', value: fmtAmt(accountBatch.creditOverride - (accountBatch.calculatedCredit ?? 0)) }] : []),
+    ...(accountBatch.creditAdded > 0 ? [{ label: 'STORE CREDIT CARRIED FORWARD', value: fmtAmt(accountBatch.creditAdded), green: true }] : []),
+    { label: 'BALANCE DUE', value: fmtAmt(accountBatch.due), red: accountBatch.due > 0 },
+  ] : [
     { label: 'TOTAL GRAMS', value: totalGrams > 0 ? totalGrams.toFixed(2) : '—' },
     { label: 'SHIPPING', value: shipping > 0 ? fmtAmt(shipping) : shippingNotAdded ? 'NO ADDITIONAL SHIPPING' : 'FREE' },
     // Itemized charge descriptions

@@ -12,6 +12,8 @@ import { calcTotalPaid } from '@/lib/calculations';
 import type { ShipmentPayment } from '@/lib/shipmentPayments';
 import type { AccountBatch } from '@/lib/accountsLedger';
 import AddShipmentPaymentDialog from './AddShipmentPaymentDialog';
+import { Input } from '@/components/ui/input';
+import { setShipmentStoreCredit } from '@/lib/google-sheets/shipmentPayments';
 
 export const accountMoney = (n: number) => `AED ${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
@@ -22,9 +24,25 @@ export default function AccountsCustomerCard({ account, onUpdate, payments, paym
   const [expanded, setExpanded] = useState(false);
   const [invoice, setInvoice] = useState(false);
   const [paymentBatch, setPaymentBatch] = useState<AccountBatch | null>(null);
+  const [creditEdit, setCreditEdit] = useState<{ key: string; amount: string } | null>(null);
+  const [creditSaving, setCreditSaving] = useState(false);
+  const [creditError, setCreditError] = useState('');
   const { name, records, batches } = account;
   const rowKeys = new Set(records.concat(account.excludedPayments).map(r => r.rowKey).filter(Boolean));
   const history = payments.filter(p => p.allocations.some(a => rowKeys.has(a.rowKey)));
+  async function saveCredit(batch: AccountBatch, amount: number | null) {
+    setCreditSaving(true);
+    setCreditError('');
+    try {
+      await setShipmentStoreCredit({ accountKey: account.key, batchKey: batch.key, amount, previous: batch.creditOverride ?? null });
+      setCreditEdit(null);
+      onPaymentClose();
+    } catch (error) {
+      setCreditError(error instanceof Error ? error.message : 'Could not save store credit.');
+    } finally {
+      setCreditSaving(false);
+    }
+  }
   return <section className="rounded-xl border border-border bg-card overflow-hidden">
     <button type="button" aria-expanded={expanded} className="w-full p-4 text-left flex items-center gap-4 hover:bg-secondary/30" onClick={() => setExpanded(v => !v)}>
       <div className="flex-1 min-w-0">
@@ -44,11 +62,28 @@ export default function AccountsCustomerCard({ account, onUpdate, payments, paym
       <p className="text-xs text-muted-foreground">Each shipment includes its own shipping fee. Only payments above its full charges become credit for later shipments, then unshipped items. Unshipped shipping is an estimate until the batch is dispatched. Amounts include payments awaiting verification.</p>
       {account.due > 0 && account.credit > 0 && <p className="text-xs text-warning">Credit is reserved for later shipments. Earlier unpaid shipments remain outstanding.</p>}
       <Button size="sm" variant="outline" onClick={() => setInvoice(true)} disabled={!records.length}><FileText className="h-3.5 w-3.5 mr-1" />Customer invoice</Button>
-      <p className="text-xs text-muted-foreground">The invoice opens the existing Invoicing view, which may use different historical shipping rules. Use the shipment breakdown below to check each delivery fee and credit.</p>
       {batches.map((batch, i) => <div key={batch.key}>
         <AccountsClientCard minerName={name} records={batch.records} batch={batch}
           title={batch.pending ? 'Unshipped / next shipment' : batch.date ? `${batch.records.some(r => r.dispatchDate) ? 'Shipped' : 'Delivered'} ${formatDate(batch.date)} · Batch ${i + 1}` : 'Shipment date unknown'} onUpdate={onUpdate} />
         <Button className="mb-3" size="sm" disabled={!paymentsReady} onClick={() => setPaymentBatch(batch)}>Add payment · {batch.pending ? 'Next shipment' : `Batch ${i + 1}`}</Button>
+        {!batch.pending && <Button className="mb-3 ml-2" size="sm" variant="outline" disabled={!paymentsReady || creditSaving} onClick={() => {
+          setCreditError('');
+          setCreditEdit({ key: batch.key, amount: String(batch.creditOverride ?? Math.round(batch.calculatedCredit ?? 0)) });
+        }}>{batch.creditOverride === undefined ? 'Set store credit' : 'Edit store credit'}</Button>}
+        {creditEdit?.key === batch.key && <form className="mb-3 flex flex-wrap items-end gap-2" onSubmit={event => {
+          event.preventDefault();
+          if (/^\d+$/.test(creditEdit.amount)) void saveCredit(batch, Number(creditEdit.amount));
+        }}>
+          <label className="text-xs">Credit to carry forward (whole AED)
+            <Input type="number" required min={0} max={100000000} step={1} value={creditEdit.amount} onChange={event =>
+              setCreditEdit({ key: batch.key, amount: event.target.value })} disabled={creditSaving} />
+          </label>
+          <Button type="submit" size="sm" disabled={creditSaving}>Save credit</Button>
+          {batch.creditOverride !== undefined && <Button type="button" size="sm" variant="outline" disabled={creditSaving} onClick={() => void saveCredit(batch, null)}>Use calculated credit</Button>}
+          <Button type="button" size="sm" variant="ghost" disabled={creditSaving} onClick={() => setCreditEdit(null)}>Cancel</Button>
+          <p className="basis-full text-xs text-muted-foreground">Calculated credit {accountMoney(batch.calculatedCredit ?? 0)}. The recorded payment stays as received.</p>
+          {creditError && <p role="alert" className="basis-full text-xs text-destructive">{creditError}</p>}
+        </form>}
       </div>)}
       <details className="rounded-lg border border-border p-3 text-sm">
         <summary className="cursor-pointer font-semibold">Shipment payment history ({history.length})</summary>
@@ -66,7 +101,7 @@ export default function AccountsCustomerCard({ account, onUpdate, payments, paym
         {account.excludedPayments.map(r => <p key={r.id}>{r.itemDescription} · {r.status} · {accountMoney(calcTotalPaid(r))}</p>)}
       </div>}
     </div>}
-    {invoice && <InvoiceModal records={records} onClose={() => setInvoice(false)} />}
+    {invoice && <InvoiceModal records={records} accountBatches={batches} onClose={() => setInvoice(false)} />}
     {paymentBatch && <AddShipmentPaymentDialog account={account} batch={paymentBatch} onClose={() => { setPaymentBatch(null); onPaymentClose(); }} onSaved={p => { setPaymentBatch(null); onPaymentSaved(p); }} />}
   </section>;
 }

@@ -15,6 +15,7 @@ import { parseDateRobust } from '@/lib/calculations';
 import { toast } from 'sonner';
 import { ORDER_BOXES, OrderBox, isStillWithAdmin, orderBox, shipmentDay } from '@/lib/fulfilment';
 import { formatDate } from '@/lib/formatters';
+import type { AccountBatch } from '@/lib/accountsLedger';
 
 interface Props {
   records: DatabaseRowType[];
@@ -23,6 +24,7 @@ interface Props {
   initialBox?: OrderBox;
   /** The customer's earlier invoices: their shipping isn't charged again and their store credit is applied. */
   priorRecords?: DatabaseRowType[];
+  accountBatches?: AccountBatch[];
 }
 
 const CURRENCIES = ['PHP', 'AED', 'USD'];
@@ -47,7 +49,7 @@ function shipmentDays(list: DatabaseRowType[]): string[] {
   return [...new Set(list.map(shipmentDay))].sort((a, b) => b.localeCompare(a));
 }
 
-export default function InvoiceModal({ records, onClose, initialBox, priorRecords }: Props) {
+export default function InvoiceModal({ records, onClose, initialBox, priorRecords, accountBatches }: Props) {
   const printRef = useRef<HTMLDivElement>(null);
   const [isCopying, setIsCopying] = useState(false);
   const [ccIncludeShipping, setCcIncludeShipping] = useState(getCcIncludeShipping());
@@ -87,10 +89,14 @@ export default function InvoiceModal({ records, onClose, initialBox, priorRecord
   const [shipDay, setShipDay] = useState<string>('');
   useEffect(() => { setShipDay(dayOptions[0] ?? ''); }, [dayOptions]);
 
+  const [batchKey, setBatchKey] = useState(() =>
+    (accountBatches?.find(batch => batch.pending) ?? accountBatches?.at(-1))?.key);
+  const accountBatch = accountBatches?.find(batch => batch.key === batchKey) ?? accountBatches?.at(-1);
   const visibleRecords = useMemo(() => {
+    if (accountBatch) return sortByDate(accountBatch.records);
     if (!byShipDate || !shipDay || shipDay === 'all') return tabRecords;
     return tabRecords.filter(r => shipmentDay(r) === shipDay);
-  }, [byShipDate, tabRecords, shipDay]);
+  }, [accountBatch, byShipDate, tabRecords, shipDay]);
 
   // When the caller passes the customer's earlier invoices, this modal's other
   // tabs (and earlier shipment days) are earlier invoices too: otherwise every
@@ -107,12 +113,13 @@ export default function InvoiceModal({ records, onClose, initialBox, priorRecord
   const baseRecord = visibleRecords[0] || records[0];
   // Default = the item's own currency; a blank currency means AED (local),
   // matching how the rest of the app prices it. Change it in the dropdown if needed.
-  const [currency, setCurrency] = useState(() => (baseRecord ? getEffectiveCurrency(baseRecord) : 'AED'));
+  const [selectedCurrency, setCurrency] = useState(() => (baseRecord ? getEffectiveCurrency(baseRecord) : 'AED'));
+  const currency = accountBatch ? 'AED' : selectedCurrency;
 
   // Show "Include Shipping in CC" toggle only when there are CC items AND shipping applies
   const hasCcItems = visibleRecords.some(r => (r.modeOfPayment || '') === 'Credit Card');
   const hasShipping = visibleRecords.length > 0 && !visibleRecords.every(r => isFreeSf(r)) && calcShippingFee(visibleRecords[0]) > 0;
-  const showCcShippingToggle = hasCcItems && hasShipping;
+  const showCcShippingToggle = !accountBatch && hasCcItems && hasShipping;
 
   const handlePrint = () => {
     const content = printRef.current?.innerHTML || '';
@@ -216,7 +223,7 @@ export default function InvoiceModal({ records, onClose, initialBox, priorRecord
               <div className="flex items-center gap-3">
                 <div className="flex items-center gap-2">
                   <span className="text-xs text-muted-foreground font-medium">Currency:</span>
-                  <Select value={currency} onValueChange={setCurrency}>
+                  <Select value={currency} onValueChange={setCurrency} disabled={!!accountBatch}>
                     <SelectTrigger className="h-8 w-24 text-xs">
                       <SelectValue />
                     </SelectTrigger>
@@ -279,7 +286,20 @@ export default function InvoiceModal({ records, onClose, initialBox, priorRecord
             )}
 
             {/* Tab switcher */}
-            <div className="flex gap-1 flex-wrap">
+            {accountBatch && accountBatches ? (
+              <Select value={accountBatch.key} onValueChange={setBatchKey}>
+                <SelectTrigger className="h-8 w-fit text-xs" aria-label="Invoice shipment">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {accountBatches.map((batch, index) => (
+                    <SelectItem key={batch.key} value={batch.key}>
+                      {batch.pending ? 'Unshipped / next shipment' : `Batch ${index + 1}${batch.date ? ` · ${formatDate(batch.date)}` : ''}`}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : <div className="flex gap-1 flex-wrap">
               {tabConfig.map(t => (
                 <button
                   key={t.key}
@@ -299,10 +319,10 @@ export default function InvoiceModal({ records, onClose, initialBox, priorRecord
                   )}
                 </button>
               ))}
-            </div>
+            </div>}
 
             {/* Shipment date — one invoice per day shipped */}
-            {byShipDate && dayOptions.length > 0 && (
+            {!accountBatch && byShipDate && dayOptions.length > 0 && (
               <div className="flex items-center gap-1.5 flex-wrap">
                 <span className="text-xs text-muted-foreground font-medium">Shipment date:</span>
                 {[...dayOptions, ...(dayOptions.length > 1 ? ['all'] : [])].map(d => {
@@ -338,7 +358,7 @@ export default function InvoiceModal({ records, onClose, initialBox, priorRecord
         {visibleRecords.length > 0 && (
           <div className="overflow-x-auto">
             <div ref={printRef} className="min-w-[640px] p-4 bg-white">
-              <InvoicePrintContent records={visibleRecords} currency={currency} ccIncludeShipping={ccIncludeShipping} priorRecords={visiblePrior} />
+              <InvoicePrintContent records={visibleRecords} currency={currency} ccIncludeShipping={ccIncludeShipping} priorRecords={visiblePrior} accountBatch={accountBatch} />
             </div>
           </div>
         )}
