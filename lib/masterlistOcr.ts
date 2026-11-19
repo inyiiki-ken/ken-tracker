@@ -429,7 +429,7 @@ export function findDate(text: string): string {
   return `${month.charAt(0)}${month.slice(1).toLowerCase()} ${day}, ${year}`;
 }
 
-const LABELS = /^(TOTAL|GRAMS?|PULL?OU?T|BALANCE|RATE|GOLD|BAR|SILVER|\d+K\w*|MASTERLIST)$/;
+const LABELS = /^(TOTAL|[GC]RAMS?|PULL?OU?T|BALANCE|RATE|GOLD|BAR|SILVER|\d+K\w*|MASTERLIST)$/;
 function findTitle(lines: OcrLine[], headerIdx: number): string {
   // The liver/title is the tallest text above the header.
   let best = "", bestH = 0;
@@ -716,11 +716,19 @@ export async function parseMasterlistImage(file: File, mapping?: MasterlistMappi
     if (oneDigitApart(r.amount, a2)) return { grams: r.grams, amount: a2, mc, exact: false };
     const g2 = round2(r.amount / per);
     if (near(g2 * per, r.amount) && oneDigitApart(r.grams, g2)) return { grams: g2, amount: r.amount, mc, exact: false };
-    // MC misread (28 read as 26, 55 as 56, or missing): weight and amount agree
-    // to the cent on a whole-number MC one digit away from the reading.
-    const mcI = Math.round(r.amount / r.grams - rate);
-    if (mcI >= 0 && mcI <= 150 && mcI !== mc && cent(r.grams * (rate + mcI), r.amount) && (!mc || oneDigitApart(mc, mcI))) {
-      return { grams: r.grams, amount: r.amount, mc: mcI, exact: false };
+    // MC misread (28 read as 26, 55 as 56, missing, or impossible like 456):
+    // weight and amount agree to the cent on a whole-number MC one digit away
+    // from the reading. The amount may also carry a stray leading digit from the
+    // cell border (521.22 read as 6521.22).
+    const amounts = [r.amount];
+    const s = r.amount.toFixed(2);
+    if (s.length > 4) amounts.push(parseFloat(s.slice(1)));
+    for (const amount of amounts) {
+      if (amount !== r.amount && near(r.grams * per, amount)) return { grams: r.grams, amount, mc, exact: false };
+      const mcI = Math.round(amount / r.grams - rate);
+      if (mcI >= 0 && mcI <= 150 && mcI !== mc && cent(r.grams * (rate + mcI), amount) && (!mc || mc > 150 || oneDigitApart(mc, mcI))) {
+        return { grams: r.grams, amount, mc: mcI, exact: false };
+      }
     }
     return null;
   };
@@ -885,6 +893,27 @@ export async function parseMasterlistImage(file: File, mapping?: MasterlistMappi
     if (match) nameHints.push(`${r.code} "${r.name}" looks like "${match}" from earlier orders`);
   }
 
+  // ── Item descriptions: snap a misread to the one earlier order it nearly
+  // matches ("EENDIRING" → FENDI RING, "CHAIN PENDANT" → CHAIN & PENDANT).
+  // Compared without spaces or symbols; only a single clear match is used.
+  const descKey = (t: string) => t.toUpperCase().replace(/[^A-Z0-9]/g, "");
+  const knownDescs = new Map<string, string>();
+  for (const h of history) {
+    const d = String(h.itemDescription ?? "").toUpperCase().replace(/\s+/g, " ").trim();
+    if (d.length >= 4 && !knownDescs.has(descKey(d))) knownDescs.set(descKey(d), d);
+  }
+  const descFixed: string[] = [];
+  for (const r of fixed) {
+    const k = descKey(r.desc);
+    if (k.length < 6 || r.side) continue;
+    const same = knownDescs.get(k);
+    const near = same ? [same] : [...knownDescs].filter(([kk]) => Math.abs(kk.length - k.length) <= 1 && editDistance(kk, k) <= 1).map(([, d]) => d);
+    if (near.length === 1 && near[0] !== r.desc) {
+      descFixed.push(`${r.code} item ${r.desc} → ${near[0]}`);
+      r.desc = near[0];
+    }
+  }
+
   // ── Gold bar / side-column rows ──
   const sideRows = fixed.filter((r) => r.side);
   const sideReview = sideRows.filter((r) => r.side!.guessed || (r.side!.amount > 0 && Math.abs(r.amount - r.side!.amount) > 1));
@@ -981,7 +1010,8 @@ export async function parseMasterlistImage(file: File, mapping?: MasterlistMappi
   }
 
   const rowNotes: Record<string, string> = {};
-  for (const n of [...reread, ...corrected]) {
+  if (descFixed.length) warnings.push(`Item name matched to earlier orders: ${descFixed.join("; ")}. Check against the photo.`);
+  for (const n of [...reread, ...corrected, ...descFixed]) {
     const [code, ...rest] = n.split(" ");
     rowNotes[code] = rowNotes[code] ? `${rowNotes[code]}; ${rest.join(" ")}` : `Corrected: ${rest.join(" ")}`;
   }

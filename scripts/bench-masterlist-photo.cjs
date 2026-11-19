@@ -64,11 +64,16 @@ const FIELDS = ['row', 'name', 'desc', 'grams', 'rate', 'mc', 'price'];
   const total = Object.fromEntries(FIELDS.map((f) => [f, [0, 0]]));
   let headerOk = 0, headers = 0;
   const t0 = Date.now();
-  for (const s of readTruth().filter((x) => !only || x.file.startsWith(only))) {
+  const truth = readTruth();
+  for (const s of truth.filter((x) => !only || x.file.startsWith(only))) {
+    // Earlier orders = the other sheets' items (as the app passes the customer's records).
+    // OCR_HISTORY=file.json adds real item names (a JSON array) as earlier orders.
+    const realNames = process.env.OCR_HISTORY ? JSON.parse(fs.readFileSync(process.env.OCR_HISTORY, 'utf8')).map((d) => ({ itemDescription: d })) : [];
+    const history = [...realNames, ...truth.filter((o) => o !== s).flatMap((o) => o.rows.filter((r) => r.desc !== '*').map((r) => ({ liverName: o.liver, itemDescription: r.desc, minerName: r.name, mc: r.mc, goldRate: o.rate, dateOfLive: o.date, orderId: r.code })))];
     const data = fs.readFileSync(path.join(dir, s.file));
     const t1 = Date.now();
     let res;
-    try { res = await parseMasterlistImage({ arrayBuffer: async () => data, name: s.file, type: 'image/jpeg' }, m, [], true); }
+    try { res = await parseMasterlistImage({ arrayBuffer: async () => data, name: s.file, type: 'image/jpeg' }, m, history, true); }
     catch (e) { res = { rows: [], liveDate: '', liverName: '', error: e.message }; }
     const errs = [];
     headers += 2;

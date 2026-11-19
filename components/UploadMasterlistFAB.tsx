@@ -13,7 +13,8 @@ import { importCategoryForMc, isCrownImport, parseMasterlistFile, type ParsedMas
 import { parseMasterlistImage, isImageFile } from '@/lib/masterlistOcr';
 import { getMasterlistMapping, TABBY_MC_CATEGORY } from '@/lib/masterlistMapping';
 import { Input } from '@/components/ui/input';
-import { useDataOptions } from '@/lib/dataOptions';
+import { useDataOptions, mergeOptions } from '@/lib/dataOptions';
+import { getOptions } from '@/lib/optionsConfig';
 import { orderBox, outsourceName } from '@/lib/fulfilment';
 import type { DatabaseRowType } from '@/types';
 import { reviewImportRow, importReviewKey } from '@/lib/importReview';
@@ -118,6 +119,8 @@ export default function UploadMasterlistFAB({ onRefresh, records = [] }: Props) 
   };
   const fileRef = useRef<HTMLInputElement>(null);
   const dataOpts = useDataOptions();
+  // DATA'S categories, else the ones in Settings (Gold Normal, Special Price…), as Add Client uses.
+  const categoryList = useMemo(() => mergeOptions(dataOpts.categories, getOptions('category')), [dataOpts.categories]);
   const [outsource, setOutsource] = useState<OutsourceChoice>({ on: false, name: '', toBox: true });
 
   // Outsources already in the app (items in the Outsource box) plus DATA'S sources.
@@ -179,10 +182,10 @@ export default function UploadMasterlistFAB({ onRefresh, records = [] }: Props) 
         return;
       }
       // Gold bars (24K): this customer's own gold bar category, if DATA'S has one.
-      const barCat = dataOpts.categories.find((c) => /gold\s*-?\s*bar|24\s*k/i.test(c));
+      const barCat = categoryList.find((c) => /gold\s*-?\s*bar|24\s*k/i.test(c));
       if (barCat) rows.forEach((r) => { if (/24K/i.test(r.tog)) r.category = barCat; });
       // Same spelling as the category list ("GOLD NORMAL" → "Gold Normal"), so the dropdown shows it.
-      rows.forEach((r) => { const hit = dataOpts.categories.find((c) => c.toLowerCase() === String(r.category ?? '').toLowerCase()); if (hit) r.category = hit; });
+      rows.forEach((r) => { const hit = categoryList.find((c) => c.toLowerCase() === String(r.category ?? '').toLowerCase()); if (hit) r.category = hit; });
       const title = sheets[0]?.page || sheets[0]?.liverName || '';
       const match = matchOutsource(knownOutsources, title, rows.map((r) => r.orderId));
       setOutsource({ on: !!match, name: match || upper(title), toBox: true });
@@ -235,7 +238,7 @@ export default function UploadMasterlistFAB({ onRefresh, records = [] }: Props) 
   // Validation warnings against the customer's DATA'S option lists.
   const warnings = useMemo(() => {
     if (!parsed) return { noPrice: 0, unknownCategories: [] as string[], unknownSources: [] as string[] };
-    const catSet = new Set(dataOpts.categories.map((c) => c.toLowerCase()));
+    const catSet = new Set(categoryList.map((c) => c.toLowerCase()));
     const srcSet = new Set(dataOpts.sources.map((s) => s.toLowerCase()));
     const unknownCats = new Set<string>();
     const unknownSrc = new Set<string>();
@@ -246,7 +249,7 @@ export default function UploadMasterlistFAB({ onRefresh, records = [] }: Props) 
       if (srcSet.size && r.source && !srcSet.has(r.source.toLowerCase())) unknownSrc.add(r.source);
     }
     return { noPrice, unknownCategories: [...unknownCats].slice(0, 12), unknownSources: [...unknownSrc].slice(0, 12) };
-  }, [parsed, dataOpts]);
+  }, [parsed, dataOpts, categoryList]);
 
   // One import id per parsed file, kept across retries: a retry after a failure
   // resends the same Row Keys and the server skips the ones already saved.
@@ -262,7 +265,7 @@ export default function UploadMasterlistFAB({ onRefresh, records = [] }: Props) 
     const reasons = [row.warning, note, check.mismatch ? 'Calculated amount differs from the source amount.' : '',
       parsed!.flagged.has(`${row.orderId}@${gi}`) ? 'Photo reading needs verification.' : '',
       ...check.errors].filter(Boolean) as string[];
-    if (dataOpts.categories.length && !dataOpts.categories.some(c => c.toLowerCase() === row.category.toLowerCase())) reasons.push('Category is not in your configured category list.');
+    if (categoryList.length && !categoryList.some(c => c.toLowerCase() === row.category.toLowerCase())) reasons.push('Category is not in your configured category list.');
     if (getMasterlistMapping().priceMode === 'rate_plus_mc' && Number(row.goldRate) > 0 &&
       Math.abs(Number(row.goldRate) + Number(row.mc) - Number(row.clientRate)) > 0.01) {
       reasons.push('Selling rate differs from gold rate + MC. Check or confirm the override.');
@@ -565,7 +568,7 @@ export default function UploadMasterlistFAB({ onRefresh, records = [] }: Props) 
                     const photo = true;
                     const review = reviewRows[i];
                     const note = parsed.notes.get(`${r.orderId}@${gi}`);
-                    const bad = parsed.flagged.has(`${r.orderId}@${gi}`) || !!r.warning || !!note;
+                    const bad = parsed.flagged.has(`${r.orderId}@${gi}`) || !!r.warning; // orange = still needs fixing; an auto-correction that adds up only shows its note
                     const cellIn = (field: keyof ParsedMasterlistRow, w: string) => (
                       <Input aria-label={`${r.orderId || `Row ${i + 1}`} ${field}`} disabled={importing} value={String(r[field] ?? '')} onChange={(e) => editRow(i, { [field]: field === 'grams' || field === 'mc' ? e.target.value : e.target.value.toUpperCase() } as Partial<ParsedMasterlistRow>)} className={`h-6 px-1 text-[11px] ${w}`} />
                     );
@@ -575,16 +578,16 @@ export default function UploadMasterlistFAB({ onRefresh, records = [] }: Props) 
                         <td className="px-2 py-1 truncate max-w-[130px]">{photo ? cellIn('minerName', 'w-28') : r.minerName}</td>
                         <td className="px-2 py-1 truncate max-w-[160px]">{photo ? cellIn('itemDescription', 'w-36') : r.itemDescription}</td>
                         <td className="px-2 py-1">
-                          {dataOpts.categories.length ? (
+                          {categoryList.length ? (
                             <select
                               aria-label={`${r.orderId || `Row ${i + 1}`} category`}
                               disabled={importing}
                               value={r.category}
                               onChange={(e) => { setManualCategory((s) => new Set(s).add(i)); editRow(i, { category: e.target.value }); }}
-                              className={`h-6 w-36 rounded-md border bg-background px-1 text-[11px] ${dataOpts.categories.some((c) => c.toLowerCase() === r.category.toLowerCase()) ? 'border-input' : 'border-warning'}`}
+                              className={`h-6 w-36 rounded-md border bg-background px-1 text-[11px] ${categoryList.some((c) => c.toLowerCase() === r.category.toLowerCase()) ? 'border-input' : 'border-warning'}`}
                             >
-                              {!dataOpts.categories.some((c) => c === r.category) && <option value={r.category}>{r.category || '— choose —'}</option>}
-                              {dataOpts.categories.map((c) => <option key={c} value={c}>{c}</option>)}
+                              {!categoryList.some((c) => c === r.category) && <option value={r.category}>{r.category || '— choose —'}</option>}
+                              {categoryList.map((c) => <option key={c} value={c}>{c}</option>)}
                             </select>
                           ) : cellIn('category', 'w-32')}
                         </td>
