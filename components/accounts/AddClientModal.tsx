@@ -127,10 +127,10 @@ export default function AddClientModal({ onClose, userFirstName, userEmail, onRe
     regions: '',
     clientAddress: '',
     clientNumber: '',
-    status: 'Walk-in',
+    status: 'Pending',
     remittanceStatus: 'Pending Payment',
     dateOfLive: todayLocalISO(),
-    liverName: userFirstName || '',
+    liverName: '',
     page: '',
     tog: '',
     supplierRateOverride: '',
@@ -308,6 +308,11 @@ export default function AddClientModal({ onClose, userFirstName, userEmail, onRe
   }, [form.minerName, existingRecords]);
 
   const handleSave = async (isBulkAdd: boolean) => {
+    if (saving) return;
+    if (!form.dateOfLive || form.dateOfLive > today) {
+      toast.error('Choose a valid Date of Live, no later than today');
+      return;
+    }
     if (!form.minerName.trim() || !form.itemDescription.trim()) {
       toast.error('Client name and item description are required');
       return;
@@ -430,6 +435,7 @@ export default function AddClientModal({ onClose, userFirstName, userEmail, onRe
           supplierRateOverride: '' 
         }));
         setCodeTouched(false);
+        requestAnimationFrame(() => document.getElementById('add-client-item-description')?.focus());
       } else {
         onClose();
       }
@@ -444,14 +450,18 @@ export default function AddClientModal({ onClose, userFirstName, userEmail, onRe
   const isPinas = form.locationOfMiner === 'Pinas';
 
   return (
-    <Dialog open onOpenChange={onClose}>
-      <DialogContent className="max-w-md bg-card border-border max-h-[90vh] overflow-y-auto" aria-describedby={undefined}>
+    <Dialog open onOpenChange={() => { if (!saving) onClose(); }}>
+      <DialogContent className="max-w-2xl bg-card border-border max-h-[90dvh] flex flex-col overflow-hidden" aria-describedby={undefined}>
         <DialogHeader>
           <DialogTitle className="font-cinzel text-primary">Add Client Record</DialogTitle>
         </DialogHeader>
 
-        <div className="space-y-3 text-sm">
+        <div className="space-y-3 text-sm overflow-y-auto min-h-0 pr-2">
           <div className="grid grid-cols-2 gap-2">
+            <div className="col-span-2">
+              <Label className="text-xs text-muted-foreground">Date of Live</Label>
+              <Input type="date" value={form.dateOfLive} onChange={e => set('dateOfLive', e.target.value)} max={today} className="h-9 text-sm mt-0.5 bg-background border-border" />
+            </div>
             <div className="col-span-2">
               <Label className="text-xs text-muted-foreground">{getFieldLabel('minerName')} *</Label>
               <Input
@@ -482,7 +492,7 @@ export default function AddClientModal({ onClose, userFirstName, userEmail, onRe
             </div>
             <div className="col-span-2">
               <Label className="text-xs text-muted-foreground">{getFieldLabel('itemDescription')} *</Label>
-              <Input value={form.itemDescription} onChange={e => set('itemDescription', e.target.value)} className="h-8 text-xs mt-0.5 bg-background border-border uppercase" placeholder="e.g. GOLD RING 18K" />
+              <Input id="add-client-item-description" value={form.itemDescription} onChange={e => set('itemDescription', e.target.value)} className="h-8 text-xs mt-0.5 bg-background border-border uppercase" placeholder="e.g. GOLD RING 18K" />
             </div>
 
             <div>
@@ -533,6 +543,7 @@ export default function AddClientModal({ onClose, userFirstName, userEmail, onRe
                 className={`h-8 text-xs bg-background uppercase transition-colors ${isDuplicateBarcode ? 'border-destructive focus-visible:ring-destructive' : 'border-border'}`} 
                 placeholder={codeHint ? `e.g. ${codeHint}` : 'Code from the masterlist'} 
               />
+              <p className="text-[11px] text-muted-foreground mt-1">Running codes such as AMB01, 3RD01 and RO01 can repeat on a different live date. The same code on the same date is blocked; standalone barcodes must be unique.</p>
               {codeSuggestions.length > 1 && (
                 <div className="flex flex-wrap items-center gap-1 mt-1">
                   <span className="text-[10px] text-muted-foreground">Next code:</span>
@@ -748,24 +759,19 @@ export default function AddClientModal({ onClose, userFirstName, userEmail, onRe
                 />
               </div>
             )}
-            <div className="col-span-2">
-              <Label className="text-xs text-muted-foreground">Date of Live</Label>
-              <Input type="date" value={form.dateOfLive} onChange={e => set('dateOfLive', e.target.value)} max={today} className="h-8 text-xs mt-0.5 bg-background border-border" />
-            </div>
           </div>
-
-          <div className="flex gap-2 pt-2">
-            <Button variant="outline" className="text-xs h-8 border-border w-20 shrink-0" onClick={onClose}>
+        </div>
+          <div className="flex flex-wrap gap-2 pt-3 border-t border-border shrink-0">
+            <Button disabled={saving} variant="outline" className="text-xs h-10 border-border w-20 shrink-0" onClick={onClose}>
               Cancel
             </Button>
-            <Button onClick={() => handleSave(true)} disabled={saving || isDuplicateBarcode} variant="secondary" className="flex-1 text-xs h-8 border-border">
+            <Button onClick={() => handleSave(true)} disabled={saving || isDuplicateBarcode} variant="outline" className="flex-1 min-w-40 text-xs h-10 border-primary text-foreground bg-background">
               {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <><CopyPlus className="h-3.5 w-3.5 mr-1" /> Save & Add Another</>}
             </Button>
-            <Button onClick={() => handleSave(false)} disabled={saving || isDuplicateBarcode} className="flex-1 text-xs h-8 bg-primary text-primary-foreground">
+            <Button onClick={() => handleSave(false)} disabled={saving || isDuplicateBarcode} className="flex-1 min-w-32 text-xs h-10 bg-primary text-primary-foreground">
               {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : 'Create Record'}
             </Button>
           </div>
-        </div>
       </DialogContent>
     </Dialog>
   );

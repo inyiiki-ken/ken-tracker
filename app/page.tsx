@@ -495,13 +495,13 @@ function AppContent() {
         </div>
       )}
       {shownTab === 'admin' && (
-        <AdminPipeline onBulkUpdate={handleBulkUpdate} records={records} searchQuery={searchQueries.admin} onSearchChange={handleSearchChange} onUpdate={handleUpdate} userEmail={user.email} userFirstName={user.firstName} onRefresh={fetchData} />
+        <AdminPipeline onBulkUpdate={handleBulkUpdate} records={records} searchQuery={searchQueries.admin} onSearchChange={handleSearchChange} onUpdate={handleUpdate} userEmail={user.email} userFirstName={user.firstName} onRefresh={() => fetchData(true)} />
       )}
       {shownTab === 'dispatch' && (
         <DispatchBoard onBulkUpdate={handleBulkUpdate} records={records} searchQuery={searchQueries.dispatch} onSearchChange={handleSearchChange} onUpdate={handleUpdate} userEmail={user.email} clientMilestones={clientMilestones} onRefresh={() => fetchData(true)} />
       )}
       {shownTab === 'accounts' && (
-        <AccountsTracking records={records} searchQuery={searchQueries.accounts} onSearchChange={handleSearchChange} onUpdate={handleUpdate} userEmail={user.email} userFirstName={user.firstName} onRefresh={fetchData} />
+        <AccountsTracking records={records} searchQuery={searchQueries.accounts} onSearchChange={handleSearchChange} onUpdate={handleUpdate} userEmail={user.email} userFirstName={user.firstName} onRefresh={() => fetchData(true)} />
       )}
       {shownTab === 'bossing' && (
         <BossingDashboard records={records} searchQuery={searchQueries.bossing} onSearchChange={handleSearchChange} onUpdate={handleUpdate} />

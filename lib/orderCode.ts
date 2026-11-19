@@ -9,7 +9,7 @@
 
 import type { DatabaseRowType } from "@/types";
 
-const CODE_RE = /^([A-Z]+)-?(\d{1,4})$/;
+const CODE_RE = /^([A-Z0-9]*[A-Z])-?(\d{1,4})$/;
 
 /** "amb5" / "AMB05" / "AMB-05" → { prefix: "AMB", num: 5, width: 2 }. */
 export function splitCode(code: unknown): { prefix: string; num: number; width: number } | null {
