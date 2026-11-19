@@ -9,13 +9,14 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from '@/co
 import { Label } from '@/components/ui/label';
 import { toast } from 'sonner';
 import { createUpload, importRows, recordLastImport, getLastImport, undoLastImport, checkDatabaseColumns, fixDatabaseColumns, type LastImportInfo } from '@/lib/api';
-import { parseMasterlistFile, type ParsedMasterlistRow, type ParsedSheetSummary } from '@/lib/masterlistImport';
+import { importCategoryForMc, isCrownImport, parseMasterlistFile, type ParsedMasterlistRow, type ParsedSheetSummary } from '@/lib/masterlistImport';
 import { parseMasterlistImage, isImageFile } from '@/lib/masterlistOcr';
-import { getMasterlistMapping, categoryForMc, TABBY_MC_CATEGORY } from '@/lib/masterlistMapping';
+import { getMasterlistMapping, TABBY_MC_CATEGORY } from '@/lib/masterlistMapping';
 import { Input } from '@/components/ui/input';
 import { useDataOptions } from '@/lib/dataOptions';
 import { orderBox, outsourceName } from '@/lib/fulfilment';
 import type { DatabaseRowType } from '@/types';
+import { reviewImportRow, importReviewKey } from '@/lib/importReview';
 
 interface Props {
   onRefresh: () => void;
@@ -55,6 +56,7 @@ function matchOutsource(known: string[], title: string, codes: string[]): string
 }
 
 interface Parsed {
+  crown: boolean;
   rows: ParsedMasterlistRow[];
   liverName: string;
   pageName: string;
@@ -79,6 +81,13 @@ export default function UploadMasterlistFAB({ onRefresh, records = [] }: Props) 
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const selectedFile = selectedFiles[0] ?? null;
   const [parsed, setParsed] = useState<Parsed | null>(null);
+  const [reviewed, setReviewed] = useState<Set<string>>(new Set());
+  const [sources, setSources] = useState<{ name: string; url: string; image: boolean }[]>([]);
+  useEffect(() => {
+    const files = selectedFiles.map(file => ({ name: file.name, url: URL.createObjectURL(file), image: isImageFile(file) }));
+    setSources(files);
+    return () => files.forEach(file => URL.revokeObjectURL(file.url));
+  }, [selectedFiles]);
   const [lastImport, setLastImport] = useState<LastImportInfo | null>(null);
   const [undoing, setUndoing] = useState(false);
   // Columns the app writes that this customer's Google Sheet doesn't have yet.
@@ -137,9 +146,11 @@ export default function UploadMasterlistFAB({ onRefresh, records = [] }: Props) 
 
   const doParse = async () => {
     if (!selectedFiles.length) { toast.error('Please select a file'); return; }
+    setReviewed(new Set());
     setParsing(true);
     try {
       // Excel/CSV files and screenshots can be mixed; each photo = one sheet.
+      const crown = await isCrownImport();
       const rows: ParsedMasterlistRow[] = [];
       const sheets: Group[] = [];
       const flagged = new Set<string>();
@@ -148,14 +159,14 @@ export default function UploadMasterlistFAB({ onRefresh, records = [] }: Props) 
         const f = selectedFiles[fi];
         if (isImageFile(f)) {
           setProgress(`Reading photo ${fi + 1} of ${selectedFiles.length}…`);
-          const res = await parseMasterlistImage(f, undefined, records);
+          const res = await parseMasterlistImage(f, undefined, records, crown);
           const gi = sheets.length;
           sheets.push({ sheetName: f.name, page: res.pageName, liverName: res.liverName, liveDate: res.liveDate, globalRate: res.globalRate, rowCount: res.rows.length, start: rows.length, isPhoto: true, warnings: res.warnings });
           res.flagged.forEach((code) => flagged.add(`${code}@${gi}`));
           Object.entries(res.rowNotes).forEach(([code, note]) => notes.set(`${code}@${gi}`, note));
           rows.push(...res.rows);
         } else {
-          const res = await parseMasterlistFile(f);
+          const res = await parseMasterlistFile(f, undefined, crown);
           sheets.push({ sheetName: f.name, page: res.pageName, liverName: res.liverName, liveDate: res.liveDate, globalRate: res.globalRate, rowCount: res.rows.length, start: rows.length, isPhoto: false, warnings: res.skipped.length ? [`${res.skipped.length} row(s) not imported — ${res.skipped.slice(0, 5).join('; ')}${res.skipped.length > 5 ? '…' : ''}`] : [], subSheets: res.sheets });
           rows.push(...res.rows);
         }
@@ -170,7 +181,7 @@ export default function UploadMasterlistFAB({ onRefresh, records = [] }: Props) 
       const title = sheets[0]?.page || sheets[0]?.liverName || '';
       const match = matchOutsource(knownOutsources, title, rows.map((r) => r.orderId));
       setOutsource({ on: !!match, name: match || upper(title), toBox: true });
-      setParsed({ rows, liverName: sheets[0]?.liverName ?? '', pageName: sheets[0]?.page ?? '', sheets, flagged, notes });
+      setParsed({ crown, rows, liverName: sheets[0]?.liverName ?? '', pageName: sheets[0]?.page ?? '', sheets, flagged, notes });
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Could not read file');
     } finally {
@@ -199,10 +210,10 @@ export default function UploadMasterlistFAB({ onRefresh, records = [] }: Props) 
       const rows = p.rows.map((r, k) => {
         if (k !== i) return r;
         const next = { ...r, ...patch };
-        if (patch.mc !== undefined) {
-          const mc = parseFloat(patch.mc) || 0;
+        if (patch.mc !== undefined || patch.goldRate !== undefined) {
+          const mc = parseFloat(next.mc) || 0;
           if (m.priceMode === 'rate_plus_mc') next.clientRate = String((parseFloat(next.goldRate) || 0) + mc);
-          const cat = categoryForMc(m.mcCategories, mc);
+          const cat = importCategoryForMc(m, mc, p.crown);
           if (cat.toLowerCase() === TABBY_MC_CATEGORY.toLowerCase()) {
             next.modeOfPayment = 'Tabby';
             next.tabbyIncluded = 'Yes';
@@ -238,8 +249,32 @@ export default function UploadMasterlistFAB({ onRefresh, records = [] }: Props) 
   const [allowDuplicates, setAllowDuplicates] = useState(false);
   const [dupFound, setDupFound] = useState(0);
 
+  const reviewRows = (parsed?.rows ?? []).map((row, i) => {
+    const gi = groupOf(i);
+    const group = parsed!.sheets[gi];
+    const note = parsed!.notes.get(`${row.orderId}@${gi}`);
+    const check = reviewImportRow(row);
+    const reasons = [row.warning, note, check.mismatch ? 'Calculated amount differs from the source amount.' : '',
+      parsed!.flagged.has(`${row.orderId}@${gi}`) ? 'Photo reading needs verification.' : '',
+      ...check.errors].filter(Boolean) as string[];
+    if (dataOpts.categories.length && !dataOpts.categories.some(c => c.toLowerCase() === row.category.toLowerCase())) reasons.push('Category is not in your configured category list.');
+    if (getMasterlistMapping().priceMode === 'rate_plus_mc' && Number(row.goldRate) > 0 &&
+      Math.abs(Number(row.goldRate) + Number(row.mc) - Number(row.clientRate)) > 0.01) {
+      reasons.push('Selling rate differs from gold rate + MC. Check or confirm the override.');
+    }
+    if (group?.isPhoto) reasons.push('Check these values against the original photo.');
+    const key = importReviewKey(row, [i, reasons, group?.warnings, group?.liveDate, group?.liverName]);
+    const required = reasons.length > 0 || !!group?.warnings.length;
+    return { ...check, reasons, key, required, confirmed: reviewed.has(key) };
+  });
+  const unresolved = reviewRows.filter(r => r.errors.length || (r.required && !r.confirmed)).length;
+  const confirmReview = (key: string, checked: boolean) => setReviewed(previous => {
+    const next = new Set(previous); if (checked) next.add(key); else next.delete(key); return next;
+  });
+
   const doImport = async () => {
     if (!parsed) return;
+    if (unresolved || missingCols.length) { toast.error('Resolve the highlighted rows and sheet columns before importing.'); return; }
     setImporting(true);
     if (importIdRef.current?.parsed !== parsed) {
       importIdRef.current = { parsed, id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}` };
@@ -262,7 +297,7 @@ export default function UploadMasterlistFAB({ onRefresh, records = [] }: Props) 
         setPct(Math.round((i / rows.length) * 100));
         const out = outsource.on && outsource.name.trim() ? upper(outsource.name) : '';
         const batch = rows.slice(i, i + BATCH_SIZE).map((r, j) => {
-          const { warning: _w, ...rest } = r;
+          const { warning: _w, sourceAmount: _sourceAmount, ...rest } = r;
           void _w;
           return {
             ...rest,
@@ -340,7 +375,7 @@ export default function UploadMasterlistFAB({ onRefresh, records = [] }: Props) 
   const hasPhotos = !!parsed?.sheets.some((g) => g.isPhoto);
   // Photos: show every row (so each can be checked/edited). Excel: a sample.
   const warnCount = parsed?.rows.filter(r => r.warning).length ?? 0;
-  const preview = (hasPhotos || warnCount > 0 ? parsed?.rows : parsed?.rows.slice(0, 8)) ?? [];
+  const preview = parsed?.rows ?? [];
   const chips = parsed?.sheets.flatMap((g) => g.subSheets ?? [g]) ?? [];
 
   return (
@@ -451,14 +486,24 @@ export default function UploadMasterlistFAB({ onRefresh, records = [] }: Props) 
             {(warnings.noPrice > 0 || warnings.unknownCategories.length > 0 || warnings.unknownSources.length > 0) && (
               <div className="rounded-lg border border-warning/40 bg-warning/5 p-3 space-y-1">
                 <p className="text-xs font-medium text-warning flex items-center gap-1.5"><AlertTriangle className="h-3.5 w-3.5" /> Check before importing</p>
-                {warnings.noPrice > 0 && <p className="text-[11px] text-muted-foreground">{warnings.noPrice} row(s) have no price (rate = 0) — they&apos;ll import but priced at 0.</p>}
+                {warnings.noPrice > 0 && <p className="text-[11px] text-muted-foreground">{warnings.noPrice} row(s) have no price — enter a valid selling rate before importing.</p>}
                 {warnings.unknownCategories.length > 0 && <p className="text-[11px] text-muted-foreground">Categories not in your DATA&apos;S list: {warnings.unknownCategories.join(', ')}</p>}
                 {warnings.unknownSources.length > 0 && <p className="text-[11px] text-muted-foreground">Sources not in your DATA&apos;S list: {warnings.unknownSources.join(', ')}</p>}
               </div>
             )}
 
-            {/* Photos: liver / date per screenshot (editable) */}
-            {parsed.sheets.map((g, gi) => g.isPhoto && (
+            <div className="rounded-lg border border-border p-3 space-y-2">
+              <p className="font-semibold text-sm">Review before importing</p>
+              <p className="text-xs text-muted-foreground">{unresolved} row(s) still need attention. Missing or invalid prices must be corrected. Confirm photo readings and warnings only after comparing with your original. Editing a reviewed row requires another check.</p>
+              {sources.map((source, i) => <details key={source.url} open={sources.length === 1}>
+                <summary className="cursor-pointer text-sm text-primary">Original {i + 1}: {source.name}</summary>
+                <a href={source.url} target="_blank" rel="noreferrer" className="text-xs underline">Open original in another tab for side-by-side comparison</a>
+                {source.image && <img src={source.url} alt={`Original masterlist: ${source.name}`} className="mt-2 max-h-[45vh] w-auto max-w-full object-contain" />}
+                {!source.image && <p className="text-xs text-muted-foreground">Open the original workbook to compare its amounts and totals with the rows below.</p>}
+              </details>)}
+            </div>
+            {/* Source-level warnings stay visible for photos and workbooks. */}
+            {parsed.sheets.map((g, gi) => (
               <div key={gi} className="rounded-lg border border-border p-3 space-y-2">
                 <p className="text-[11px] text-muted-foreground flex items-center gap-1.5">
                   <FileSpreadsheet className="h-3 w-3" /> Photo: <span className="text-foreground truncate">{g.sheetName}</span> · {g.rowCount} item(s)
@@ -505,31 +550,46 @@ export default function UploadMasterlistFAB({ onRefresh, records = [] }: Props) 
                     <th className="text-right px-2 py-1.5">Rate</th>
                     <th className="text-right px-2 py-1.5">Amount</th>
                     <th className="text-left px-2 py-1.5">Cur</th>
+                    <th className="text-left px-2 py-1.5">Price explanation & review</th>
                   </tr>
                 </thead>
                 <tbody>
                   {preview.map((r, i) => {
                     const gi = groupOf(i);
                     // Photo rows and rows with a warning can be corrected before importing.
-                    const photo = !!parsed.sheets[gi]?.isPhoto || !!r.warning;
+                    const photo = true;
+                    const review = reviewRows[i];
                     const note = parsed.notes.get(`${r.orderId}@${gi}`);
                     const bad = parsed.flagged.has(`${r.orderId}@${gi}`) || !!r.warning || !!note;
                     const cellIn = (field: keyof ParsedMasterlistRow, w: string) => (
-                      <Input value={String(r[field] ?? '')} onChange={(e) => editRow(i, { [field]: field === 'grams' || field === 'mc' ? e.target.value : e.target.value.toUpperCase() } as Partial<ParsedMasterlistRow>)} className={`h-6 px-1 text-[11px] ${w}`} />
+                      <Input aria-label={`${r.orderId || `Row ${i + 1}`} ${field}`} disabled={importing} value={String(r[field] ?? '')} onChange={(e) => editRow(i, { [field]: field === 'grams' || field === 'mc' ? e.target.value : e.target.value.toUpperCase() } as Partial<ParsedMasterlistRow>)} className={`h-6 px-1 text-[11px] ${w}`} />
                     );
                     return (
                       <tr key={i} title={[r.warning, note].filter(Boolean).join(' · ') || undefined} className={`border-t border-border/50 ${bad ? 'bg-warning/15' : ''}`}>
                         {hasPhotos && <td className="px-2 py-1 whitespace-nowrap">{photo ? cellIn('orderId', 'w-16') : r.orderId}</td>}
                         <td className="px-2 py-1 truncate max-w-[130px]">{photo ? cellIn('minerName', 'w-28') : r.minerName}</td>
                         <td className="px-2 py-1 truncate max-w-[160px]">{photo ? cellIn('itemDescription', 'w-36') : r.itemDescription}</td>
-                        <td className="px-2 py-1 truncate max-w-[90px]">{r.category}</td>
-                        <td className="px-2 py-1 text-right">{r.qty}</td>
+                        <td className="px-2 py-1">{cellIn('category', 'w-32')}</td>
+                        <td className="px-2 py-1 text-right">{cellIn('qty', 'w-12')}</td>
                         <td className="px-2 py-1 text-right">{photo ? cellIn('grams', 'w-14 text-right') : r.grams}</td>
-                        <td className="px-2 py-1 text-right">{parseFloat(r.goldRate) > 0 ? r.goldRate : '—'}</td>
+                        <td className="px-2 py-1 text-right">{cellIn('goldRate', 'w-20')}</td>
                         <td className="px-2 py-1 text-right">{photo ? cellIn('mc', 'w-12 text-right') : (r.mc || '—')}</td>
-                        <td className="px-2 py-1 text-right">{r.clientRate}</td>
-                        <td className="px-2 py-1 text-right">{roundPrice((parseFloat(r.grams) || 0) * (parseFloat(r.clientRate) || 0)).toLocaleString()}</td>
+                        <td className="px-2 py-1 text-right">{cellIn('clientRate', 'w-20')}</td>
+                        <td className="px-2 py-1 text-right">{review.amount.toLocaleString()}</td>
                         <td className="px-2 py-1">{r.currency || 'AED'}</td>
+                        <td className="px-2 py-2 min-w-64">
+                          <p>{review.explanation} {r.currency || 'AED'}</p>
+                          {getMasterlistMapping().priceMode === 'rate_plus_mc' && <p>Gold {r.goldRate || '0'} + MC {r.mc || '0'} = {(Number(r.goldRate) + Number(r.mc)).toFixed(2)} per gram. Selling rate: {r.clientRate}.</p>}
+                          {r.sourceAmount !== undefined && <p>Source amount: {r.sourceAmount.toFixed(2)}</p>}
+                          <p className="text-muted-foreground">Item totals use the same pricing rules as orders, including whole-unit rounding and applicable payment adjustments.</p>
+                          <label className="block mt-1">Date of Live{cellIn('dateOfLive', 'w-36')}</label>
+                          {review.reasons.map((reason, n) => <p key={n} className="text-warning">{reason}</p>)}
+                          {review.required && <label className="flex items-center gap-2 mt-2">
+                            <input type="checkbox" disabled={review.errors.length > 0 || importing} checked={review.confirmed} onChange={e => confirmReview(review.key, e.target.checked)} />
+                            Checked against original, including sheet warnings
+                          </label>}
+                          {!review.required && <span className="text-success">Ready</span>}
+                        </td>
                       </tr>
                     );
                   })}
@@ -560,7 +620,7 @@ export default function UploadMasterlistFAB({ onRefresh, records = [] }: Props) 
               <Button variant="outline" onClick={() => setParsed(null)} disabled={importing} className="flex-1">
                 <ArrowLeft className="h-4 w-4 mr-1.5" /> Back
               </Button>
-              <Button onClick={doImport} disabled={importing} className="flex-1 font-cinzel uppercase tracking-widest">
+              <Button onClick={doImport} disabled={importing || unresolved > 0 || missingCols.length > 0} className="flex-1 font-cinzel uppercase tracking-widest">
                 {importing ? <><Loader2 className="h-4 w-4 mr-2 animate-spin" /> {progress || 'Importing…'}</> : `Import ${parsed.rows.length}`}
               </Button>
             </div>

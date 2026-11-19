@@ -189,19 +189,35 @@ async function readTitle(orig: ImageData, box: { x0: number; y0: number; x1: num
 const PAGE_MODE = "6";
 
 let workerPromise: Promise<any> | null = null;
+let deepWorkersPromise: Promise<any[]> | null = null;
+
+async function createOcrWorker() {
+  const { createWorker } = await import("tesseract.js");
+  return createWorker("eng", 1, {
+    workerPath: "/ocr/worker.min.js",
+    corePath: "/ocr/",
+    langPath: "/ocr",
+    gzip: true,
+  });
+}
+
 async function getWorker() {
   if (!workerPromise) {
-    workerPromise = (async () => {
-      const { createWorker } = await import("tesseract.js");
-      return createWorker("eng", 1, {
-        workerPath: "/ocr/worker.min.js",
-        corePath: "/ocr/",
-        langPath: "/ocr",
-        gzip: true,
-      });
-    })().catch((e) => { workerPromise = null; throw e; });
+    workerPromise = createOcrWorker().catch((e) => { workerPromise = null; throw e; });
   }
   return workerPromise;
+}
+
+/** High-accuracy reads share up to four local CPU workers. Leave one core free
+ * when possible so the browser stays usable while a photo is being checked. */
+async function getDeepWorkers(): Promise<any[]> {
+  if (!deepWorkersPromise) {
+    const cores = typeof navigator === "undefined" ? 1 : Math.max(1, navigator.hardwareConcurrency || 1);
+    const count = Math.min(4, Math.max(1, cores - 1));
+    deepWorkersPromise = Promise.all([getWorker(), ...Array.from({ length: count - 1 }, () => createOcrWorker())])
+      .catch((error) => { deepWorkersPromise = null; throw error; });
+  }
+  return deepWorkersPromise;
 }
 
 async function ocrLines(canvas: HTMLCanvasElement, mode?: string): Promise<{ lines: OcrLine[]; text: string }> {
@@ -229,6 +245,10 @@ async function ocrLines(canvas: HTMLCanvasElement, mode?: string): Promise<{ lin
  * the reading to numbers, which stops 3 / 1 / 7 being read as letters.
  */
 async function ocrRegion(src: HTMLCanvasElement, box: { x0: number; y0: number; x1: number; y1: number }, digits: boolean, scale = 2): Promise<OcrLine[]> {
+  return ocrRegionWithWorker(await getWorker(), src, box, digits, scale);
+}
+
+async function ocrRegionWithWorker(worker: any, src: HTMLCanvasElement, box: { x0: number; y0: number; x1: number; y1: number }, digits: boolean, scale = 2): Promise<OcrLine[]> {
   const x0 = Math.max(0, Math.floor(box.x0)), y0 = Math.max(0, Math.floor(box.y0));
   const w = Math.min(src.width, Math.ceil(box.x1)) - x0, h = Math.min(src.height, Math.ceil(box.y1)) - y0;
   if (w < 8 || h < 8) return [];
@@ -239,8 +259,7 @@ async function ocrRegion(src: HTMLCanvasElement, box: { x0: number; y0: number; 
   ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, c.width, c.height);
   ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = "high";
   ctx.drawImage(src, x0, y0, w, h, pad, pad, w * scale, h * scale);
-  const worker = await getWorker();
-  if (digits) await worker.setParameters({ tessedit_char_whitelist: "0123456789.,- ", tessedit_pageseg_mode: "6" });
+  if (digits) await worker.setParameters({ tessedit_char_whitelist: "0123456789.,- ", tessedit_pageseg_mode: "7" });
   try {
     const { lines } = await ocrLines(c);
     return lines.map((l) => ({ ...l, words: l.words.map((wd) => ({ ...wd, x0: x0 + (wd.x0 - pad) / scale, x1: x0 + (wd.x1 - pad) / scale, y0: y0 + (wd.y0 - pad) / scale, y1: y0 + (wd.y1 - pad) / scale })) }));
@@ -437,7 +456,7 @@ export function missingCodes(codes: string[]): string[] {
  * `history` is the customer's existing records; the photo is checked against
  * the same outsource's earlier orders (usual gold rate, MC, customer names).
  */
-export async function parseMasterlistImage(file: File, mapping?: MasterlistMapping, history: DatabaseRowType[] = []): Promise<PhotoParseResult> {
+export async function parseMasterlistImage(file: File, mapping?: MasterlistMapping, history: DatabaseRowType[] = [], crown?: boolean): Promise<PhotoParseResult> {
   const m = mapping ?? getMasterlistMapping();
   const { canvas, colLines, orig } = await prepareImage(file);
   let { lines, text } = await ocrLines(canvas, PAGE_MODE);
@@ -477,20 +496,33 @@ export async function parseMasterlistImage(file: File, mapping?: MasterlistMappi
     numBorder = left.length ? left[left.length - 1] : gramsHead.x0 - (gramsHead.x1 - gramsHead.x0) * 0.5;
   }
 
-  // Columns right of GRAMS, for rows with no weight in the grams column (a
-  // 24K gold bar weighed in its own GOLD BAR column, with "-" as the amount).
+  // A side-column row can have a price under AMOUNT and its weight farther right.
   const cx = (w: OcrWord) => (w.x0 + w.x1) / 2;
   const gc = gramsHead ? cx(gramsHead) : NaN;
   const rateHead = header.words.find((w) => /^RATE/.test(clean(w.text)) && (!Number.isFinite(gc) || cx(w) > gc));
   const amountHead = header.words.find((w) => /AMOUNT|TOTAL/.test(clean(w.text)));
-  const amountRight = amountHead ? (colLines.find((x) => x > cx(amountHead)) ?? amountHead.x1 + (amountHead.x1 - amountHead.x0) * 0.3) : NaN;
+  const nextHead = amountHead && header.words.find((w) => w.x0 > amountHead.x1 && /^(\d{2}K|GOLD|BAR|PULLOUT)/.test(clean(w.text)));
+  const amountRight = amountHead
+    ? colLines.find((x) => x > amountHead.x1 && (!nextHead || x < nextHead.x0))
+      ?? (nextHead ? (amountHead.x1 + nextHead.x0) / 2 : NaN)
+    : NaN;
   // Header words past AMOUNT (21KT, GOLD BAR, PULLOUT…) say which karat a side column holds.
   const sideHeads = Number.isFinite(amountRight) ? header.words.filter((w) => cx(w) > amountRight) : [];
   // Not plain "BAR": a BAR PENDANT / BAR NECKLACE is ordinary 18K jewellery.
   const GOLD_BAR = /GOLD\s*-?\s*BARS?\b/;
+  const barHeadIndex = header.words.findIndex((w, i) =>
+    GOLD_BAR.test(clean(w.text)) || (clean(w.text) === "GOLD" && /^BARS?$/.test(clean(header.words[i + 1]?.text ?? ""))));
+  const barHead = header.words[barHeadIndex];
+  const barEnd = barHead && (clean(barHead.text) === "GOLD" ? header.words[barHeadIndex + 1] : barHead);
+  const beforeBar = header.words[barHeadIndex - 1];
+  const afterBar = barEnd && header.words.find((w) => w.x0 > barEnd.x1 && /^PULLOUT/.test(clean(w.text)));
+  const barLeft = barHead && (colLines.filter((x) => x < barHead.x0).pop()
+    ?? (beforeBar && (beforeBar.x1 + barHead.x0) / 2));
+  const barRight = barEnd && (colLines.find((x) => x > barEnd.x1)
+    ?? (afterBar && (barEnd.x1 + afterBar.x0) / 2) ?? canvas.width);
 
   /** A row with no weight under GRAMS: rate and MC as usual, weight from a side column. */
-  type Side = { rate: number; mc: number; weight: number; tog: string; guessed: boolean };
+  type Side = { rate: number; mc: number; weight: number; tog: string; guessed: boolean; amount: number };
   type Row = { code: string; name: string; desc: string; nums: number[]; y0: number; y1: number; nx: number; side?: Side };
   const raw: Row[] = [];
   for (const l of lines.slice(headerIdx + 1)) {
@@ -506,7 +538,7 @@ export async function parseMasterlistImage(file: File, mapping?: MasterlistMappi
     }
     if (firstNum < 2) continue;
     const textWords = words.slice(1, firstNum);
-    const nums = words.slice(firstNum).filter((w) => isNumeric(w.text)).map((w) => readNumber(w.text)).filter(Number.isFinite);
+    let nums = words.slice(firstNum).filter((w) => isNumeric(w.text)).map((w) => readNumber(w.text)).filter(Number.isFinite);
     if (nums.length < 2) continue;
     let name: OcrWord[] = [], desc: OcrWord[] = [];
     if (Number.isFinite(nameDescBorder)) {
@@ -529,23 +561,45 @@ export async function parseMasterlistImage(file: File, mapping?: MasterlistMappi
     const numWords = words.slice(firstNum).filter((w) => isNumeric(w.text) && Number.isFinite(readNumber(w.text)));
     const first = numWords[0];
     const noGrams = !!first && !!gramsHead && !!rateHead && Math.abs(cx(first) - cx(rateHead)) < Math.abs(cx(first) - gc);
+    const mcHead = header.words.find(w => /^MC$/.test(clean(w.text)));
+    if (!noGrams && !GOLD_BAR.test(descTxt) && gramsHead && rateHead && mcHead && amountHead) {
+      // Keep each numeric cell in its printed column. Dropping an unreadable
+      // AMOUNT (e.g. 543.40 read as £43.40) must never shift MC into AMOUNT.
+      const heads = [gramsHead, rateHead, mcHead, amountHead];
+      nums = heads.map((head, index) => {
+        const cell = numWords.find(w => {
+          if (Number.isFinite(amountRight) && cx(w) >= amountRight) return false;
+          const nearest = heads.reduce((best, h, k) => Math.abs(cx(w) - cx(h)) < Math.abs(cx(w) - cx(heads[best])) ? k : best, 0);
+          return nearest === index;
+        });
+        return cell ? readNumber(cell.text) : 0;
+      });
+    }
     // No weight and no item: an empty template row with only the rate filled in.
     if (noGrams && !descTxt) continue;
     let side: Side | undefined;
     if (noGrams || GOLD_BAR.test(descTxt)) {
-      const left = Number.isFinite(amountRight) ? numWords.filter((w) => cx(w) < amountRight) : numWords.slice(0, 2);
-      const right = Number.isFinite(amountRight) ? numWords.filter((w) => cx(w) >= amountRight) : numWords.slice(2);
+      const priceIndex = noGrams ? 0 : 1;
+      const isBar = GOLD_BAR.test(descTxt);
+      const barWeight = isBar && barLeft !== undefined && barRight !== undefined
+        ? numWords.find((w) => cx(w) >= barLeft && cx(w) >= (amountRight || 0) && cx(w) < barRight)
+        : undefined;
+      const left = Number.isFinite(amountRight) ? numWords.filter((w) => cx(w) < amountRight) : numWords.filter((w) => w !== barWeight);
+      const right = numWords.filter((w) => cx(w) >= amountRight);
       // With grams present (a bar sheet laid out normally) the rate is the 2nd number.
       const lv = left.map((w) => readNumber(w.text));
-      const [rate, mc] = noGrams ? [lv[0], lv[1]] : [lv[1], lv[2]];
-      const wWord = right[0];
+      const [rate, mc] = lv.slice(priceIndex);
+      const amount = Number.isFinite(amountRight) || barWeight ? (lv[priceIndex + 2] ?? 0) : 0;
+      const sideHead = (w: OcrWord) => sideHeads.length
+        ? clean(sideHeads.reduce((a, b) => Math.abs(cx(b) - cx(w)) < Math.abs(cx(a) - cx(w)) ? b : a).text)
+        : "";
+      const wWord = isBar ? barWeight : right.find((w) => !/PULLOUT/.test(sideHead(w)));
       // A bar weight is often a whole number ("1", "100"): no decimal point inserted.
       const weight = wWord ? (/[.,]/.test(wWord.text) ? readNumber(wWord.text) : parseFloat(wWord.text.replace(/[^0-9]/g, ""))) : (!noGrams ? lv[0] : 0);
-      let head = "";
-      if (wWord && sideHeads.length) head = clean(sideHeads.reduce((a, b) => (Math.abs(cx(b) - cx(wWord)) < Math.abs(cx(a) - cx(wWord)) ? b : a)).text);
-      const tog = GOLD_BAR.test(descTxt) || /GOLD|BAR/.test(head) ? "24K" : (head.match(/^(\d{2})K/)?.[0] ?? "");
+      const head = wWord ? sideHead(wWord) : "";
+      const tog = isBar || /GOLD|BAR/.test(head) ? "24K" : (head.match(/^(\d{2})K/)?.[0] ?? "");
       const guessed = !(weight > 0);
-      side = { rate: rate > 0 && rate < 10 && rate * 100 >= 15 ? Math.round(rate * 100) : rate || 0, mc: mc || 0, weight: guessed ? 1 : weight, tog, guessed };
+      side = { rate: rate > 0 && rate < 10 && rate * 100 >= 15 ? Math.round(rate * 100) : rate || 0, mc: mc || 0, weight: guessed ? 1 : weight, tog, guessed, amount };
     }
     raw.push({ code: words[0].text, name: nameTxt, desc: descTxt, nums, y0: l.y0, y1: l.y1, nx: words[firstNum]?.x0 ?? numBorder, side });
   }
@@ -646,7 +700,12 @@ export async function parseMasterlistImage(file: File, mapping?: MasterlistMappi
     implied.forEach((v, i) => { if (implied.some((u, j) => j !== i && Math.abs(u - v) <= 0.05)) add(v, 0.5); });
     let best = 0, bestScore = -Infinity;
     for (const [v, reads] of candidates) {
-      const score = rows.reduce((n, r) => n + (check(r, v) ? 1 : 0), 0) * 10 + reads - (plausible(v) ? 0 : 1000);
+      // Exact printed arithmetic outranks a candidate that only works after
+      // changing a weight or amount. Historical rates are hints, not evidence
+      // strong enough to override this sheet's matching amounts.
+      const exact = rows.filter(r => check(r, v)?.exact).length;
+      const repairable = rows.filter(r => { const c = check(r, v); return c && !c.exact; }).length;
+      const score = exact * (rows.length + 1) * 100 + repairable * 10 + reads + (plausible(v) ? 1 : 0);
       if (score > bestScore) { bestScore = score; best = v; }
     }
     return best;
@@ -759,11 +818,14 @@ export async function parseMasterlistImage(file: File, mapping?: MasterlistMappi
 
   // ── Gold bar / side-column rows ──
   const sideRows = fixed.filter((r) => r.side);
+  const sideReview = sideRows.filter((r) => r.side!.guessed || (r.side!.amount > 0 && Math.abs(r.amount - r.side!.amount) > 1));
   const sideNotes: string[] = [];
   if (sideRows.length) {
     sideNotes.push(`${sideRows.map((r) => r.code).join(", ")}: ${sideRows.some((r) => r.side!.tog === "24K") ? "gold bar" : "side column"} item${sideRows.length === 1 ? "" : "s"}, priced at ${[...new Set(sideRows.map((r) => r.rate))].join(" / ")} + MC × weight (not the ${rateMode} rate).`);
     const guessed = sideRows.filter((r) => r.side!.guessed).map((r) => r.code);
     if (guessed.length) sideNotes.push(`Couldn't read the weight of ${guessed.join(", ")}, so 1 g was used. Check against the photo.`);
+    const mismatched = sideReview.filter((r) => !r.side!.guessed).map((r) => `${r.code} (sheet amount ${r.side!.amount}, calculated ${r.amount})`);
+    if (mismatched.length) sideNotes.push(`Side-column amounts don't match: ${mismatched.join(", ")}. Check against the photo.`);
     const otherRates = (head.rates ?? []).slice(1);
     const offRate = sideRows.filter((r) => otherRates.length && !otherRates.some((v) => Math.abs(v - r.rate) <= 0.01)).map((r) => `${r.code} ${r.rate}`);
     if (offRate.length) sideNotes.push(`Gold bar rate doesn't match the header (${otherRates.join(" / ")}): ${offRate.join("; ")}. Check against the photo.`);
@@ -824,7 +886,7 @@ export async function parseMasterlistImage(file: File, mapping?: MasterlistMappi
     put(y, col("amount"), String(r.amount));
   });
 
-  const parsed = parseMasterlistGrid(grid, m);
+  const parsed = await parseMasterlistGrid(grid, m, crown);
   if (!title) warnings.push("Couldn't read the liver name — set it below.");
   // Never lose a row silently: say which rows were read but not imported, and
   // which codes in the numbered run never showed up.
@@ -867,7 +929,7 @@ export async function parseMasterlistImage(file: File, mapping?: MasterlistMappi
     pageName: parsed.pageName || title,
     liveDate: parsed.liveDate || liveDate,
     globalRate: parsed.globalRate || rateMode,
-    flagged: flagged.map((i) => fixed[i]?.code).filter(Boolean),
+    flagged: [...flagged.map((i) => fixed[i]?.code).filter(Boolean), ...sideReview.map((r) => r.code)],
     rowNotes,
     warnings,
   };

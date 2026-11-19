@@ -67,6 +67,8 @@ export interface ParsedMasterlistRow {
   tabbyIncluded?: string;
   /** Something to double-check before importing (shown highlighted in the preview). */
   warning?: string;
+  /** Amount read from the source, retained only for import review. */
+  sourceAmount?: number;
 }
 
 function regionFromCurrency(currency: string): string {
@@ -134,6 +136,20 @@ const HEADER_WORDS = /^(code|order id|item description|description|customer name
 
 /** Parse a single already-extracted sheet grid into masterlist rows + metadata,
  * using the customer's configured column mapping. */
+export async function isCrownImport() {
+  return isCrownTenant((await getMyContext()).activeTenant);
+}
+
+export function importCategoryForMc(m: Pick<ResolvedMasterlistMapping, "priceMode" | "mcCategories">, mc: number, crown: boolean) {
+  if (m.priceMode === "rate_plus_mc") {
+    const pricing = getPricing();
+    const rules = pricing.mcCategoryRules ?? (crown ? pricing.crownMcCategories ?? RATE_PLUS_MC_CATEGORIES : {});
+    const fixed = categoryForMc(rules, mc);
+    if (fixed) return fixed;
+  }
+  return categoryForMc(m.mcCategories, mc);
+}
+
 function parseSheetGrid(data: unknown[][], m: ResolvedMasterlistMapping, raw?: unknown[][], crown = false): {
   rows: ParsedMasterlistRow[];
   liverName: string;
@@ -208,12 +224,7 @@ function parseSheetGrid(data: unknown[][], m: ResolvedMasterlistMapping, raw?: u
   const mcTiers = suggestMcCategories(fileMcs);
   const catFor = (mc: number, desc: string) => {
     // Fixed bands beat older saved mappings and file-relative tier guesses.
-    if (m.priceMode === "rate_plus_mc") {
-      const rules = getPricing().mcCategoryRules ?? (crown ? getPricing().crownMcCategories ?? RATE_PLUS_MC_CATEGORIES : {});
-      const fixed = categoryForMc(rules, mc);
-      if (fixed) return fixed;
-    }
-    const saved = categoryForMc(m.mcCategories, mc);
+    const saved = importCategoryForMc(m, mc, crown);
     if (saved) return saved;
     if (/\(?\bEF\b\)?\s*$/.test(desc)) return "Special Price EF";
     if (/\(?\bSP\b\)?\s*$/.test(desc)) return "Special Price";
@@ -262,11 +273,14 @@ function parseSheetGrid(data: unknown[][], m: ResolvedMasterlistMapping, raw?: u
       // Row's own rate, else the sheet's RATE cell (not yet the daily rate).
       const base = rowRate || (rowGold > 0 ? goldRate : 0) || up(globalRate);
       if (base > 0) {
+        // In Rate + MC sheets the row's RATE is also its gold rate. Do not
+        // retain a daily/header fallback (especially for separate gold bars).
+        goldRate = base;
         if (!mc && fileAmount > 0 && gramsN > 0) {
           // MC blank: work it out from the file's AMOUNT.
           const derived = Math.round((fileAmount / gramsN - base) * 100) / 100;
           if (derived >= 0) mc = Math.round(derived);
-          category = category || catFor(mc, itemDescription) || m.defaultCategory;
+          if (mc > 0) category = cell(row, m.col.category) || catFor(mc, itemDescription) || m.defaultCategory;
         }
         if (!mc) mc = getMakingCharge(category);
         clientRate = base + mc;
@@ -327,6 +341,7 @@ function parseSheetGrid(data: unknown[][], m: ResolvedMasterlistMapping, raw?: u
       source,
       category,
       goldRate: String(goldRate),
+      sourceAmount: fileAmount,
       mc: mc ? String(mc) : "",
       clientRate: String(clientRate),
       currency,
@@ -345,8 +360,8 @@ function parseSheetGrid(data: unknown[][], m: ResolvedMasterlistMapping, raw?: u
 }
 
 /** Parse an already-built grid (e.g. from a photo) with the customer's layout. */
-export function parseMasterlistGrid(data: unknown[][], mapping?: MasterlistMapping) {
-  return parseSheetGrid(data, resolveMasterlistMapping(mapping ?? getMasterlistMapping()));
+export async function parseMasterlistGrid(data: unknown[][], mapping?: MasterlistMapping, crown?: boolean) {
+  return parseSheetGrid(data, resolveMasterlistMapping(mapping ?? getMasterlistMapping()), undefined, crown ?? await isCrownImport());
 }
 
 /**
@@ -361,7 +376,7 @@ export function parseMasterlistGrid(data: unknown[][], mapping?: MasterlistMappi
  * FIRST sheet that produced rows (kept for the existing upload-label caller);
  * `sheets` gives the full per-sheet breakdown.
  */
-export async function parseMasterlistFile(file: File, mappingOverride?: MasterlistMapping): Promise<{
+export async function parseMasterlistFile(file: File, mappingOverride?: MasterlistMapping, crownOverride?: boolean): Promise<{
   rows: ParsedMasterlistRow[];
   liverName: string;
   pageName: string;
@@ -379,7 +394,7 @@ export async function parseMasterlistFile(file: File, mappingOverride?: Masterli
   const resolved = resolveMasterlistMapping(mappingOverride ?? getMasterlistMapping());
   // Resolve the active workspace from the server; never infer Crown from rates
   // or a cached pricing config that could belong to a different tenant.
-  const crown = isCrownTenant((await getMyContext()).activeTenant);
+  const crown = crownOverride ?? await isCrownImport();
 
   const rows: ParsedMasterlistRow[] = [];
   const sheets: ParsedSheetSummary[] = [];
