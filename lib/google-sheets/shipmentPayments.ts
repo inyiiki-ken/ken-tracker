@@ -32,7 +32,7 @@ export async function setShipmentStoreCredit(input: {
 }): Promise<void> {
   const email = await requireRole(ROLES);
   const { accountKey, batchKey, amount, previous } = input;
-  if (batchKey === 'pending' || (amount !== null && (!Number.isSafeInteger(amount) || amount < 0 || amount > 100000000))) {
+  if (batchKey.startsWith('pending') || (amount !== null && (!Number.isSafeInteger(amount) || amount < 0 || amount > 100000000))) {
     throw new Error('Enter a whole AED amount for a shipped batch.');
   }
   const db = await readDatabase();

@@ -66,7 +66,12 @@ export function creditOverridePrefix(accountKey: string, batchKey: string): stri
 export function accountBatchIdentity(r: DatabaseRowType, timezoneOffsetMs?: number): { key: string; date?: string; pending: boolean; uncertain: boolean } {
   const stage = fulfilmentStage(r.status);
   const shipped = stage === 'dispatched' || stage === 'delivered';
-  if (!shipped) return { key: 'pending', pending: true, uncertain: false };
+  // Unshipped items split in two: the ones already moved to a "For …" status
+  // (For International Shipment, For COD, For Pick Up…) are the next parcel and
+  // can be paid in one go; the rest (hold, layaway, reseller…) wait apart.
+  if (!shipped) return stage === 'pullout'
+    ? { key: 'pending', pending: true, uncertain: false }
+    : { key: 'pending:waiting', pending: true, uncertain: false };
   const date = r.dispatchDate || r.deliveredDate || undefined;
   if (r.shipmentId?.trim()) return { key: r.shipmentId.trim(), date, pending: false, uncertain: !r.dispatchDate };
   const day = businessDay(date, timezoneOffsetMs);
@@ -100,9 +105,12 @@ export function buildAccount(key: string, source: DatabaseRowType[]): CustomerAc
   // Unshipped items form one provisional next shipment, with its estimated fee.
   let totalCharges = 0;
   let credit = 0;
+  // The ready parcel carries the estimated fee; items not ready yet add none
+  // while it exists (they get their fee when they move to a "For …" status).
+  const hasReady = batches.some(b => b.key === 'pending');
   for (const batch of batches) {
     const feeRow = shippingFeeRow(batch.records);
-    batch.shipping = feeRow ? calcShippingFee(feeRow) : 0;
+    batch.shipping = feeRow && !(batch.key === 'pending:waiting' && hasReady) ? calcShippingFee(feeRow) : 0;
     const unpaidWithoutShipping = batch.records.map(r => ({ ...r, shipmentPaymentAED: 0, freeSf: 'TRUE', downpayment: '', amountReceived: '',
       la1MonthPayment: '', la2MonthPayment: '', la3MonthPayment: '', la4MonthPayment: '' }));
     batch.charges = cents(calcGroupBalance(unpaidWithoutShipping) + batch.shipping);
@@ -126,6 +134,11 @@ export function buildAccount(key: string, source: DatabaseRowType[]): CustomerAc
     due: cents(batches.reduce((s, b) => s + b.due, 0)), credit,
     verification: records.some(r => /payment for verification/i.test(r.status || '')),
   };
+}
+
+/** Title of an unshipped batch. */
+export function pendingBatchLabel(batch: Pick<AccountBatch, 'key'>): string {
+  return batch.key === 'pending' ? 'Ready to ship / next shipment' : 'Not ready yet (unshipped)';
 }
 
 export function buildAccounts(records: DatabaseRowType[]): CustomerAccount[] {

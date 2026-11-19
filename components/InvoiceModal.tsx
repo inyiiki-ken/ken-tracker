@@ -15,7 +15,7 @@ import { parseDateRobust } from '@/lib/calculations';
 import { toast } from 'sonner';
 import { ORDER_BOXES, OrderBox, isStillWithAdmin, orderBox, shipmentDay } from '@/lib/fulfilment';
 import { formatDate } from '@/lib/formatters';
-import type { AccountBatch } from '@/lib/accountsLedger';
+import { pendingBatchLabel, type AccountBatch } from '@/lib/accountsLedger';
 
 interface Props {
   records: DatabaseRowType[];
@@ -294,7 +294,7 @@ export default function InvoiceModal({ records, onClose, initialBox, priorRecord
                 <SelectContent>
                   {accountBatches.map((batch, index) => (
                     <SelectItem key={batch.key} value={batch.key}>
-                      {batch.pending ? 'Unshipped / next shipment' : `Batch ${index + 1}${batch.date ? ` · ${formatDate(batch.date)}` : ''}`}
+                      {batch.pending ? pendingBatchLabel(batch) : `Batch ${index + 1}${batch.date ? ` · ${formatDate(batch.date)}` : ''}`}
                     </SelectItem>
                   ))}
                 </SelectContent>

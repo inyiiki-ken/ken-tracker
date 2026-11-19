@@ -10,7 +10,7 @@ import { Button } from '@/components/ui/button';
 import { formatDate } from '@/lib/formatters';
 import { calcTotalPaid } from '@/lib/calculations';
 import type { ShipmentPayment } from '@/lib/shipmentPayments';
-import type { AccountBatch } from '@/lib/accountsLedger';
+import { pendingBatchLabel, type AccountBatch } from '@/lib/accountsLedger';
 import AddShipmentPaymentDialog from './AddShipmentPaymentDialog';
 import { Input } from '@/components/ui/input';
 import { setShipmentStoreCredit } from '@/lib/google-sheets/shipmentPayments';
@@ -64,8 +64,8 @@ export default function AccountsCustomerCard({ account, onUpdate, payments, paym
       <Button size="sm" variant="outline" onClick={() => setInvoice(true)} disabled={!records.length}><FileText className="h-3.5 w-3.5 mr-1" />Customer invoice</Button>
       {batches.map((batch, i) => <div key={batch.key}>
         <AccountsClientCard minerName={name} records={batch.records} batch={batch}
-          title={batch.pending ? 'Unshipped / next shipment' : batch.date ? `${batch.records.some(r => r.dispatchDate) ? 'Shipped' : 'Delivered'} ${formatDate(batch.date)} · Batch ${i + 1}` : 'Shipment date unknown'} onUpdate={onUpdate} />
-        <Button className="mb-3" size="sm" disabled={!paymentsReady} onClick={() => setPaymentBatch(batch)}>Add payment · {batch.pending ? 'Next shipment' : `Batch ${i + 1}`}</Button>
+          title={batch.pending ? pendingBatchLabel(batch) : batch.date ? `${batch.records.some(r => r.dispatchDate) ? 'Shipped' : 'Delivered'} ${formatDate(batch.date)} · Batch ${i + 1}` : 'Shipment date unknown'} onUpdate={onUpdate} />
+        <Button className="mb-3" size="sm" disabled={!paymentsReady} onClick={() => setPaymentBatch(batch)}>Add payment · {batch.pending ? (batch.key === 'pending' ? 'Ready to ship' : 'Not ready yet') : `Batch ${i + 1}`}</Button>
         {!batch.pending && <Button className="mb-3 ml-2" size="sm" variant="outline" disabled={!paymentsReady || creditSaving} onClick={() => {
           setCreditError('');
           setCreditEdit({ key: batch.key, amount: String(batch.creditOverride ?? Math.round(batch.calculatedCredit ?? 0)) });

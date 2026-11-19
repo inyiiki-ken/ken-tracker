@@ -147,4 +147,21 @@ check('pickup remains free and pending shipping is included once', () => {
   assert.deepEqual(a.batches.map(b => b.shipping), [0, 450]);
   assert.equal(a.batches[1].due, 574);
 });
+check('reseller items moved to For International Shipment form their own payable batch', () => {
+  applyPricingConfig(JSON.stringify({ shippingFeeInternational: 450 }));
+  const intl = { freeSf: '', shipmentId: '', dispatchDate: '', locationOfMiner: 'INTERNATIONAL', modeOfPayment: 'Bank Transfer AED' };
+  const a = one([
+    row(1),
+    row(2, { ...intl, status: 'For International Shipment' }),
+    row(3, { ...intl, status: 'For International Shipment' }),
+    row(4, { ...intl, status: 'Reseller' }),
+  ]);
+  assert.deepEqual(a.batches.map(b => [b.key, b.records.map(r => r.id)]), [['s1', [1]], ['pending', [2, 3]], ['pending:waiting', [4]]]);
+  // One estimated international fee, on the parcel that is ready.
+  assert.deepEqual(a.batches.map(b => b.shipping), [0, 450, 0]);
+  assert.equal(a.batches[1].due, 650);
+  // Nothing ready yet: the waiting items carry the estimate, as before.
+  const b = one([row(4, { ...intl, status: 'Reseller' })]);
+  assert.deepEqual(b.batches.map(x => [x.key, x.shipping]), [['pending:waiting', 450]]);
+});
 console.log(`${count} accounts ledger checks passed.`);
