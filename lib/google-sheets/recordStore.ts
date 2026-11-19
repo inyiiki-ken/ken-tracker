@@ -169,8 +169,7 @@ export async function writeRowsByCells(
         // A row copied by hand in the sheet carries the same Row Key as the
         // original. Before, the edit went to the LAST copy — so changing the
         // status of one item silently changed the other one instead.
-        if (found.includes(u.rowNumber)) resolved.set(i, u.rowNumber);
-        else if (found.length === 1) resolved.set(i, found[0]);
+        if (found.length === 1) resolved.set(i, found[0]);
         else if (found.length > 1) throw new Error(
           `Rows ${found.join(", ")} in the sheet have the same Row Key (a row was copied by hand). Clear the Row Key cell on the copied row, then refresh and try again.`
         );
