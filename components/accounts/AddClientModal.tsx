@@ -204,7 +204,8 @@ export default function AddClientModal({ onClose, userFirstName, userEmail, onRe
       return;
     }
     const karat = karatOf(form.category);
-    const rate = karat ? ratesFor(resellerCfg, memProfile.name, form.dateOfLive).rates[karat] : undefined;
+    // Per PC has no saved per-gram rate: the piece price is typed in.
+    const rate = karat && karat !== 'PC' ? ratesFor(resellerCfg, memProfile.name, form.dateOfLive).rates[karat] : undefined;
     const value = rate ? String(rate) : '';
     setForm(p => (p.clientRate === value ? p : { ...p, clientRate: value }));
     setRemembered(r => {

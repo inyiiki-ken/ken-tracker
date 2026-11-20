@@ -12,9 +12,9 @@ import { getResellerConfig, saveResellerConfig, importRows, bulkUpdateRecords, r
 import { parseDateRobust } from "@/lib/calculations";
 import { todayISO } from "@/lib/liveSellers";
 import {
-  RESELLER_KARATS, KARAT_CATEGORY, buildDescription, itemAmount, itemFromRecord, karatOf, knownResellers, newItem, parsePastedItems,
+  RESELLER_KARATS, RESELLER_ITEM_TYPES, ITEM_TYPE_LABEL, buildDescription, itemAmount, itemCategory, itemRate, itemFromRecord, karatOf, knownResellers, newItem, parsePastedItems,
   parseResellerConfig, ratesFor, resellerKey, round2, withRates,
-  type ResellerConfig, type ResellerItem, type ResellerKarat, type ResellerRates,
+  type ResellerConfig, type ResellerItem, type ResellerItemType, type ResellerKarat, type ResellerRates,
 } from "@/lib/resellers";
 import type { DatabaseRowType } from "@/types";
 
@@ -153,7 +153,10 @@ export default function ResellerImportDialog({ open, onClose, onImported, record
   const filled = items.filter((it) => it.item.trim() || it.grams.trim());
   const totalGrams = round2(filled.reduce((s, it) => s + (parseFloat(it.grams) || 0), 0));
   const totalAmount = round2(filled.reduce((s, it) => s + itemAmount(it, rateNums), 0));
-  const problems = filled.filter((it) => !(parseFloat(it.grams) > 0) || !it.customer.trim());
+  // Grams are needed for items priced by the gram; a Per PC item needs its price instead.
+  const rowProblem = (it: ResellerItem) => !it.customer.trim()
+    || (it.karat === "PC" ? !(parseFloat(it.price ?? "") > 0) : !(parseFloat(it.grams) > 0));
+  const problems = filled.filter(rowProblem);
   // Types used by the items that have no rate yet (every amount shows 0 until filled).
   const missingRates = RESELLER_KARATS.filter((k) => !rateNums[k] && filled.some((it) => it.karat === k));
   const showRates = () => {
@@ -218,7 +221,7 @@ export default function ResellerImportDialog({ open, onClose, onImported, record
       showRates();
       return toast.error(`Enter ${who}'s ${missingRates.join(" / ")} rate${missingRates.length === 1 ? "" : "s"} for ${date} in the rate boxes at the top.`);
     }
-    if (problems.length) return toast.error(`${problems.length} item${problems.length === 1 ? " needs" : "s need"} a customer name and grams.`);
+    if (problems.length) return toast.error(`${problems.length} item${problems.length === 1 ? " needs" : "s need"} a customer name and grams (or a price for Per PC).`);
     setSaving(true);
     try {
       // Remember today's rates for this reseller (every PC sees them).
@@ -252,14 +255,15 @@ export default function ResellerImportDialog({ open, onClose, onImported, record
           const rec = it.record!;
           const desc = buildDescription(it);
           const lines = String(rec.auditTrail ?? "").split("\n").filter(Boolean);
-          lines.push(`${stamp} | Reseller invoice | Billed to ${who} (customer "${rec.minerName ?? ""}", description "${rec.itemDescription ?? ""}" → "${desc}", rate ${rateNums[it.karat]})`);
+          lines.push(`${stamp} | Reseller invoice | Billed to ${who} (customer "${rec.minerName ?? ""}", description "${rec.itemDescription ?? ""}" → "${desc}", rate ${itemRate(it, rateNums)})`);
           const fields: Partial<DatabaseRowType> = {
             ...(contact as Partial<DatabaseRowType>),
             minerName: who,
             itemDescription: desc,
-            grams: parseFloat(it.grams),
-            category: KARAT_CATEGORY[it.karat],
-            clientRate: rateNums[it.karat],
+            grams: parseFloat(it.grams) || 0,
+            category: itemCategory(it),
+            clientRate: itemRate(it, rateNums),
+            ...(it.karat === "PC" ? { qty: 1 } : {}),
             currency: "AED",
             auditTrail: lines.slice(-20).join("\n"),
           };
@@ -273,9 +277,10 @@ export default function ResellerImportDialog({ open, onClose, onImported, record
         dateOfLive: date,
         minerName: who,
         itemDescription: buildDescription(it),
-        grams: String(parseFloat(it.grams)),
-        category: KARAT_CATEGORY[it.karat],
-        clientRate: String(rateNums[it.karat]),
+        grams: String(parseFloat(it.grams) || ""),
+        category: itemCategory(it),
+        clientRate: String(itemRate(it, rateNums)),
+        ...(it.karat === "PC" ? { qty: "1" } : {}),
         currency: "AED",
         modeOfSale: "Reseller",
         liverAdminRemarks: `Reseller import for ${it.customer.trim().toUpperCase()}`,
@@ -428,7 +433,8 @@ export default function ResellerImportDialog({ open, onClose, onImported, record
               </thead>
               <tbody>
                 {items.map((it) => {
-                  const bad = (it.item.trim() || it.grams.trim()) && (!(parseFloat(it.grams) > 0) || !it.customer.trim());
+                  const pc = it.karat === "PC";
+                  const bad = (it.item.trim() || it.grams.trim()) && rowProblem(it);
                   return (
                     <tr key={it.key} className="align-top">
                       <td className="px-1 py-1">
@@ -440,15 +446,22 @@ export default function ResellerImportDialog({ open, onClose, onImported, record
                         <Input value={it.customer} onChange={(e) => setItem(it.key, { customer: e.target.value })} className={`h-8 text-sm uppercase ${bad && !it.customer.trim() ? "border-destructive" : ""}`} />
                       </td>
                       <td className="px-1 py-1">
-                        <Input inputMode="decimal" value={it.grams} onChange={(e) => setItem(it.key, { grams: e.target.value })} className={`h-8 text-sm ${bad && !(parseFloat(it.grams) > 0) ? "border-destructive" : ""}`} />
+                        <Input inputMode="decimal" value={it.grams} placeholder={pc ? "weight" : ""} onChange={(e) => setItem(it.key, { grams: e.target.value })} className={`h-8 text-sm ${bad && !pc && !(parseFloat(it.grams) > 0) ? "border-destructive" : ""}`} />
                       </td>
                       <td className="px-1 py-1">
-                        <Select value={it.karat} onValueChange={(v) => setItem(it.key, { karat: v as ResellerKarat })}>
+                        <Select value={it.karat} onValueChange={(v) => setItem(it.key, { karat: v as ResellerItemType })}>
                           <SelectTrigger className="h-8 text-sm"><SelectValue /></SelectTrigger>
-                          <SelectContent>{RESELLER_KARATS.map((k) => <SelectItem key={k} value={k}>{k}</SelectItem>)}</SelectContent>
+                          <SelectContent>{RESELLER_ITEM_TYPES.map((k) => <SelectItem key={k} value={k}>{ITEM_TYPE_LABEL[k]}</SelectItem>)}</SelectContent>
                         </Select>
                       </td>
-                      <td className="px-1 py-1 text-right tabular-nums pt-2.5">{itemAmount(it, rateNums).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                      <td className="px-1 py-1 text-right tabular-nums pt-2.5">
+                        {pc ? (
+                          // Per PC: the piece price is typed here; grams are only the weight.
+                          <Input inputMode="decimal" aria-label="Price per piece (AED)" placeholder="Price" value={it.price ?? ""}
+                            onChange={(e) => setItem(it.key, { price: e.target.value })}
+                            className={`h-8 text-sm text-right -mt-1.5 ${bad && !(parseFloat(it.price ?? "") > 0) ? "border-destructive" : ""}`} />
+                        ) : itemAmount(it, rateNums).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </td>
                       <td className="px-1 py-1">
                         <Button type="button" size="icon" variant="ghost" className="h-8 w-8" onClick={() => setItems((xs) => xs.filter((x) => x.key !== it.key))}>
                           <Trash2 className="h-4 w-4" />
@@ -470,7 +483,7 @@ export default function ResellerImportDialog({ open, onClose, onImported, record
                 Enter the {missingRates.join(" / ")} rate{missingRates.length === 1 ? "" : "s"} at the top
               </button>
             )}
-            {problems.length > 0 && <span className="text-destructive ml-2">{problems.length} need a customer or grams</span>}
+            {problems.length > 0 && <span className="text-destructive ml-2">{problems.length} need a customer, grams or a Per PC price</span>}
           </div>
           <Button variant="outline" onClick={onClose} disabled={saving}>Cancel</Button>
           <Button onClick={save} disabled={saving || !!reading || !filled.length}>

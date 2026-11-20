@@ -25,6 +25,22 @@ export const KARAT_CATEGORY: Record<ResellerKarat, string> = {
 
 export type ResellerRates = Record<ResellerKarat, number>;
 
+/** Row type: priced by the gram (18K / SP / EF) or by the piece (PC = its own price). */
+export type ResellerItemType = ResellerKarat | "PC";
+export const RESELLER_ITEM_TYPES: ResellerItemType[] = [...RESELLER_KARATS, "PC"];
+export const ITEM_TYPE_LABEL: Record<ResellerItemType, string> = { "18K": "18K", SP: "SP", EF: "EF", PC: "Per PC" };
+const PC_CATEGORY = "Per PC";
+
+/** Category written on the record for a row. */
+export function itemCategory(it: Pick<ResellerItem, "karat">): string {
+  return it.karat === "PC" ? PC_CATEGORY : KARAT_CATEGORY[it.karat];
+}
+
+/** Rate saved on the record: the type's rate per gram, or the piece price. */
+export function itemRate(it: Pick<ResellerItem, "karat" | "price">, rates: Partial<ResellerRates>): number {
+  return it.karat === "PC" ? round2(parseFloat(it.price ?? "") || 0) : rates[it.karat] || 0;
+}
+
 export interface ResellerConfig {
   /** Keyed by reseller name in upper case. */
   resellers: Record<string, { rates: Record<string, Partial<ResellerRates>> }>;
@@ -37,7 +53,9 @@ export interface ResellerItem {
   /** The reseller's own customer (goes into the description). */
   customer: string;
   grams: string;
-  karat: ResellerKarat;
+  karat: ResellerItemType;
+  /** Per PC only: the price of the piece (grams are then only its weight). */
+  price?: string;
   /** Anything the reader was unsure about, shown next to the row. */
   note?: string;
   /** Set when the item is an existing Admin row being moved to the reseller. */
@@ -87,8 +105,9 @@ export function round2(n: number): number {
   return Math.round(n * 100) / 100;
 }
 
-/** Amount for one item: grams × the reseller's rate for its type. */
+/** Amount for one item: grams × the reseller's rate for its type; a Per PC item is its own price. */
 export function itemAmount(it: ResellerItem, rates: Partial<ResellerRates>): number {
+  if (it.karat === "PC") return itemRate(it, rates);
   const g = parseFloat(it.grams) || 0;
   return round2(g * (rates[it.karat] || 0));
 }
@@ -105,15 +124,17 @@ export function buildDescription(it: ResellerItem): string {
   // "PLAIN LOOP SP" / "HOOP (SP)": the type is added once at the end below.
   let item = cleanText(it.item).replace(/\((SP|EF)\)/g, "").replace(/\s+(SP|EF)\s*$/, "").replace(/\s+/g, " ").trim();
   if (item && !/\b(18K|21K|22K|24K|GOLD|SILVER)\b/.test(item)) item = `18K GOLD ${item}`;
-  if (it.karat !== "18K") item = `${item} (${it.karat})`;
+  if (it.karat === "SP" || it.karat === "EF") item = `${item} (${it.karat})`;
   const cust = cleanText(it.customer);
   if (!cust || item.includes(cust)) return item;
   return `${item} - ${cust}`;
 }
 
 /** "SP", "(sp)", "special price EF"… → a type, or null. */
-export function karatOf(s: string): ResellerKarat | null {
+export function karatOf(s: string): ResellerItemType | null {
   const t = String(s ?? "").toUpperCase();
+  // Sold by the piece (same rule as the rest of the app).
+  if (/PER\s*PC|SCREW\s*TYPE|DIAMOND/.test(t)) return "PC";
   if (/\bEF\b/.test(t)) return "EF";
   if (/\bSP\b|SPECIAL/.test(t)) return "SP";
   if (/\b18\s*K\b|\bGOLD NORMAL\b/.test(t)) return "18K";
@@ -126,7 +147,11 @@ export function itemFromRecord(r: DatabaseRowType): ResellerItem {
     item: String(r.itemDescription ?? ""),
     customer: String(r.minerName ?? ""),
     grams: r.grams ? String(r.grams) : "",
-    karat: karatOf(String(r.category ?? "")) ?? karatOf(String(r.itemDescription ?? "")) ?? "18K",
+    // "SCREW TYPE EARRINGS" is sold by the piece even when its row says Gold Normal.
+    karat: karatOf(String(r.itemDescription ?? "")) === "PC" ? "PC"
+      : karatOf(String(r.category ?? "")) ?? karatOf(String(r.itemDescription ?? "")) ?? "18K",
+    // A per-piece item keeps the price already on its row (e.g. 199).
+    price: r.clientRate ? String(r.clientRate) : "",
     record: r,
   });
 }
@@ -150,7 +175,7 @@ export function parsePastedItems(text: string): ResellerItem[] {
       .map((p) => p.trim())
       .filter(Boolean);
     let grams = "";
-    let karat: ResellerKarat | null = null;
+    let karat: ResellerItemType | null = null;
     const texts: string[] = [];
     for (const p of parts) {
       const g = p.match(GRAMS_RE);
