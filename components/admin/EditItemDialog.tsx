@@ -8,6 +8,7 @@ import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { DatabaseRowType } from '@/types';
 import { getFieldLabel } from '@/lib/labelConfig';
+import { getOptions } from '@/lib/optionsConfig';
 import { toast } from 'sonner';
 
 const LOCATION_OPTIONS = ['Local', 'Pinas', 'Dubai'];
@@ -27,6 +28,9 @@ export default function EditItemDialog({ record, onSave, onClose }: Props) {
   const [currency, setCurrency] = useState(record.currency || 'AED');
   const [grams, setGrams] = useState(record.grams != null ? String(record.grams) : '');
   const [location, setLocation] = useState(record.locationOfMiner || '');
+  // Category decides the MC and cost (e.g. a Tabby price imported as Special Price EF).
+  const [category, setCategory] = useState(record.category || '');
+  const categoryOptions = getOptions('category', record.category);
   const [saving, setSaving] = useState(false);
 
 
@@ -41,6 +45,7 @@ export default function EditItemDialog({ record, onSave, onClose }: Props) {
     fields.currency = currency;
     if (grams !== '') fields.grams = parseFloat(grams) || 0;
     if (location) fields.locationOfMiner = location;
+    if (category && category !== (record.category || '')) fields.category = category;
     try {
       await onSave(fields);
       onClose();
@@ -95,6 +100,19 @@ export default function EditItemDialog({ record, onSave, onClose }: Props) {
                 placeholder="e.g. 220"
               />
             </div>
+          </div>
+          <div>
+            <Label className="text-xs text-muted-foreground">Category</Label>
+            <Select value={category} onValueChange={setCategory}>
+              <SelectTrigger className="h-8 text-xs mt-0.5 bg-background border-border">
+                <SelectValue placeholder="Select category..." />
+              </SelectTrigger>
+              <SelectContent className="bg-popover border-border">
+                {categoryOptions.map(opt => (
+                  <SelectItem key={opt} value={opt} className="text-xs">{opt}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
           <div>
             <Label className="text-xs text-muted-foreground">Grams</Label>
