@@ -568,7 +568,7 @@ export async function parseMasterlistImage(file: File, mapping?: MasterlistMappi
 
   /** A row with no weight under GRAMS: rate and MC as usual, weight from a side column. */
   type Side = { rate: number; mc: number; weight: number; tog: string; guessed: boolean; amount: number };
-  type Row = { code: string; name: string; desc: string; nums: number[]; y0: number; y1: number; nx: number; side?: Side; pc?: number };
+  type Row = { code: string; name: string; desc: string; nums: number[]; y0: number; y1: number; nx: number; side?: Side; pc?: number; dx0?: number; dx1?: number };
   const raw: Row[] = [];
   // Item lines the reader couldn't use (e.g. a per-piece line with only its
   // price, "SCREW TYPE EARRINGS 199"): reported, never dropped silently.
@@ -638,7 +638,7 @@ export async function parseMasterlistImage(file: File, mapping?: MasterlistMappi
     const gramsCellInk = !!gramsHead && !!rateHead && words.slice(firstNum).some((w) => cx(w) < (gc + cx(rateHead)) / 2);
     const noGrams = !pcPrice && !gramsCellInk && !!first && !!gramsHead && !!rateHead && Math.abs(cx(first) - cx(rateHead)) < Math.abs(cx(first) - gc);
     if (pcPrice) {
-      raw.push({ code: hasCode ? words[0].text : "", name: nameTxt, desc: descTxt, nums, y0: l.y0, y1: l.y1, nx: words[firstNum]?.x0 ?? numBorder, pc: pcPrice });
+      raw.push({ code: hasCode ? words[0].text : "", name: nameTxt, desc: descTxt, nums, y0: l.y0, y1: l.y1, nx: words[firstNum]?.x0 ?? numBorder, pc: pcPrice, dx0: desc[0]?.x0, dx1: desc[desc.length - 1]?.x1 });
       continue;
     }
     // MC header misread as "KC"/"NC": the header word between RATE and AMOUNT.
@@ -686,14 +686,16 @@ export async function parseMasterlistImage(file: File, mapping?: MasterlistMappi
       const guessed = !(weight > 0);
       side = { rate: rate > 0 && rate < 10 && rate * 100 >= 15 ? Math.round(rate * 100) : rate || 0, mc: mc || 0, weight: guessed ? 1 : weight, tog, guessed, amount };
     }
-    raw.push({ code: hasCode ? words[0].text : "", name: nameTxt, desc: descTxt, nums, y0: l.y0, y1: l.y1, nx: words[firstNum]?.x0 ?? numBorder, side });
+    raw.push({ code: hasCode ? words[0].text : "", name: nameTxt, desc: descTxt, nums, y0: l.y0, y1: l.y1, nx: words[firstNum]?.x0 ?? numBorder, side, dx0: desc[0]?.x0, dx1: desc[desc.length - 1]?.x1 });
   }
   if (!raw.length) throw new Error("Found the header but no item rows. Try a clearer screenshot.");
 
   // A description that wraps onto two lines ("INTERLOCK CARTIER / NECKLACE")
   // makes its row taller and is read as junk on one line. Read that row's
   // description cell again on its own, every line of it.
-  if (Number.isFinite(nameDescBorder) && Number.isFinite(numBorder) && raw.length >= 3) {
+  // Junk like "TE AE": only 1–3 letter pieces, no real word.
+  const junkDesc = (d: string) => !!d && !d.split(" ").some((t) => /[A-Z]{4,}/.test(t));
+  if (raw.length >= 3) {
     // Each row's band reaches halfway to its neighbours. The first and last rows
     // use their neighbour's gap (never the header or the space below the table).
     const gapAfter = (i: number) => Math.max(0, raw[i + 1].y0 - raw[i].y1);
@@ -705,14 +707,24 @@ export async function parseMasterlistImage(file: File, mapping?: MasterlistMappi
     const heights = bands.map((b) => b.bottom - b.top).sort((a, b) => a - b);
     const median = heights[Math.floor(heights.length / 2)];
     for (let i = 0; i < raw.length; i++) {
-      const b = bands[i];
-      if (b.bottom - b.top < median * 1.45 || raw[i].side) continue;
-      try {
-        const ls = await ocrRegion(greyOf(orig), { x0: nameDescBorder + 4, y0: b.top + 2, x1: numBorder - 4, y1: b.bottom - 2 }, false, 2);
-        const text = ls.sort((p, q) => p.y0 - q.y0).map((l) => l.words.map((w) => w.text).join(" ")).join(" ")
-          .replace(/[^A-Za-z0-9&'.\-/ ]/g, "").replace(/\s+/g, " ").trim().toUpperCase();
-        if (/[A-Z]{3,}/.test(text) && text.length >= raw[i].desc.length) raw[i].desc = fixSizes(text);
-      } catch { /* keep the first reading */ }
+      const b = bands[i], r = raw[i];
+      const tall = b.bottom - b.top >= median * 1.45;
+      const junk = junkDesc(r.desc);
+      if ((!tall && !junk) || r.side) continue;
+      // The description cell: between the name and weight columns, or (columns
+      // not found) around this row's own description words.
+      const x0 = Number.isFinite(nameDescBorder) ? nameDescBorder + 4 : (r.dx0 ?? NaN) - 60;
+      const x1 = Number.isFinite(numBorder) ? numBorder - 4 : (r.dx1 ?? NaN) + 60;
+      if (!Number.isFinite(x0) || !Number.isFinite(x1) || x1 - x0 < 20) continue;
+      // Original colours first, then the cleaned image; keep a reading with real words.
+      for (const src of [greyOf(orig), canvas]) {
+        try {
+          const ls = await ocrRegion(src, { x0, y0: b.top + 2, x1, y1: b.bottom - 2 }, false, 2);
+          const text = ls.sort((p, q) => p.y0 - q.y0).map((l) => l.words.map((w) => w.text).join(" ")).join(" ")
+            .replace(/[^A-Za-z0-9&'.\-/ ]/g, "").replace(/\s+/g, " ").trim().toUpperCase();
+          if (!junkDesc(text) && text && (junk || text.length >= r.desc.length)) { r.desc = fixSizes(text); break; }
+        } catch { /* keep the first reading */ }
+      }
     }
   }
 
