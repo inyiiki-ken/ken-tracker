@@ -10,6 +10,7 @@ export function reviewImportRow(row: ParsedMasterlistRow) {
   const quantity = isUnitMode() || isPerPiece(record) ? getQty(record) : grams > 0 ? grams : 1;
   const amount = calcItemPrice(record);
   const errors: string[] = [];
+  if (!String(row.orderId ?? '').trim() || row.orderId === '?') errors.push('Type the code — the sheet has none for this row.');
   if (!row.minerName.trim()) errors.push('Enter the customer name.');
   if (!row.itemDescription.trim()) errors.push('Enter the item description.');
   if (!row.dateOfLive || !parseDateRobust(row.dateOfLive)) errors.push('Enter a valid Date of Live.');

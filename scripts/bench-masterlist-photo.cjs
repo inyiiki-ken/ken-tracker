@@ -12,7 +12,7 @@ const only = (process.argv.find((a) => a.startsWith('--only=')) || '').slice(7);
 if (process.env.OCR_DEBUG) {
   const keys = process.env.OCR_DEBUG.split(',');
   globalThis.__OCR_DEBUG = (lines, h, cols) => {
-    const fmt = (l) => l.words.map((w) => `${w.text}@${Math.round(w.x0)}-${Math.round(w.x1)}`).join(' ');
+    const fmt = (l) => `[y ${Math.round(l.y0)}-${Math.round(l.y1)}] ` + l.words.map((w) => `${w.text}@${Math.round(w.x0)}-${Math.round(w.x1)}`).join(' ');
     console.log('  COLS', cols.map(Math.round).join(' '));
     console.log('  HEAD', fmt(lines[h]));
     for (const l of lines.slice(h + 1)) if (keys.includes('ALL') || keys.some((k) => l.words.map((w) => w.text).join(' ').includes(k))) console.log('   ', fmt(l));
@@ -49,7 +49,7 @@ function readTruth() {
     if (line.startsWith('@')) { const [file, rate, date, liver] = line.slice(1).split('|'); sheets.push({ file, rate: +rate, date, liver, rows: [] }); continue; }
     const [code, name, desc, grams, rate, mc, amount] = line.split('|');
     const s = sheets[sheets.length - 1];
-    s.rows.push({ code, name, desc, grams: +grams, rate: rate ? +rate : s.rate, mc: +mc, amount: +amount });
+    s.rows.push({ code, name, desc, grams: +grams, rate: rate !== '' && rate !== undefined ? +rate : s.rate, mc: +mc, amount: +amount });
   }
   return sheets;
 }
@@ -82,19 +82,21 @@ const FIELDS = ['row', 'name', 'desc', 'grams', 'rate', 'mc', 'price'];
     if (norm(res.liverName) === norm(s.liver)) headerOk++; else errs.push(`liver "${res.liverName}"`);
     const per = Object.fromEntries(FIELDS.map((f) => [f, [0, 0]]));
     for (const t of s.rows) {
-      const r = res.rows.find((x) => norm(x.orderId) === t.code);
+      // A row with no code on the sheet (code '-' in truth.txt) is matched by its customer name.
+      const r = t.code === '-' ? res.rows.find((x) => (!norm(x.orderId) || norm(x.orderId) === '?') && norm(x.minerName) === norm(t.name)) : res.rows.find((x) => norm(x.orderId) === t.code);
       const score = (f, ok, got) => { per[f][1]++; if (ok) per[f][0]++; else errs.push(`${t.code} ${f}: got "${got}" want "${f === 'name' ? t.name : f === 'desc' ? t.desc : t[f === 'price' ? 'amount' : f]}"`); };
       score('row', !!r, 'missing');
       if (!r) { for (const f of FIELDS.slice(1)) { per[f][1]++; } continue; }
       if (t.name !== '*') score('name', norm(r.minerName) === norm(t.name), r.minerName);
       if (t.desc !== '*') score('desc', norm(r.itemDescription) === norm(t.desc), r.itemDescription);
-      score('grams', Math.abs(Number(r.grams) - t.grams) < 0.005, r.grams);
-      score('rate', Math.abs(Number(r.goldRate) - t.rate) < 0.005, r.goldRate);
+      score('grams', Math.abs((Number(r.grams) || 0) - t.grams) < 0.005, r.grams);
+      score('rate', Math.abs((Number(r.goldRate) || 0) - t.rate) < 0.005, r.goldRate);
       score('mc', Math.abs((Number(r.mc) || 0) - t.mc) < 0.005, r.mc);
-      const price = Number(r.grams) * (Number(r.goldRate) + (Number(r.mc) || 0));
+      // Per piece (grams 0 in truth.txt): the price is the row's own rate.
+      const price = t.grams === 0 ? Number(r.clientRate) : Number(r.grams) * (Number(r.goldRate) + (Number(r.mc) || 0));
       score('price', Math.abs(price - t.amount) <= 0.02, price.toFixed(2));
     }
-    const extra = res.rows.filter((x) => !s.rows.some((t) => t.code === norm(x.orderId))).map((x) => x.orderId);
+    const extra = res.rows.filter((x) => norm(x.orderId) && norm(x.orderId) !== '?' && !s.rows.some((t) => t.code === norm(x.orderId))).map((x) => x.orderId);
     if (extra.length) errs.push(`extra rows: ${extra.join(', ')}`);
     for (const f of FIELDS) { total[f][0] += per[f][0]; total[f][1] += per[f][1]; }
     const pct = (f) => `${f} ${per[f][0]}/${per[f][1]}`;

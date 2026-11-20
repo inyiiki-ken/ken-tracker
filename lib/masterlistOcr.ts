@@ -463,6 +463,8 @@ function fixCodes(codes: string[]): string[] {
   // Only an unreadable or out-of-order number is replaced by previous + 1.
   let prev = start - 1;
   return parsed.map((p, i) => {
+    // A row with no code on the sheet keeps none, and never shifts the others.
+    if (!p.raw) return "";
     const nextNum = parsed.slice(i + 1).find((q) => Number.isFinite(q.num))?.num;
     const fits = Number.isFinite(p.num) && p.num > prev && p.num - prev <= 5 && (nextNum === undefined || p.num < nextNum || nextNum <= prev);
     const n = fits ? p.num : prev + 1;
@@ -509,13 +511,18 @@ export async function parseMasterlistImage(file: File, mapping?: MasterlistMappi
   // Name / description border: the grid line between the two header words, or
   // (no grid) the midpoint between them.
   const hx = (re: RegExp) => header.words.find((w) => re.test(clean(w.text)));
-  const nameW = hx(/CUSTOMER|NAME|CLIENT/);
-  const descW = hx(/ITEM|DESCRIPTION/);
+  // Misread headers count too: "CUSTOLER NALE", "DE SCRIPTION".
+  const nameW = hx(/CUSTOMER|CUSTO|NAME|NALE|CLIENT/);
+  const descW = hx(/ITEM|DESCRIPTION|SCRIPTION/);
   let nameDescBorder = NaN;
   if (nameW && descW) {
     const nc = (nameW.x0 + nameW.x1) / 2, dc = (descW.x0 + descW.x1) / 2;
     const between = colLines.filter((x) => x > nc && x < dc);
     nameDescBorder = between.length ? between[0] : (nameW.x1 + descW.x0) / 2;
+  } else if (descW) {
+    // Name header unreadable: the grid line just before the description column.
+    const before = colLines.filter((x) => x < descW.x0 && x > descW.x0 - (descW.x1 - descW.x0) * 3);
+    if (before.length) nameDescBorder = before[before.length - 1];
   }
 
   // Numbers start at the WT/GRAMS column. Splitting by position (not at the
@@ -537,7 +544,8 @@ export async function parseMasterlistImage(file: File, mapping?: MasterlistMappi
   const cx = (w: OcrWord) => (w.x0 + w.x1) / 2;
   const gc = gramsHead ? cx(gramsHead) : NaN;
   const rateHead = header.words.find((w) => /^RATE/.test(clean(w.text)) && (!Number.isFinite(gc) || cx(w) > gc));
-  const amountHead = header.words.find((w) => /AMOUNT|TOTAL/.test(clean(w.text)));
+  // "ARTOUNT" / "AMOUNI": a misread AMOUNT header still marks the column.
+  const amountHead = header.words.find((w) => /AMOUNT|TOTAL|^A[A-Z]{1,3}OUN[A-Z]?$/.test(clean(w.text)));
   const nextHead = amountHead && header.words.find((w) => w.x0 > amountHead.x1 && /^(\d{2}K|GOLD|BAR|PULLOUT)/.test(clean(w.text)));
   const amountRight = amountHead
     ? colLines.find((x) => x > amountHead.x1 && (!nextHead || x < nextHead.x0))
@@ -560,25 +568,51 @@ export async function parseMasterlistImage(file: File, mapping?: MasterlistMappi
 
   /** A row with no weight under GRAMS: rate and MC as usual, weight from a side column. */
   type Side = { rate: number; mc: number; weight: number; tog: string; guessed: boolean; amount: number };
-  type Row = { code: string; name: string; desc: string; nums: number[]; y0: number; y1: number; nx: number; side?: Side };
+  type Row = { code: string; name: string; desc: string; nums: number[]; y0: number; y1: number; nx: number; side?: Side; pc?: number };
   const raw: Row[] = [];
+  // Item lines the reader couldn't use (e.g. a per-piece line with only its
+  // price, "SCREW TYPE EARRINGS 199"): reported, never dropped silently.
+  const unread: string[] = [];
+  const codeLikeWord = /^[A-Z]{2,6}[0-9OSILB]{1,4}$/;
+  // Right edge of the CODE column: a first word past it is a customer name, so
+  // that row has no code (it must not take one and shift every code below it).
+  const codeHead = header.words.find((w) => /^CODE/.test(clean(w.text)));
+  const codeEnd = codeHead ? (colLines.find((x) => x > codeHead.x1) ?? (nameW ? nameW.x0 : NaN)) : NaN;
   for (const l of lines.slice(headerIdx + 1)) {
     // Specks of the grid read as "©", "~~", "|": no letter or digit, not a word.
     // Left in, a speck in front of AMB01 was taken as the code and the row shifted.
     const words = l.words.filter((w) => /[A-Za-z0-9$£]/.test(w.text));
-    if (words.length < 3) continue;
+    if (words.length < 2) continue;
+    const hasCode = !Number.isFinite(codeEnd) || (words[0].x0 + words[0].x1) / 2 < codeEnd;
+    const textStart = hasCode ? 1 : 0;
+    if (words.length < textStart + 2) continue;
     let firstNum = Number.isFinite(numBorder)
-      ? words.findIndex((w, i) => i > 0 && (w.x0 + w.x1) / 2 >= numBorder)
+      ? words.findIndex((w, i) => i >= textStart && i > 0 && (w.x0 + w.x1) / 2 >= numBorder)
       : -1;
     if (firstNum < 0) {
       // No grams column found: the numbers are the run of numeric words at the end.
       firstNum = words.length;
-      while (firstNum > 1 && isNumeric(words[firstNum - 1].text)) firstNum--;
+      while (firstNum > textStart + 1 && isNumeric(words[firstNum - 1].text)) firstNum--;
     }
-    if (firstNum < 2) continue;
-    const textWords = words.slice(1, firstNum);
+    if (firstNum < textStart + 1) continue;
+    const textWords = words.slice(textStart, firstNum);
     let nums = words.slice(firstNum).filter((w) => isNumeric(w.text)).map((w) => readNumber(w.text)).filter(Number.isFinite);
-    if (nums.length < 2) continue;
+    // Per-piece line: no weight, rate or MC, only a price under AMOUNT ("– – – 195.00").
+    let pcPrice = 0;
+    if (nums.length < 2) {
+      const only = words.slice(firstNum).find((w) => isNumeric(w.text));
+      const heads = [gramsHead, rateHead, amountHead]
+        .filter((h): h is OcrWord => !!h);
+      const nearest = only && heads.length ? heads.reduce((a, b) => Math.abs((b.x0 + b.x1) / 2 - (only.x0 + only.x1) / 2) < Math.abs((a.x0 + a.x1) / 2 - (only.x0 + only.x1) / 2) ? b : a) : undefined;
+      if (nums.length === 1 && nearest && nearest === amountHead && nums[0] > 0 && textWords.length) {
+        pcPrice = nums[0];
+      } else {
+        if ((hasCode ? codeLikeWord.test(clean(words[0].text)) : true) && textWords.length) {
+          unread.push(`${hasCode ? clean(words[0].text) + " " : ""}${textWords.map((w) => w.text).join(" ").toUpperCase()}`.trim());
+        }
+        continue;
+      }
+    }
     let name: OcrWord[] = [], desc: OcrWord[] = [];
     if (Number.isFinite(nameDescBorder)) {
       textWords.forEach((w) => ((w.x0 + w.x1) / 2 < nameDescBorder ? name : desc).push(w));
@@ -602,7 +636,11 @@ export async function parseMasterlistImage(file: File, mapping?: MasterlistMappi
     // Something unreadable under WT/GRAMS (3.91 read as "IN") is still a weight:
     // the row is not a gold bar, and its weight is worked out from the amount.
     const gramsCellInk = !!gramsHead && !!rateHead && words.slice(firstNum).some((w) => cx(w) < (gc + cx(rateHead)) / 2);
-    const noGrams = !gramsCellInk && !!first && !!gramsHead && !!rateHead && Math.abs(cx(first) - cx(rateHead)) < Math.abs(cx(first) - gc);
+    const noGrams = !pcPrice && !gramsCellInk && !!first && !!gramsHead && !!rateHead && Math.abs(cx(first) - cx(rateHead)) < Math.abs(cx(first) - gc);
+    if (pcPrice) {
+      raw.push({ code: hasCode ? words[0].text : "", name: nameTxt, desc: descTxt, nums, y0: l.y0, y1: l.y1, nx: words[firstNum]?.x0 ?? numBorder, pc: pcPrice });
+      continue;
+    }
     // MC header misread as "KC"/"NC": the header word between RATE and AMOUNT.
     const mcHead = header.words.find(w => /^MC$/.test(clean(w.text)))
       ?? (rateHead && amountHead ? header.words.find(w => w.x0 > rateHead.x1 && w.x1 < amountHead.x0 && /^[A-Z]{2}$/.test(clean(w.text))) : undefined);
@@ -648,9 +686,35 @@ export async function parseMasterlistImage(file: File, mapping?: MasterlistMappi
       const guessed = !(weight > 0);
       side = { rate: rate > 0 && rate < 10 && rate * 100 >= 15 ? Math.round(rate * 100) : rate || 0, mc: mc || 0, weight: guessed ? 1 : weight, tog, guessed, amount };
     }
-    raw.push({ code: words[0].text, name: nameTxt, desc: descTxt, nums, y0: l.y0, y1: l.y1, nx: words[firstNum]?.x0 ?? numBorder, side });
+    raw.push({ code: hasCode ? words[0].text : "", name: nameTxt, desc: descTxt, nums, y0: l.y0, y1: l.y1, nx: words[firstNum]?.x0 ?? numBorder, side });
   }
   if (!raw.length) throw new Error("Found the header but no item rows. Try a clearer screenshot.");
+
+  // A description that wraps onto two lines ("INTERLOCK CARTIER / NECKLACE")
+  // makes its row taller and is read as junk on one line. Read that row's
+  // description cell again on its own, every line of it.
+  if (Number.isFinite(nameDescBorder) && Number.isFinite(numBorder) && raw.length >= 3) {
+    // Each row's band reaches halfway to its neighbours. The first and last rows
+    // use their neighbour's gap (never the header or the space below the table).
+    const gapAfter = (i: number) => Math.max(0, raw[i + 1].y0 - raw[i].y1);
+    const bands = raw.map((r, i) => {
+      const top = i > 0 ? (raw[i - 1].y1 + r.y0) / 2 : r.y0 - gapAfter(0) / 2;
+      const bottom = i < raw.length - 1 ? (r.y1 + raw[i + 1].y0) / 2 : r.y1 + gapAfter(raw.length - 2) / 2;
+      return { top, bottom };
+    });
+    const heights = bands.map((b) => b.bottom - b.top).sort((a, b) => a - b);
+    const median = heights[Math.floor(heights.length / 2)];
+    for (let i = 0; i < raw.length; i++) {
+      const b = bands[i];
+      if (b.bottom - b.top < median * 1.45 || raw[i].side) continue;
+      try {
+        const ls = await ocrRegion(greyOf(orig), { x0: nameDescBorder + 4, y0: b.top + 2, x1: numBorder - 4, y1: b.bottom - 2 }, false, 2);
+        const text = ls.sort((p, q) => p.y0 - q.y0).map((l) => l.words.map((w) => w.text).join(" ")).join(" ")
+          .replace(/[^A-Za-z0-9&'.\-/ ]/g, "").replace(/\s+/g, " ").trim().toUpperCase();
+        if (/[A-Z]{3,}/.test(text) && text.length >= raw[i].desc.length) raw[i].desc = fixSizes(text);
+      } catch { /* keep the first reading */ }
+    }
+  }
 
   const codes = fixCodes(raw.map((r) => r.code));
   // A code that slid into the name column (Excel row numbers in the screenshot
@@ -690,8 +754,8 @@ export async function parseMasterlistImage(file: File, mapping?: MasterlistMappi
     return n.length === 3 ? { grams: n[0], rate: n[1], mc: 0, amount: n[2] } : { grams: n[0], rate: n[1], mc: snapMc(n[2] || 0), mcRaw: n[2] || 0, amount: n[3] ?? 0 };
   };
   // Side-column rows (gold bars) have their own rate: kept out of the 18K checks.
-  const rows0 = raw.map((r) => (r.side ? { grams: r.side.weight, rate: r.side.rate, mc: r.side.mc, amount: 0 } : toNums(r.nums)));
-  const mainOf = (rows: Nums[]) => rows.filter((_, i) => !raw[i].side);
+  const rows0 = raw.map((r) => (r.pc ? { grams: 0, rate: r.pc, mc: 0, amount: r.pc } : r.side ? { grams: r.side.weight, rate: r.side.rate, mc: r.side.mc, amount: 0 } : toNums(r.nums)));
+  const mainOf = (rows: Nums[]) => rows.filter((_, i) => !raw[i].side && !raw[i].pc);
   /**
    * How one row reads at a given gold rate: as is, with one misread digit in
    * the grams (3.34 for 3.31), or with one misread digit in the amount
@@ -792,7 +856,7 @@ export async function parseMasterlistImage(file: File, mapping?: MasterlistMappi
   const rows1 = [...rows0];
   const reread: string[] = [];
   for (let i = 0; i < raw.length; i++) {
-    if (raw[i].side || check(rows1[i], rateMode)?.exact) continue;
+    if (raw[i].side || raw[i].pc || check(rows1[i], rateMode)?.exact) continue;
     const r = raw[i];
     const pad = (r.y1 - r.y0) * 0.35;
     const box = { x0: r.nx - 6, y0: r.y0 - pad, x1: canvas.width, y1: r.y1 + pad };
@@ -822,14 +886,17 @@ export async function parseMasterlistImage(file: File, mapping?: MasterlistMappi
   }
   if (reread.length) rateMode = chooseRate(mainOf(rows1));
 
-  const misreadRates = rows1.map((r, i) => (!raw[i].side && r.rate > 0 && Math.abs(r.rate - rateMode) > 0.01 ? `${codes[i]} ${r.rate}` : "")).filter(Boolean);
+  const misreadRates = rows1.map((r, i) => (!raw[i].side && !raw[i].pc && r.rate > 0 && Math.abs(r.rate - rateMode) > 0.01 ? `${codes[i]} ${r.rate}` : "")).filter(Boolean);
   if (head.rate && Math.abs(head.rate - rateMode) > 0.01) misreadRates.unshift(`header ${head.rate}`);
 
   const fixed = rows1.map((r, i) => {
     const sd = raw[i].side;
     if (sd) {
-      return { code: codes[i], name: raw[i].name, desc: raw[i].desc, grams: sd.weight, rate: sd.rate, mc: sd.mc, amount: round2(sd.weight * (sd.rate + sd.mc)), side: sd };
+      return { code: codes[i], name: raw[i].name, desc: raw[i].desc, grams: sd.weight, rate: sd.rate, mc: sd.mc, amount: round2(sd.weight * (sd.rate + sd.mc)), side: sd, pc: 0 };
     }
+    // Per piece: its own price, no weight, rate or MC to check.
+    const pcPrice = raw[i].pc ?? 0;
+    if (pcPrice) return { code: codes[i], name: raw[i].name, desc: raw[i].desc, grams: 0, rate: pcPrice, mc: 0, amount: pcPrice, side: undefined as Side | undefined, pc: pcPrice };
     let { grams, amount } = r;
     const rate = rateMode || r.rate;
     let mc = r.mc;
@@ -843,7 +910,7 @@ export async function parseMasterlistImage(file: File, mapping?: MasterlistMappi
       if (c.mc !== (r.mcRaw ?? mc)) corrected.push(`${codes[i]} MC ${r.mcRaw ?? mc} → ${c.mc}`);
       grams = c.grams; amount = c.amount; mc = c.mc;
     } else if (rate + mc > 0 && amount > 0) flagged.push(i);
-    return { code: codes[i], name: raw[i].name, desc: raw[i].desc, grams, rate, mc, amount, side: undefined as Side | undefined };
+    return { code: codes[i], name: raw[i].name, desc: raw[i].desc, grams, rate, mc, amount, side: undefined as Side | undefined, pc: 0 };
   });
 
   // ── Header TOTAL GRAMS: the rows must add up to it ──
@@ -873,7 +940,7 @@ export async function parseMasterlistImage(file: File, mapping?: MasterlistMappi
     : "";
 
   // ── Format: realistic weights ──
-  const oddWeights = fixed.filter((r) => !(r.grams >= 0.1 && r.grams <= 200)).map((r) => `${r.code} ${r.grams} g`);
+  const oddWeights = fixed.filter((r) => !r.pc && !(r.grams >= 0.1 && r.grams <= 200)).map((r) => `${r.code} ${r.grams} g`);
 
   // ── Codes: no repeats ──
   const seen = new Map<string, number>();
@@ -885,10 +952,25 @@ export async function parseMasterlistImage(file: File, mapping?: MasterlistMappi
     ? [...new Set(fixed.filter((r) => !r.side && r.mc > 0 && !past.mcs.has(r.mc)).map((r) => r.mc))]
     : [];
 
+  // ── Customer names: the same letters as an earlier customer, only spaced
+  // differently ("JERA MI" = JE RA MI), take that spelling. A name that
+  // differs by a letter is only a hint: it may be a different customer.
+  const nameKey = (t: string) => t.toUpperCase().replace(/[^A-Z0-9]/g, "");
+  const knownNames = new Map<string, string>();
+  for (const h of history) {
+    const n = String(h.minerName ?? "").toUpperCase().replace(/\s+/g, " ").trim();
+    if (n && !knownNames.has(nameKey(n))) knownNames.set(nameKey(n), n);
+  }
+  const nameFixed: string[] = [];
+  for (const r of fixed) {
+    const same = r.name && nameKey(r.name).length >= 4 ? knownNames.get(nameKey(r.name)) : undefined;
+    if (same && same !== r.name) { nameFixed.push(`${r.code || r.desc} name ${r.name} → ${same}`); r.name = same; }
+  }
+
   // ── Customer names close to (but not the same as) earlier orders ──
   const nameHints: string[] = [];
   for (const r of fixed) {
-    if (!r.name || past.names.has(r.name)) continue;
+    if (!r.name || past.names.has(r.name) || knownNames.has(nameKey(r.name))) continue;
     const match = [...past.names].find((n) => Math.abs(n.length - r.name.length) <= 2 && editDistance(n, r.name) <= 2);
     if (match) nameHints.push(`${r.code} "${r.name}" looks like "${match}" from earlier orders`);
   }
@@ -974,12 +1056,13 @@ export async function parseMasterlistImage(file: File, mapping?: MasterlistMappi
   const col = (k: keyof MasterlistMapping["columns"]) => colToIndex(m.columns[k]);
   fixed.forEach((r, i) => {
     const y = start + i;
-    put(y, col("orderId"), r.code);
+    // No code on the sheet: "?" keeps the row in the preview until a code is typed.
+    put(y, col("orderId"), r.code || "?");
     put(y, col("minerName"), r.name);
     put(y, col("itemDescription"), r.desc);
-    put(y, col("grams"), String(r.grams));
+    put(y, col("grams"), r.pc ? "" : String(r.grams));
     put(y, col("clientRate"), String(r.rate));
-    if (col("goldRate") >= 0) put(y, col("goldRate"), String(r.rate));
+    if (col("goldRate") >= 0) put(y, col("goldRate"), r.pc ? "" : String(r.rate));
     if (col("mc") >= 0) put(y, col("mc"), String(r.mc));
     put(y, col("amount"), String(r.amount));
   });
@@ -989,6 +1072,7 @@ export async function parseMasterlistImage(file: File, mapping?: MasterlistMappi
   // Never lose a row silently: say which rows were read but not imported, and
   // which codes in the numbered run never showed up.
   for (const sk of parsed.skipped) warnings.push(`Not imported: ${sk.replace(/^row \d+ \((.+?)\)/, "$1")}. Add it by hand.`);
+  if (unread.length) warnings.push(`Not imported (the line has only one number, e.g. a per-piece price): ${unread.join("; ")}. Add ${unread.length === 1 ? "it" : "them"} by hand as Per PC.`);
   const gaps = missingCodes(codes);
   if (gaps.length) warnings.push(`${gaps.join(", ")} ${gaps.length === 1 ? "is" : "are"} missing from the photo reading. Add ${gaps.length === 1 ? "it" : "them"} by hand.`);
   warnings.push(...rateNotes);
@@ -1011,17 +1095,28 @@ export async function parseMasterlistImage(file: File, mapping?: MasterlistMappi
 
   const rowNotes: Record<string, string> = {};
   if (descFixed.length) warnings.push(`Item name matched to earlier orders: ${descFixed.join("; ")}. Check against the photo.`);
-  for (const n of [...reread, ...corrected, ...descFixed]) {
+  if (nameFixed.length) warnings.push(`Customer name matched to earlier orders: ${nameFixed.join("; ")}.`);
+  for (const n of [...reread, ...corrected, ...descFixed, ...nameFixed]) {
     const [code, ...rest] = n.split(" ");
     rowNotes[code] = rowNotes[code] ? `${rowNotes[code]}; ${rest.join(" ")}` : `Corrected: ${rest.join(" ")}`;
   }
   const liver = parsed.liverName !== "Unknown" ? parsed.liverName : title;
   const togOf = new Map(sideRows.filter((r) => r.side!.tog).map((r) => [r.code, r.side!.tog]));
-  const rows = parsed.rows.map((r) => ({
-    ...r,
-    liverName: r.liverName === "Unknown" ? liver : r.liverName,
-    ...(togOf.has(r.orderId) ? { tog: togOf.get(r.orderId)! } : {}),
-  }));
+  // Per-piece lines are filed as Per PC at their own price (1 piece).
+  const pcOf = new Map(fixed.filter((r) => r.pc).map((r) => [`${r.code || "?"}|${r.desc}`, r.pc] as const));
+  const rows = parsed.rows.map((r) => {
+    const pc = pcOf.get(`${r.orderId}|${r.itemDescription}`);
+    return {
+      ...r,
+      liverName: r.liverName === "Unknown" ? liver : r.liverName,
+      ...(togOf.has(r.orderId) ? { tog: togOf.get(r.orderId)! } : {}),
+      ...(pc ? { category: "Per PC", qty: "1", grams: "", goldRate: "", mc: "0", clientRate: String(pc), warning: undefined } : {}),
+    };
+  });
+  const pcNames = fixed.filter((r) => r.pc).map((r) => `${r.code ? r.code + " " : ""}${r.desc} ${r.pc}`);
+  if (pcNames.length) warnings.push(`Per-piece item${pcNames.length === 1 ? "" : "s"} (price only, no weight): ${pcNames.join("; ")}. Filed as Per PC — check the price against the photo.`);
+  const noCode = fixed.filter((r) => !r.code).map((r) => `${r.name} ${r.desc}`.trim());
+  if (noCode.length) warnings.push(`No code on the sheet for: ${noCode.join("; ")}. Type its code (shown as ?) before importing.`);
   return {
     rows,
     liverName: liver || "Unknown",
